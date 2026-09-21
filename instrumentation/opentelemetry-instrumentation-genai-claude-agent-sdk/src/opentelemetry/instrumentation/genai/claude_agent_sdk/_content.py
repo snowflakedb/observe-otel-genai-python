@@ -10,7 +10,7 @@ translated into its part types and never into hand-built dicts.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from opentelemetry.util.genai.types import (
     GenericPart,
@@ -81,10 +81,14 @@ def _is_server_tool(block: Any) -> bool:
     return type(block).__name__.startswith("ServerTool")
 
 
-def blocks_of(content: Any) -> list[Any]:
-    """Normalize a message's ``content`` to a list of blocks."""
+def blocks_of(content: object) -> list[object]:
+    """Normalize a message's ``content`` to a list of blocks.
+
+    Blocks stay ``object`` on the way through: every caller identifies each one
+    with ``isinstance`` against the SDK's block classes.
+    """
     if isinstance(content, list):
-        return content
+        return cast("list[object]", content)
     if isinstance(content, str) and content:
         return [_TextOnly(content)]
     return []

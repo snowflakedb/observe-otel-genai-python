@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from opentelemetry import context as otel_context
 from opentelemetry.context import Context
@@ -40,6 +40,14 @@ from opentelemetry.instrumentation.genai.claude_agent_sdk._content import (
     output_message,
     prompt_to_messages,
     text_output,
+)
+from opentelemetry.instrumentation.genai.claude_agent_sdk._types import (
+    InitData,
+    StreamEventPayload,
+    TaskPatch,
+    TaskToolInput,
+    Usage,
+    UsageTotals,
 )
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
@@ -56,6 +64,23 @@ from opentelemetry.util.genai.types import (
     OutputMessage,
     TextPart,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    # The SDK is an optional dependency: it must stay importable-at-type-time
+    # only, so that this module imports without it installed.
+    from claude_agent_sdk.types import (
+        ClaudeAgentOptions,
+        ModelUsage,
+        ResultMessage,
+        StreamEvent,
+        SystemMessage,
+        SystemPromptCustom,
+        SystemPromptFile,
+        SystemPromptPreset,
+        TaskUpdatedMessage,
+    )
 
 _logger = logging.getLogger(__name__)
 
@@ -90,16 +115,17 @@ _TERMINAL_TASK_STATUSES = frozenset(
 )
 
 
-def resolve_provider(sdk_options: Any) -> str:
+def resolve_provider(sdk_options: ClaudeAgentOptions | None) -> str:
     """Pick the provider before the run starts, so the value is right from the
     moment a span opens.
 
     ``options.env`` replaces rather than merges, so when it is set it is exactly
     what the CLI subprocess will see; otherwise our own environment applies.
     """
-    env = getattr(sdk_options, "env", None)
-    if not isinstance(env, dict):
-        env = os.environ
+    env: Mapping[str, str] = os.environ
+    options_env: dict[str, str] | None = getattr(sdk_options, "env", None)
+    if isinstance(options_env, dict):
+        env = options_env
     for key, provider in _PROVIDER_ENV:
         value = env.get(key)
         if value and str(value).lower() not in ("0", "false"):
@@ -107,20 +133,31 @@ def resolve_provider(sdk_options: Any) -> str:
     return "anthropic"
 
 
-def _system_prompt_text(prompt: Any) -> str | None:
+def _system_prompt_text(
+    prompt: str
+    | SystemPromptPreset
+    | SystemPromptCustom
+    | SystemPromptFile
+    | None,
+) -> str | None:
     if isinstance(prompt, str):
         return prompt or None
-    if isinstance(prompt, dict):
-        parts = [
-            f"preset: {prompt['preset']}" if prompt.get("preset") else None,
-            prompt.get("append"),
-        ]
-        joined = "\n".join(p for p in parts if p)
-        return joined or None
-    return None
+    if not isinstance(prompt, dict):
+        return None
+    # Only the preset form is recorded. A custom prompt keeps its text in
+    # "prompt" and a file form only names a path; neither is captured yet.
+    if prompt.get("type") != "preset":
+        return None
+    preset = cast("SystemPromptPreset", prompt)
+    parts = [
+        f"preset: {preset['preset']}" if preset.get("preset") else None,
+        preset.get("append"),
+    ]
+    joined = "\n".join(p for p in parts if p)
+    return joined or None
 
 
-def _fold_input_tokens(usage: dict[str, Any]) -> int:
+def _fold_input_tokens(usage: Usage) -> int:
     """Anthropic reports input_tokens excluding cache reads and writes; the
     convention requires the total, with the cache counters as subsets."""
     return (
@@ -138,22 +175,22 @@ class _ChatContext:
     parent_context: Context
     invocation: InferenceInvocation | None = None
     message_id: str | None = None
-    blocks: list[Any] = field(default_factory=list)
+    blocks: list[object] = field(default_factory=list[object])
     # Mid-stream snapshot from the assistant message; superseded by final_usage.
-    usage: dict[str, Any] | None = None
+    usage: Usage | None = None
     # The call's real usage, from the message_delta stream event.
-    final_usage: dict[str, Any] | None = None
+    final_usage: Usage | None = None
     thinking_tokens: int | None = None
     stop_reason: str | None = None
     model: str | None = None
     # Running conversation, replayed as each chat span's input.
-    history: list[InputMessage] = field(default_factory=list)
+    history: list[InputMessage] = field(default_factory=list[InputMessage])
 
 
 @dataclass
 class _Subagent:
     invocation: LocalAgentInvocation
-    output: list[OutputMessage] = field(default_factory=list)
+    output: list[OutputMessage] = field(default_factory=list[OutputMessage])
 
 
 class AgentRun:
@@ -190,7 +227,7 @@ class AgentRun:
         self._tools: dict[str, ToolInvocation] = {}
         self._subagents: dict[str, _Subagent] = {}
         # tool_use_id -> the Task tool_use block that launched a subagent.
-        self._launches: dict[str, Any] = {}
+        self._launches: dict[str, object] = {}
         # tool_use_ids the CLI runs as a task. Their tool_result cannot be
         # trusted to mean the work finished.
         self._task_tools: set[str] = set()
@@ -428,7 +465,9 @@ class AgentRun:
             return existing
 
         launch = self._launches.get(parent_tool_use_id)
-        tool_input = getattr(launch, "input", None) or {}
+        tool_input = cast(
+            "TaskToolInput", getattr(launch, "input", None) or {}
+        )
         name = (
             tool_input.get("subagent_type")
             or tool_input.get("agent_type")
@@ -536,9 +575,9 @@ class AgentRun:
 
     # --- message handlers -------------------------------------------------
 
-    def _on_system(self, msg: Any) -> None:
+    def _on_system(self, msg: SystemMessage) -> None:
         if msg.subtype == "init":
-            data = msg.data or {}
+            data = cast("InitData", msg.data or {})
             self._session_id = data.get("session_id") or self._session_id
             self._model = data.get("model") or self._model
             self._open_root()
@@ -575,7 +614,7 @@ class AgentRun:
             f"task {msg.status}" if failed else None,
         )
 
-    def _on_task_updated(self, msg: Any) -> None:
+    def _on_task_updated(self, msg: TaskUpdatedMessage) -> None:
         """The task has reached a terminal state.
 
         This does not close the span. Measured on CLI 2.1.220, a completed task
@@ -589,7 +628,8 @@ class AgentRun:
         "killed" here and its notification is suppressed entirely, which would
         otherwise leak the span until teardown.
         """
-        status = msg.status or (msg.patch or {}).get("status")
+        patch = cast("TaskPatch", msg.patch or {})
+        status = msg.status or patch.get("status")
         if status not in _TERMINAL_TASK_STATUSES:
             return
         tool_use_id = self._task_ids.get(msg.task_id)
@@ -668,12 +708,12 @@ class AgentRun:
         if message is not None:
             ctx.history.append(message)
 
-    def _on_stream_event(self, msg: Any) -> None:
+    def _on_stream_event(self, msg: StreamEvent) -> None:
         key = msg.parent_tool_use_id or _MAIN
         ctx = self._chats.get(key)
         if ctx is None or ctx.invocation is None:
             return
-        event = msg.event or {}
+        event = cast("StreamEventPayload", msg.event or {})
         event_type = event.get("type")
 
         # message_delta closes a call on the wire: it is the one event carrying
@@ -834,14 +874,16 @@ def _answers_caller(msg: Any) -> bool:
     return origin.get("kind") == "human"
 
 
-def _fold_model_usage(model_usage: Any) -> dict[str, Any]:
+def _fold_model_usage(
+    model_usage: dict[str, ModelUsage] | None,
+) -> UsageTotals:
     """Sum per-model usage across models.
 
     No subtraction: model_usage is cumulative over the whole invocation, which
     is exactly the span it lands on. It also covers subagents and compaction,
     which result.usage does not.
     """
-    totals = {
+    totals: UsageTotals = {
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read": 0,
@@ -861,7 +903,7 @@ def _fold_model_usage(model_usage: Any) -> dict[str, Any]:
     return totals
 
 
-def _result_error(msg: Any) -> Error | None:
+def _result_error(msg: ResultMessage) -> Error | None:
     """The error a result reports, if any.
 
     Which field holds the text depends on the subtype, following the rule the
@@ -874,9 +916,7 @@ def _result_error(msg: Any) -> Error | None:
     if msg.subtype == "success":
         text = msg.result if isinstance(msg.result, str) else ""
     else:
-        text = "; ".join(
-            e for e in (msg.errors or []) if isinstance(e, str) and e.strip()
-        )
+        text = "; ".join(e for e in (msg.errors or []) if e.strip())
     status = getattr(msg, "api_error_status", None)
     if isinstance(status, int):
         text = f"{text} (HTTP {status})" if text else f"HTTP {status}"

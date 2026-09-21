@@ -22,16 +22,21 @@ order. Nothing is injected into the caller's options, and no message is altered.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry.instrumentation.genai.claude_agent_sdk._run import AgentRun
 from opentelemetry.util.genai.handler import TelemetryHandler
 
+if TYPE_CHECKING:
+    from claude_agent_sdk.types import AgentDefinition, ClaudeAgentOptions
 
-def _agent_name(options: Any) -> str | None:
+
+def _agent_name(options: ClaudeAgentOptions | None) -> str | None:
     """Use the single agent definition's name when the caller declared exactly
     one, since that is unambiguously the agent being invoked."""
-    agents = getattr(options, "agents", None)
+    agents: dict[str, AgentDefinition] | None = getattr(
+        options, "agents", None
+    )
     if isinstance(agents, dict) and len(agents) == 1:
         return next(iter(agents))
     return None
