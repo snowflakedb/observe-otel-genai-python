@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 
 from opentelemetry._logs import Logger
+from opentelemetry.context import Context
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
@@ -197,6 +198,7 @@ class LocalAgentInvocation(AgentInvocation):
         request_model: str | None = None,
         agent_name: str | None = None,
         content_capturing_mode: ContentCapturingMode | None = None,
+        context: Context | None = None,
     ) -> None:
         super().__init__(
             tracer,
@@ -208,7 +210,7 @@ class LocalAgentInvocation(AgentInvocation):
             agent_name=agent_name,
             content_capturing_mode=content_capturing_mode,
         )
-        self._start(self._get_start_attributes())
+        self._start(self._get_start_attributes(), context=context)
 
     def _get_start_attributes(self) -> dict[str, AttributeValue]:
         optional_attrs = (
@@ -265,6 +267,7 @@ class RemoteAgentInvocation(AgentInvocation):
         agent_id: str | None = None,
         agent_version: str | None = None,
         content_capturing_mode: ContentCapturingMode | None = None,
+        context: Context | None = None,
     ) -> None:
         super().__init__(
             tracer,
@@ -286,7 +289,7 @@ class RemoteAgentInvocation(AgentInvocation):
         self._cache_write_input_tokens: int | None = None
         self.cache_read_input_tokens: int | None = None
 
-        self._start(self._get_start_attributes())
+        self._start(self._get_start_attributes(), context=context)
 
     @property
     def cache_write_input_tokens(self) -> int | None:

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from opentelemetry._logs import Logger, LogRecord
+from opentelemetry.context import Context
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
@@ -96,6 +97,7 @@ class InferenceInvocation(GenAIInvocation):
         operation_name: str | None = None,
         error_type_resolver: ErrorTypeResolver | None = None,
         content_capturing_mode: ContentCapturingMode | None = None,
+        context: Context | None = None,
     ) -> None:
         operation_name = (
             operation_name or GenAI.GenAiOperationNameValues.CHAT.value
@@ -163,7 +165,7 @@ class InferenceInvocation(GenAIInvocation):
         # Rebuilt once per streaming chunk, so cache it and invalidate via
         # _invalidate_metric_attributes whenever an input changes.
         self._cached_metric_attributes: dict[str, AttributeValue] | None = None
-        self._start(self._get_start_attributes())
+        self._start(self._get_start_attributes(), context=context)
 
     def set_input_tokens(self, entries: ModalityTokens | None) -> None:
         """Record the per-modality breakdown of the input tokens.
