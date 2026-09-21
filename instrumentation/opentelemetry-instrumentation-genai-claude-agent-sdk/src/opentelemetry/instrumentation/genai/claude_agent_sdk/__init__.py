@@ -58,20 +58,35 @@ Configuration
 Message content capture can be enabled by setting the environment variable:
 ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true``
 
+For accurate per-call token counts, stop reasons, and streaming timings, pass
+``include_partial_messages=True`` in ``ClaudeAgentOptions``. It is off by
+default and is not set for you, because it changes what the caller's own loop
+receives. Without it each ``chat`` span's token counts are a mid-stream
+snapshot and the span is marked ``genai.usage.is_partial``; the run totals on
+the ``invoke_agent`` span are accurate either way.
+
 API
 ---
 """
 
+import sys
 from collections.abc import Collection
 from typing import Any
 
+from wrapt import wrap_function_wrapper
+
 from opentelemetry.instrumentation.genai.claude_agent_sdk.package import (
     _instruments,
+)
+from opentelemetry.instrumentation.genai.claude_agent_sdk.patch import (
+    wrap_query,
+    wrap_receive_messages,
 )
 from opentelemetry.instrumentation.genai.claude_agent_sdk.version import (
     __version__,
 )
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+from opentelemetry.instrumentation.utils import unwrap
 from opentelemetry.util.genai.completion_hook import load_completion_hook
 from opentelemetry.util.genai.handler import TelemetryHandler
 
@@ -116,11 +131,40 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
             instrumentation_scope_version=__version__,
         )
 
-        # Patching will be added in a follow-up PR
+        import claude_agent_sdk
+        from claude_agent_sdk import client as client_module
+
+        # ``claude_agent_sdk.query`` is both a submodule and the function the
+        # package re-exports under the same name, so the two bindings are
+        # wrapped separately. A call goes through exactly one of them.
+        wrap_function_wrapper(
+            claude_agent_sdk, "query", wrap_query(self._handler)
+        )
+        query_module = sys.modules.get("claude_agent_sdk.query")
+        if query_module is not None:
+            wrap_function_wrapper(
+                query_module, "query", wrap_query(self._handler)
+            )
+
+        # Only receive_messages: receive_response() is a convenience wrapper
+        # that iterates it, so wrapping both would build the tree twice.
+        wrap_function_wrapper(
+            client_module,
+            "ClaudeSDKClient.receive_messages",
+            wrap_receive_messages(self._handler),
+        )
 
     def _uninstrument(self, **kwargs: Any) -> None:
         """Disable Claude Agent SDK instrumentation.
 
         This removes all patches applied during instrumentation.
         """
-        # Unpatching will be added in a follow-up PR
+        import claude_agent_sdk
+        from claude_agent_sdk import client as client_module
+
+        unwrap(claude_agent_sdk, "query")
+        query_module = sys.modules.get("claude_agent_sdk.query")
+        if query_module is not None:
+            unwrap(query_module, "query")
+        unwrap(client_module.ClaudeSDKClient, "receive_messages")
+        self._handler = None

@@ -1,0 +1,2 @@
+Raise the minimum `claude-agent-sdk` to 0.2.137, the first release carrying every
+message type the stream reader reads.
