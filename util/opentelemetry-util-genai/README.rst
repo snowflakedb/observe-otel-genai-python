@@ -1,5 +1,10 @@
-OpenTelemetry Util for GenAI
-============================
+Observe Util for GenAI
+======================
+
+Downstream fork of ``opentelemetry-util-genai``. It is Observe's replacement for
+that package, not an addition to it: installing both is fine on disk, since the
+import paths differ, but each one carries its own handler and types, so a
+completion hook written for one must not be pointed at the other.
 
 The GenAI Utils package provides boilerplate and helpers to standardize instrumentation for Generative AI.
 It offers APIs to minimize the work needed to instrument GenAI libraries,
@@ -134,11 +139,11 @@ Installation
 
 ::
 
-    pip install opentelemetry-util-genai
+    pip install observe-util-genai
 
 For upload support (requires ``fsspec``)::
 
-    pip install opentelemetry-util-genai[upload]
+    pip install observe-util-genai[upload]
 
 
 Design Document

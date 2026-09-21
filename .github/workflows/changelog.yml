@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   changelog:
-    runs-on: cncf-ubuntu-2-8-x86
+    runs-on: ubuntu-latest
     if: >-
       ${{
         !contains(github.event.pull_request.labels.*.name, 'dependencies') &&
@@ -70,12 +70,18 @@ jobs:
           invalid=()
           while IFS= read -r f; do
             base=$(basename "$f")
+            # `+<name>.<type>` is for fork-only changes: towncrier renders those
+            # without a link, which is what we want since this repo's changelog
+            # links point at upstream PR numbers.
+            if [[ "$base" =~ ^\+[A-Za-z0-9._-]+\.(added|changed|deprecated|removed|fixed)$ ]]; then
+              continue
+            fi
             if [[ ! "$base" =~ ^([0-9]+)\.(added|changed|deprecated|removed|fixed)$ ]]; then
-              invalid+=("$f (expected <PR_NUMBER>.<type>; type one of added, changed, deprecated, removed, fixed)")
+              invalid+=("$f (expected <PR_NUMBER>.<type> or +<name>.<type>; type one of added, changed, deprecated, removed, fixed)")
               continue
             fi
             if [[ "${BASH_REMATCH[1]}" != "${PR_NUMBER}" ]]; then
-              invalid+=("$f (PR number ${BASH_REMATCH[1]} does not match this PR's number ${PR_NUMBER})")
+              invalid+=("$f (PR number ${BASH_REMATCH[1]} does not match this PR's number ${PR_NUMBER}; use +<name>.<type> for a fork-only change)")
             fi
           done <<< "$fragments"
           if (( ${#invalid[@]} > 0 )); then

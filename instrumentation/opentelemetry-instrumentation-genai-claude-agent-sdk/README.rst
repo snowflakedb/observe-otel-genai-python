@@ -1,20 +1,23 @@
-OpenTelemetry Claude Agent SDK Instrumentation
-==============================================
+Observe Claude Agent SDK Instrumentation
+========================================
 
-|pypi|
+This library traces LLM requests made through the
+`Claude Agent SDK <https://github.com/anthropics/claude-agent-sdk-python>`_ and
+emits `OpenTelemetry GenAI semantic conventions
+<https://opentelemetry.io/docs/specs/semconv/gen-ai/>`_.
 
-.. |pypi| image:: https://badge.fury.io/py/opentelemetry-instrumentation-genai-claude-agent-sdk.svg
-   :target: https://pypi.org/project/opentelemetry-instrumentation-genai-claude-agent-sdk/
-
-This library allows tracing LLM requests made by the
-`Claude Agent SDK <https://github.com/anthropics/claude-agent-sdk-python>`_.
+It is Observe's replacement for upstream's
+``opentelemetry-instrumentation-genai-claude-agent-sdk``, not an addition to it.
+Installing both leaves two instrumentors registered for the same framework, and
+every span is emitted twice. Uninstall the upstream package first.
 
 Installation
 ------------
 
 ::
 
-    pip install opentelemetry-instrumentation-genai-claude-agent-sdk
+    pip uninstall opentelemetry-instrumentation-genai-claude-agent-sdk
+    pip install observe-instrumentation-genai-claude-agent-sdk
 
 If you don't have a Claude Agent SDK application yet, try our `examples <examples>`_
 which only need a valid Anthropic API key.

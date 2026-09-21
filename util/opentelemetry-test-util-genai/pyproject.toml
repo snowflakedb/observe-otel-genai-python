@@ -5,9 +5,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "opentelemetry-test-util-genai"
+name = "observe-test-util-genai"
 version = "0.0.0"
-description = "Internal-only test fixtures and helpers for the OpenTelemetry GenAI workspace. Not published."
+description = "Internal-only test fixtures and helpers for this workspace. Not published."
 requires-python = ">=3.10"
 classifiers = ["Private :: Do Not Upload"]
 # Lower bounds are required: sibling packages install this editable in their oldest test env
@@ -18,7 +18,7 @@ dependencies = [
   "opentelemetry-sdk ~= 1.43",
   "opentelemetry-semantic-conventions >= 0.64b0, <1",
   "opentelemetry-test-utils >= 0.64b0, <1",
-  "opentelemetry-util-genai >= 1.0b0, <2",
+  "observe-util-genai >= 1.0b0, <2",
   "pytest >= 8",
   "PyYAML >= 6.0.2",
 ]

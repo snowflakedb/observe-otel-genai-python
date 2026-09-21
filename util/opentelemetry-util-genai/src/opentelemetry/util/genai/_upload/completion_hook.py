@@ -128,7 +128,7 @@ class UploadCompletionHook(CompletionHook):
     base path for uploads.
 
     Both the ``fsspec`` and ``opentelemetry-sdk`` packages should be installed, or a no-op
-    implementation will be used instead. You can use ``opentelemetry-util-genai[upload]``
+    implementation will be used instead. You can use ``observe-util-genai[upload]``
     as a requirement to achieve this.
     """
 

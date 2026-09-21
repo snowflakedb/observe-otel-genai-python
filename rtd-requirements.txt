@@ -1,7 +1,0 @@
-# Need to install the api/sdk in the venv for autodoc. Used by .readthedocs.yml
-opentelemetry-api
-opentelemetry-semantic-conventions
-opentelemetry-sdk
-opentelemetry-instrumentation>=0.41b0
-./util/opentelemetry-util-genai
--r ./docs-requirements.txt

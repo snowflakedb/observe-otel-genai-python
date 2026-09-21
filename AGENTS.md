@@ -1,10 +1,28 @@
-# OpenTelemetry Python GenAI
+# observe-otel-genai-python
 
 This file is here to steer AI assisted PRs towards being high quality and valuable contributions
 that do not create excessive maintainer burden.
 
 Monorepo with OpenTelemetry instrumentation packages for Generative AI client libraries, frameworks
-and the shared `opentelemetry-util-genai` utilities.
+and the shared `observe-util-genai` utilities.
+
+## Read this first: this is a fork
+
+This repo is a downstream fork of `open-telemetry/opentelemetry-python-genai`. Most of the guidance
+below came from upstream and still applies, but four things differ:
+
+- **Only the distribution names differ from upstream.** Directory layout, import paths, class
+  names, environment variables, and entry point groups are all upstream's, unchanged. The packages
+  are published as `observe-util-genai` and `observe-instrumentation-genai-<name>`. Don't rename
+  anything to make it look like ours — keeping it identical is what makes a sync cheap.
+- **Where a change belongs.** Vendor-neutral work goes upstream, not here. See the top of
+  [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Stay close to upstream.** Every line that differs from upstream is a conflict on the next sync.
+  Prefer adding a `test_observe_*.py` file over editing an upstream test, and don't reformat or
+  reorganise upstream code.
+- **Package names below may not exist here.** Upstream guidance references packages this fork
+  pruned (openai, langchain, anthropic, and others). Treat those as examples of the pattern, not as
+  paths you can open. README.md lists what is actually here.
 
 ## General Rules and Guidelines
 
@@ -59,7 +77,7 @@ own `pyproject.toml` and `tests/`. The util package follows the equivalent layou
 - Use compatible release specifiers (e.g., `~= x.y` or `>= x.y.z, < (x+1)`) that pin the major version and allow minor/patch updates.
 - Avoid pinning versions to exact patch ranges (like `== x.y.z` or `~= x.y.z`) in `pyproject.toml` unless strictly necessary.
 - Keep version requirements for shared OpenTelemetry packages (e.g., `opentelemetry-api`, `opentelemetry-instrumentation`, and `opentelemetry-semantic-conventions`) consistent across all packages.
-- For OpenTelemetry-owned beta/pre-release packages (e.g., `opentelemetry-instrumentation`, `opentelemetry-semantic-conventions`, `opentelemetry-util-genai`), use `>=` specifiers and pin the upper boundary to the next major version (e.g., `>= 0.64b0, <1` for `0.x` packages, or `>= 1.0b0, <2` for `1.x` packages) rather than using `~=`.
+- For OpenTelemetry-owned beta/pre-release packages (e.g., `opentelemetry-instrumentation`, `opentelemetry-semantic-conventions`, `observe-util-genai`), use `>=` specifiers and pin the upper boundary to the next major version (e.g., `>= 0.64b0, <1` for `0.x` packages, or `>= 1.0b0, <2` for `1.x` packages) rather than using `~=`.
 
 
 ## Before adding a new instrumentation
@@ -144,7 +162,7 @@ run silently uses the previously installed versions.
 - `tox.ini` defines the test matrix - check it for available test environments.
 - Do not add `type: ignore` comments. If a type error arises, solve it properly or write a follow-up plan to address it in another PR.
 - Annotate function signatures (parameters and return types) and class attributes. Prefer `from __future__ import annotations` over runtime-quoted strings.
-- Avoid `Any` in the public API of `opentelemetry-util-genai` (anything not under a `_`-prefixed
+- Avoid `Any` in the public API of `observe-util-genai` (anything not under a `_`-prefixed
   module). Use the narrowest type that fits: the semconv model's type where one exists, union, `AttributeValues`.
 - When a file uses `from __future__ import annotations`, do not quote type annotations just to
   avoid forward references. Keep quotes only for expressions still evaluated at runtime, such as
@@ -186,9 +204,9 @@ This repo uses [towncrier](https://towncrier.readthedocs.io/) to manage changelo
 
 Apply to packages under `instrumentation/`.
 
-### Telemetry via `opentelemetry-util-genai`
+### Telemetry via `observe-util-genai`
 
-- Spans, logs, metrics, and events should go through `opentelemetry-util-genai`. Do not call OTel
+- Spans, logs, metrics, and events should go through `observe-util-genai`. Do not call OTel
   `Tracer`/`Meter`/`Logger` directly, and import only its public surface — never an
   `opentelemetry.util.genai._*` module.
 - Construct the `TelemetryHandler` with the dotted instrumentation package path as

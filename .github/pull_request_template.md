@@ -24,10 +24,11 @@ configuration.
 
 # Checklist
 
-See [CONTRIBUTING.md](https://github.com/open-telemetry/opentelemetry-python-genai/blob/main/CONTRIBUTING.md)
-for the style guide, changelog guidance, and more.
+See [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) for the style guide,
+changelog guidance, and how this fork tracks upstream.
 
 - [ ] Followed the style guidelines of this project
 - [ ] Changelog updated if the change requires an entry
 - [ ] Unit tests added
 - [ ] Documentation updated
+- [ ] If this change should also go upstream, linked the upstream PR or issue here
