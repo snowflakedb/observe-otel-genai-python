@@ -1,12 +1,15 @@
 #!/bin/bash
 # Merge upstream opentelemetry-python-genai into this fork.
 #
-# This fork keeps upstream's directory layout and import paths, so the only
-# conflicts a sync produces are:
+# This fork keeps upstream's directory layout and import paths, so a sync only
+# has to deal with the prune:
 #
-#   1. Upstream changed a package we pruned. Resolved here by keeping it deleted.
-#      This is the bulk of them and needs no review.
-#   2. Upstream changed a file we also changed. Left for you.
+#   1. Upstream changed a file we pruned. Git reports it as a conflict; resolved
+#      here by keeping it deleted. This is the bulk of them and needs no review.
+#   2. Upstream added a file inside a package we pruned. Git merges that cleanly,
+#      with no conflict to notice, so the prune would silently rot. Also removed
+#      here.
+#   3. Upstream changed a file we also changed. Left for you.
 #
 # The merge is never committed: review it, run the tests, then commit yourself.
 #
@@ -50,6 +53,38 @@ if [ -n "$deleted_by_us" ]; then
   echo "$deleted_by_us" | xargs -r git rm -q -f --
 fi
 
+# Paths this fork does not carry. Upstream additions under them merge cleanly, so
+# the prune has to be re-applied rather than merely defended by conflicts.
+KEEP_UNDER_INSTRUMENTATION='^instrumentation/(AGENTS\.md|CLAUDE\.md|opentelemetry-instrumentation-genai-claude-agent-sdk/)'
+KEEP_WORKFLOWS='^\.github/workflows/(ci|test|misc|changelog)\.yml$'
+PRUNED_PATHS=(
+  docs
+  .readthedocs.yml
+  docs-requirements.txt
+  rtd-requirements.txt
+  RELEASING.md
+  .github/ISSUE_TEMPLATE
+  .github/actions
+  .github/scripts
+  .github/renovate.json5
+  .github/copilot-instructions.md
+)
+
+crept=$(
+  {
+    git ls-files -- instrumentation | grep -Ev "$KEEP_UNDER_INSTRUMENTATION" || true
+    git ls-files -- .github/workflows | grep -Ev "$KEEP_WORKFLOWS" || true
+    git ls-files -- "${PRUNED_PATHS[@]}" 2>/dev/null || true
+  } | sort -u
+)
+if [ -n "$crept" ]; then
+  count=$(echo "$crept" | wc -l | tr -d ' ')
+  echo "==> Removing $count file(s) that crept back into pruned paths"
+  echo "$crept" | xargs -r git rm -q -f --
+  # An emptied directory still matches the uv workspace glob and breaks uv lock.
+  find instrumentation -mindepth 1 -type d -empty -delete 2>/dev/null || true
+fi
+
 remaining=$(git diff --name-only --diff-filter=U || true)
 if [ -n "$remaining" ]; then
   echo
@@ -62,7 +97,7 @@ fi
 cat <<'NEXT'
 
 Next:
-  uv lock                          # if any dependency moved
+  UV_DEFAULT_INDEX=https://pypi.org/simple uv lock   # if any dependency moved
   uvx --with tox-uv tox            # run everything
   git status                       # review, then commit the merge yourself
 NEXT
