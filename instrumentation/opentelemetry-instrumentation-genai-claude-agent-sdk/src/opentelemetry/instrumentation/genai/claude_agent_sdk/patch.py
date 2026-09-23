@@ -12,14 +12,15 @@ boundaries:
 
 ``ClaudeSDKClient.query()`` is wrapped as well, but opens no span: it only
 writes a prompt to the CLI's stdin, and the invocation it starts is spanned by
-the receiving half. It is wrapped because it is the only place the client's
-prompt is in hand.
+the receiving half. It is wrapped to capture the prompt, which the receiving
+half never sees — the CLI does not echo a client-mode prompt back as a
+``UserMessage``. A prompt passed to ``connect()`` instead is written by the SDK
+itself and is not captured.
 
 ``ClaudeSDKClient.receive_response()`` is deliberately **not** wrapped. It is a
-convenience method whose whole body iterates ``receive_messages()`` and stops at
-the first result, so wrapping it as well would build the tree twice from the
-same messages — measured as two agent spans and two chat spans per turn, in
-separate traces. Wrapping the one primitive covers both callers.
+convenience method whose whole body iterates ``receive_messages()``, so wrapping
+it too would build the tree twice from the same messages. Wrapping the one
+primitive covers both callers.
 
 The root ``invoke_agent`` span is always named for the SDK itself, never for
 anything in ``options.agents``. The SDK documents that field as defining

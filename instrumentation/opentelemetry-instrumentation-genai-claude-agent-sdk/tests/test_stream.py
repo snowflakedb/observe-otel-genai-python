@@ -1371,9 +1371,13 @@ async def test_abandoned_stream_still_closes_its_spans(handler, span_exporter):
         stop_after=2,
     )
     spans = Spans(span_exporter)
-    assert spans.named("invoke_agent claude-agent-sdk")
     assert spans.named("execute_tool Bash")
     assert all(s.end_time is not None for s in spans.all)
+    # Abandoned before any result, so the run really is incomplete. What it must
+    # not be is the GeneratorExit that abandoning the generator throws in.
+    agent = spans.one("invoke_agent claude-agent-sdk")
+    assert agent.status.status_code is trace.StatusCode.ERROR
+    assert agent.attributes["error.type"] == "incomplete_stream"
 
 
 @pytest.mark.asyncio
@@ -2865,3 +2869,102 @@ async def test_options_env_clears_an_inherited_flag_with_an_empty_value(
         .attributes["gen_ai.provider.name"]
         == "anthropic"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_delegation_tool_named_agent_names_its_subagent(
+    capturing_handler, span_exporter
+):
+    """The CLI calls the delegation tool ``Agent``, not ``Task``.
+
+    Both names resolve a subagent_type, and every recorded session uses
+    ``Agent``, so the subagent takes its name from the input either way.
+    """
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(
+                    id="call-agent",
+                    name="Agent",
+                    input={
+                        "subagent_type": "researcher",
+                        "description": "dig through the ledger",
+                    },
+                ),
+                message_id="msg_1",
+            ),
+            assistant(
+                TextBlock("subagent working"),
+                parent="call-agent",
+                message_id="msg_sub",
+            ),
+            user(
+                ToolResultBlock(tool_use_id="call-agent", content="the report")
+            ),
+            result(model_usage=MODEL_USAGE),
+        ],
+    )
+    spans = Spans(span_exporter)
+    subagent = spans.one("invoke_agent researcher")
+    assert subagent.attributes["gen_ai.agent.name"] == "researcher"
+    # Nested under the Agent tool's span, not hung off the root.
+    assert (
+        subagent.parent.span_id
+        == spans.one("execute_tool Agent").context.span_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_caller_that_stops_reading_after_the_result_is_not_an_error(
+    handler, span_exporter
+):
+    """Abandoning the stream throws GeneratorExit in at the yield.
+
+    The caller walking away once they have their answer is not a failed run, so
+    it must not reach the handler that records a cancellation.
+    """
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result(model_usage=MODEL_USAGE)],
+        stop_after=3,
+    )
+    spans = Spans(span_exporter)
+    agent = spans.one("invoke_agent claude-agent-sdk")
+    assert agent.status.status_code is trace.StatusCode.UNSET
+    assert "error.type" not in agent.attributes
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_named_after_its_tool_span_closed_keeps_its_identity(
+    capturing_handler, span_exporter
+):
+    """A subagent reads its name and model from the Task call that launched it.
+
+    The CLI can name a subagent for the first time after that Task's own span
+    has closed, so the launch block has to outlive it.
+    """
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(
+                    id="cA",
+                    name="Agent",
+                    input={
+                        "subagent_type": "archivist",
+                        "model": "claude-opus-4",
+                    },
+                ),
+                message_id="msg_1",
+            ),
+            user(ToolResultBlock(tool_use_id="cA", content="done")),
+            # Only now does anything name the subagent.
+            assistant(TextBlock("late"), parent="cA", message_id="msg_sub"),
+            result(model_usage=MODEL_USAGE),
+        ],
+    )
+    subagent = Spans(span_exporter).one("invoke_agent archivist")
+    assert subagent.attributes["gen_ai.request.model"] == "claude-opus-4"

@@ -118,17 +118,13 @@ ATTR_CONVERSATION_COMPACTED = "gen_ai.conversation.compacted"
 
 _PROVIDER = GenAI.GenAiProviderNameValues
 
-# Routing env vars the CLI reads to pick a hosting platform, listed in the
-# order its own resolver checks them (read off CLI 2.1.220), mapped to the
-# semconv provider value. A hosting platform outranks the vendor it hosts, so a
-# Bedrock-served Claude model reports aws.bedrock. Mantle is a second Bedrock
-# endpoint, and the two "Claude Platform on <cloud>" flags reach Anthropic's own
-# API through a marketplace — the CLI groups both with its firstParty case — so
-# those stay anthropic.
+# Routing env vars the CLI reads to pick a hosting platform, in the order its own
+# resolver checks them (read off CLI 2.1.220) — the order decides the answer when
+# two are set. Mantle is a second Bedrock endpoint; the two "Claude Platform on
+# <cloud>" flags reach Anthropic's own API, which the CLI groups with firstParty.
 #
 # The CLI resolves a "gateway" provider ahead of all of these, but it keys off
-# session auth state rather than the environment, so it cannot be predicted from
-# here. Nothing in the convention describes a gateway either.
+# session auth state rather than the environment, so it cannot be seen from here.
 _PROVIDER_ENV: tuple[tuple[str, str], ...] = (
     ("CLAUDE_CODE_USE_BEDROCK", _PROVIDER.AWS_BEDROCK.value),
     ("CLAUDE_CODE_USE_FOUNDRY", _PROVIDER.AZURE_AI_INFERENCE.value),
@@ -156,12 +152,8 @@ _TERMINAL_TASK_STATUSES = frozenset(
 # session uses "Agent".
 _DELEGATION_TOOLS = frozenset({"Agent", "Task"})
 
-# How many messages of conversation a chat span replays as its input. Deliberately
-# a constant rather than an environment variable: the bound exists to keep one
-# span's attributes exportable, which is not a thing a deployment should have to
-# tune. Forty covers a long tool loop — one call and its result per step —
-# without letting a run's whole transcript land on every span in it. Raising it
-# trades trace bytes for conversation depth.
+# How many messages of conversation a chat span replays as its input. Bounded so
+# one span's attributes stay small enough for an exporter to accept.
 _MAX_HISTORY_MESSAGES = 40
 
 
@@ -182,9 +174,10 @@ def resolve_provider(sdk_options: ClaudeAgentOptions | None) -> str:
     they are documented in: two of them set together resolve to whichever comes
     first below, the same one the CLI would pick.
     """
-    options_env = getattr(sdk_options, "env", None)
-    if not isinstance(options_env, dict):
-        options_env = {}
+    raw_env: object = getattr(sdk_options, "env", None)
+    options_env: dict[str, object] = (
+        cast("dict[str, object]", raw_env) if isinstance(raw_env, dict) else {}
+    )
     for key, provider in _PROVIDER_ENV:
         value = options_env.get(key, os.environ.get(key))
         if value is not None and str(value).strip().lower() in _TRUTHY:
@@ -239,13 +232,13 @@ def _system_prompt_parts(
         return []
     preset = cast("SystemPromptPreset", prompt)
     parts: list[SystemInstructionPart] = []
-    if preset.get("preset"):
-        parts.append(
-            _SystemPromptSource(source="preset", name=preset["preset"])
-        )
+    preset_name = preset.get("preset")
+    if preset_name:
+        parts.append(_SystemPromptSource(source="preset", name=preset_name))
     # append is the caller's own text, bolted onto the preset.
-    if preset.get("append"):
-        parts.append(TextPart(content=preset["append"]))
+    append = preset.get("append")
+    if append:
+        parts.append(TextPart(content=append))
     return parts
 
 
@@ -312,6 +305,43 @@ class _Subagent:
     output: list[OutputMessage] = field(default_factory=list[OutputMessage])
 
 
+@dataclass
+class _ToolCall:
+    """Everything one ``tool_use_id`` accumulates, from launch to close.
+
+    The stream reports a call's fate across several messages that can arrive in
+    any order, so most fields start empty and are filled as it goes. An entry
+    exists as soon as a ``tool_use`` block is seen, which is before — and
+    sometimes without — a span ever opening for it.
+    """
+
+    # The span, while it is open. None once closed, and for a block that never
+    # opened one, so this is what "still running" is read from.
+    invocation: ToolInvocation | None = None
+    # The tool_use block. A delegation tool's subagent takes its name, model and
+    # prompt from here, so it outlives the tool's own span.
+    launch: object | None = None
+    # The subagent this call runs inside, if any. Lets a subtree be closed from
+    # the leaves up, so no child outlives its parent.
+    owner: str | None = None
+    # The CLI runs this call as a task and it has not reported finishing. While
+    # true, its tool_result is a receipt rather than a completion.
+    task_running: bool = False
+    # Its tool_result has already been spent as a receipt, so no later one is
+    # coming and whatever arrives next has to close the span.
+    receipt_spent: bool = False
+    # Close held for exactly one message, waiting for a task_notification that
+    # usually follows on the same millisecond. See _flush_task_closes.
+    close_queued: bool = False
+    # The terminal status a task_updated reported, kept until the span closes.
+    terminal_status: str | None = None
+    # The subagent this call launched, while its span is open.
+    subagent: _Subagent | None = None
+    # That subagent's span has ended. A later message naming it must not reopen
+    # the subtree.
+    subagent_finished: bool = False
+
+
 class AgentRun:
     """Turns one SDK message stream into spans.
 
@@ -347,31 +377,15 @@ class AgentRun:
         self._root_context: Context | None = None
         self._caller_context: Context = otel_context.get_current()
 
+        # Chat-span state per agent context, keyed by _MAIN or a subagent's
+        # parent_tool_use_id. A different keyspace from _calls: one agent context
+        # runs many tool calls.
         self._chats: dict[str, _ChatContext] = {}
-        self._tools: dict[str, ToolInvocation] = {}
-        self._subagents: dict[str, _Subagent] = {}
-        # tool_use_id -> the Task tool_use block that launched a subagent.
-        self._launches: dict[str, object] = {}
-        # tool_use_id -> the parent_tool_use_id of the subagent running it, so a
-        # subtree can be closed from the leaves up at teardown.
-        self._tool_owner: dict[str, str] = {}
-        # tool_use_ids the CLI runs as a task. Their tool_result cannot be
-        # trusted to mean the work finished.
-        self._task_tools: set[str] = set()
-        # tool_use_ids whose tool_result has already been skipped as a receipt,
-        # so no later message of that kind is coming for them.
-        self._task_receipts: set[str] = set()
-        # tool_use_ids whose span is waiting one message for a notification that
-        # may never come. See _flush_task_closes.
-        self._task_closing: set[str] = set()
+        # tool_use_id -> everything known about that call. One entry per call, so
+        # a handler cannot update half of its state.
+        self._calls: dict[str, _ToolCall] = {}
         # task_id -> tool_use_id, because task_updated carries only the task_id.
         self._task_ids: dict[str, str] = {}
-        # tool_use_id -> the terminal status a task_updated reported, so the
-        # status survives until whichever message actually closes the span.
-        self._task_terminal: dict[str, str] = {}
-        # parent_tool_use_ids whose subagent span has already ended. A message
-        # that arrives after it must not re-open the subtree.
-        self._finished_subagents: set[str] = set()
         # The caller has their answer, but background work is still running, so
         # the invocation is not over yet.
         self._end_pending = False
@@ -404,13 +418,19 @@ class AgentRun:
             async for message in stream:
                 self._observe(message)
                 yield message
-        except Exception as exc:
+        except GeneratorExit:
+            # The consumer stopped reading. That is their choice, not a failure
+            # of the run, so this falls through to _dispose like any other early
+            # exit. Ahead of BaseException, which would otherwise fail the span.
+            raise
+        except BaseException as exc:
+            # BaseException so a cancelled or interrupted run is recorded as
+            # such, rather than as a stream that stopped for no stated reason.
             self._guarded(self._fail_root, exc)
             raise
         finally:
             # Reached on a break, an abandoned generator, and on the way out of
-            # the transport exception above, which must stay the one that
-            # surfaces.
+            # the exceptions above, which must stay the ones that surface.
             self._guarded(self._dispose)
 
     def _observe(self, message: Any) -> None:
@@ -613,6 +633,16 @@ class AgentRun:
         else:
             invocation.stop()
 
+    # --- tool call state --------------------------------------------------
+
+    def _call(self, tool_use_id: str) -> _ToolCall:
+        """The state for this call, created empty on first mention."""
+        call = self._calls.get(tool_use_id)
+        if call is None:
+            call = _ToolCall()
+            self._calls[tool_use_id] = call
+        return call
+
     # --- subagents --------------------------------------------------------
 
     def _live_subagent(self, parent_tool_use_id: str) -> _Subagent | None:
@@ -623,7 +653,7 @@ class AgentRun:
         nothing is left to close, so callers hang late messages off the root
         instead.
         """
-        if parent_tool_use_id in self._finished_subagents:
+        if self._call(parent_tool_use_id).subagent_finished:
             return None
         return self._subagent(parent_tool_use_id)
 
@@ -635,15 +665,15 @@ class AgentRun:
         because a Task tool's real completion cannot arrive before the subagent
         has spoken.
         """
-        existing = self._subagents.get(parent_tool_use_id)
-        if existing is not None:
-            return existing
+        call = self._call(parent_tool_use_id)
+        if call.subagent is not None:
+            return call.subagent
 
-        launch = self._launches.get(parent_tool_use_id)
+        launch = call.launch
         launch_name = getattr(launch, "name", None)
-        # Only the delegation tool's input follows TaskToolInput. _launches holds
-        # every tool_use block, so reading an arbitrary tool's arguments as one
-        # picks up any unrelated argument named "model" and writes it to
+        # Only the delegation tool's input follows TaskToolInput. Every tool_use
+        # block gets a launch recorded, so reading an arbitrary tool's arguments
+        # as one picks up any unrelated argument named "model" and writes it to
         # gen_ai.request.model, which is always emitted and is a metric dimension
         # besides.
         tool_input = cast(
@@ -658,7 +688,7 @@ class AgentRun:
             or launch_name
             or "subagent"
         )
-        parent_tool = self._tools.get(parent_tool_use_id)
+        parent_tool = call.invocation
         parent_context = (
             parent_tool.context
             if parent_tool is not None
@@ -686,15 +716,17 @@ class AgentRun:
                 ]
 
         entry = _Subagent(invocation=invocation)
-        self._subagents[parent_tool_use_id] = entry
+        call.subagent = entry
         return entry
 
     def _finish_subagent(self, tool_use_id: str) -> None:
         """End a subagent span once the Task tool that spawned it has returned."""
-        entry = self._subagents.pop(tool_use_id, None)
-        if entry is None:
+        call = self._calls.get(tool_use_id)
+        entry = call.subagent if call is not None else None
+        if call is None or entry is None:
             return
-        self._finished_subagents.add(tool_use_id)
+        call.subagent = None
+        call.subagent_finished = True
         ctx = self._chats.pop(tool_use_id, None)
         if ctx is not None:
             self._close_chat(ctx)
@@ -706,18 +738,20 @@ class AgentRun:
 
     def _open_tool(self, block: Any, parent_tool_use_id: str | None) -> None:
         tool_call_id = getattr(block, "id", None)
-        if not tool_call_id or tool_call_id in self._tools:
+        if not tool_call_id:
+            return
+        call = self._call(tool_call_id)
+        if call.invocation is not None:
             return
         name = getattr(block, "name", None) or "unknown_tool"
 
-        subagent = (
-            self._subagents.get(parent_tool_use_id)
-            if parent_tool_use_id
-            else None
+        parent_call = (
+            self._calls.get(parent_tool_use_id) if parent_tool_use_id else None
         )
+        subagent = parent_call.subagent if parent_call is not None else None
         if subagent is not None and parent_tool_use_id:
             parent_context = subagent.invocation.context
-            self._tool_owner[tool_call_id] = parent_tool_use_id
+            call.owner = parent_tool_use_id
         else:
             parent_context = self._root_ctx()
 
@@ -740,7 +774,7 @@ class AgentRun:
             )
         if invocation.should_capture_content:
             invocation.arguments = getattr(block, "input", None)
-        self._tools[tool_call_id] = invocation
+        call.invocation = invocation
 
     def _close_tool(
         self,
@@ -753,10 +787,17 @@ class AgentRun:
         # A Task tool owns a nested subagent span. End the child first: a child
         # outliving its parent renders as a bar sticking out past it.
         self._finish_subagent(tool_call_id)
-        invocation = self._tools.pop(tool_call_id, None)
-        status = self._task_terminal.pop(tool_call_id, None)
-        self._task_receipts.discard(tool_call_id)
-        self._task_closing.discard(tool_call_id)
+        call = self._calls.get(tool_call_id)
+        if call is None:
+            self._maybe_end_root()
+            return
+        # launch and owner deliberately survive: a subagent still reads its
+        # identity from the launch, and teardown walks the owner chain to order
+        # closes, both after this span has gone.
+        invocation, call.invocation = call.invocation, None
+        status, call.terminal_status = call.terminal_status, None
+        call.receipt_spent = False
+        call.close_queued = False
         if invocation is None:
             self._maybe_end_root()
             return
@@ -814,7 +855,7 @@ class AgentRun:
         in the background.
         """
         if msg.tool_use_id:
-            self._task_tools.add(msg.tool_use_id)
+            self._call(msg.tool_use_id).task_running = True
             self._task_ids[msg.task_id] = msg.tool_use_id
 
     def _on_task_notification(self, msg: Any) -> None:
@@ -823,7 +864,7 @@ class AgentRun:
         tool_use_id = msg.tool_use_id or self._task_ids.get(msg.task_id)
         if not tool_use_id:
             return
-        self._task_tools.discard(tool_use_id)
+        self._call(tool_use_id).task_running = False
         self._task_ids.pop(msg.task_id, None)
         failed = (
             msg.status in _TERMINAL_TASK_STATUSES and msg.status != "completed"
@@ -858,10 +899,11 @@ class AgentRun:
         tool_use_id = self._task_ids.get(msg.task_id)
         if not tool_use_id:
             return
-        self._task_tools.discard(tool_use_id)
-        self._task_terminal[tool_use_id] = status
-        if tool_use_id in self._task_receipts:
-            self._task_closing.add(tool_use_id)
+        call = self._call(tool_use_id)
+        call.task_running = False
+        call.terminal_status = status
+        if call.receipt_spent:
+            call.close_queued = True
             return
         self._maybe_end_root()
 
@@ -874,10 +916,11 @@ class AgentRun:
         follows on the same millisecond still gets to supply the real output. If
         the next message is anything else, no notification is coming.
         """
-        if not self._task_closing or isinstance(msg, notification_type):
+        if isinstance(msg, notification_type):
             return
-        for tool_use_id in list(self._task_closing):
-            self._close_tool(tool_use_id)
+        for tool_use_id, call in list(self._calls.items()):
+            if call.close_queued:
+                self._close_tool(tool_use_id)
 
     def _on_assistant(self, msg: Any) -> None:
         parent = msg.parent_tool_use_id
@@ -891,7 +934,7 @@ class AgentRun:
         for block in blocks:
             block_id = getattr(block, "id", None)
             if block_id and getattr(block, "name", None) is not None:
-                self._launches[block_id] = block
+                self._call(block_id).launch = block
 
         ctx = self._chat_context(parent)
 
@@ -920,8 +963,13 @@ class AgentRun:
             self._remember(
                 ctx, [InputMessage(role="assistant", parts=message.parts)]
             )
-            if parent and parent in self._subagents:
-                self._subagents[parent].output.append(message)
+            if parent:
+                parent_call = self._calls.get(parent)
+                if (
+                    parent_call is not None
+                    and parent_call.subagent is not None
+                ):
+                    parent_call.subagent.output.append(message)
 
     def _on_user(self, msg: Any) -> None:
         parent = msg.parent_tool_use_id
@@ -943,8 +991,9 @@ class AgentRun:
             if not tool_use_id:
                 continue
             # A task waits for its notification; this may only be a receipt.
-            if tool_use_id in self._task_tools:
-                self._task_receipts.add(tool_use_id)
+            call = self._calls.get(tool_use_id)
+            if call is not None and call.task_running:
+                call.receipt_spent = True
                 continue
             self._close_tool(
                 tool_use_id,
@@ -1006,13 +1055,10 @@ class AgentRun:
         event = cast("StreamEventPayload", msg.event or {})
         event_type = event.get("type")
 
-        # message_start opens a call on the wire, and it is the first thing sent
-        # for it. Measured on CLI 2.1.220, the assistant message carrying the
-        # same message_id follows 502ms to 1751ms later, once a whole content
-        # block has been produced, with 21 to 35 content_block_delta events in
-        # between. Opening on the assistant message dropped all of those, so
-        # every chat span understated its duration and time_to_first_chunk timed
-        # the gap to the *second* chunk group instead.
+        # message_start is the first thing sent for a call. The assistant message
+        # carrying the same message_id follows up to ~1.8s later (CLI 2.1.220),
+        # with dozens of content_block_delta events in between, so the span has
+        # to open here to cover them.
         if event_type == "message_start":
             self._on_message_start(msg, event)
             return
@@ -1141,17 +1187,25 @@ class AgentRun:
         a finished task produces carries ``origin.kind == "task-notification"``
         and so is not one that answers the caller.
         """
-        if self._end_pending and not (self._task_tools or self._subagents):
+        if self._end_pending and not self._work_outstanding():
             self._end_root()
+
+    def _work_outstanding(self) -> bool:
+        """Whether anything is still running for this invocation."""
+        return any(
+            call.task_running or call.subagent is not None
+            for call in self._calls.values()
+        )
 
     def _teardown_reason(self, tool_use_id: str) -> str | None:
         """Why a tool still open when the stream ended is a failure, if it is."""
-        status = self._task_terminal.get(tool_use_id)
+        call = self._call(tool_use_id)
+        status = call.terminal_status
         if status == "completed":
             return None
         if status is not None:
             return f"task {status}"
-        if tool_use_id in self._task_tools:
+        if call.task_running:
             # Still running in the background when the stream ended. Work that
             # never reported is not work that failed.
             return None
@@ -1166,11 +1220,12 @@ class AgentRun:
         """
         seen = {tool_use_id}
         depth = 0
-        owner = self._tool_owner.get(tool_use_id)
+        owner = self._call(tool_use_id).owner
         while owner is not None and owner not in seen:
             seen.add(owner)
             depth += 1
-            owner = self._tool_owner.get(owner)
+            next_call = self._calls.get(owner)
+            owner = next_call.owner if next_call is not None else None
         return depth
 
     def _end_root(self) -> None:
@@ -1187,8 +1242,13 @@ class AgentRun:
         # Re-entrant: closing a tool asks whether the invocation can now end.
         self._end_pending = False
         try:
+            open_tools = [
+                tool_use_id
+                for tool_use_id, call in self._calls.items()
+                if call.invocation is not None
+            ]
             for tool_use_id in sorted(
-                self._tools, key=self._depth, reverse=True
+                open_tools, key=self._depth, reverse=True
             ):
                 self._guarded(
                     self._close_tool,
@@ -1196,19 +1256,14 @@ class AgentRun:
                     None,
                     self._teardown_reason(tool_use_id),
                 )
-            for tool_use_id in list(self._subagents):
-                self._guarded(self._finish_subagent, tool_use_id)
+            for tool_use_id, call in list(self._calls.items()):
+                if call.subagent is not None:
+                    self._guarded(self._finish_subagent, tool_use_id)
             for ctx in list(self._chats.values()):
                 self._guarded(self._close_chat, ctx)
             self._chats.clear()
-            self._launches.clear()
-            self._tool_owner.clear()
-            self._task_tools.clear()
-            self._task_receipts.clear()
-            self._task_closing.clear()
+            self._calls.clear()
             self._task_ids.clear()
-            self._task_terminal.clear()
-            self._finished_subagents.clear()
             # Where the next turn's cumulative counters are measured from.
             self._usage_baseline = cast(
                 "UsageTotals", dict(self._usage_totals)

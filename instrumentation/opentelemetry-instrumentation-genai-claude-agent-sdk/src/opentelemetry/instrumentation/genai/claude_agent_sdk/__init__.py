@@ -164,10 +164,9 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
         from claude_agent_sdk import client as client_module
 
         # instrument() flips _is_instrumented_by_opentelemetry only once this
-        # returns, so a wrapper left behind by a failure part-way through could
+        # returns, so a wrapper left behind by a failure part-way through can
         # never be removed: uninstrument() declines as "already uninstrumented"
-        # while a retry is let through and wraps the wrapper, which produced two
-        # invoke_agent spans in two traces for one query() call.
+        # while a retry is let through and wraps the wrapper. Hence the unwind.
         installed: list[tuple[Any, str]] = []
         try:
             # ``claude_agent_sdk.query`` is both a submodule and the function
