@@ -1,7 +1,15 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the ClaudeAgentSDKInstrumentor class."""
+"""Tests for the ClaudeAgentSDKInstrumentor class.
+
+Every test that instruments takes ``uninstrument_claude_agent_sdk``. The
+instrumentor is a singleton and these tests call instrument()/uninstrument() as
+bare statements, so without the guard an assertion failure in between would
+leave the SDK wrapped around a handler bound to a shut-down TracerProvider for
+the rest of the session — which test_patching.py, going through the patched
+entry points, would then be running against.
+"""
 
 from opentelemetry.instrumentation.genai.claude_agent_sdk import (
     ClaudeAgentSDKInstrumentor,
@@ -26,7 +34,10 @@ def test_instrumentation_dependencies():
 
 
 def test_instrument_uninstrument_cycle(
-    tracer_provider, logger_provider, meter_provider
+    tracer_provider,
+    logger_provider,
+    meter_provider,
+    uninstrument_claude_agent_sdk,
 ):
     """Test that instrument() and uninstrument() can be called multiple times."""
     instrumentor = ClaudeAgentSDKInstrumentor()
@@ -53,7 +64,10 @@ def test_instrument_uninstrument_cycle(
 
 
 def test_multiple_instrumentation_calls(
-    tracer_provider, logger_provider, meter_provider
+    tracer_provider,
+    logger_provider,
+    meter_provider,
+    uninstrument_claude_agent_sdk,
 ):
     """Test that multiple instrument() calls don't cause issues."""
     instrumentor = ClaudeAgentSDKInstrumentor()
@@ -84,7 +98,7 @@ def test_uninstrument_without_instrument():
     instrumentor.uninstrument()
 
 
-def test_instrument_with_no_providers():
+def test_instrument_with_no_providers(uninstrument_claude_agent_sdk):
     """Test that instrument() works without explicit providers."""
     instrumentor = ClaudeAgentSDKInstrumentor()
 

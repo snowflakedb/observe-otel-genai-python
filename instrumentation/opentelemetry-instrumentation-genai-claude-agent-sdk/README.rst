@@ -8,8 +8,10 @@ emits `OpenTelemetry GenAI semantic conventions
 
 It is Observe's replacement for upstream's
 ``opentelemetry-instrumentation-genai-claude-agent-sdk``, not an addition to it.
-Installing both leaves two instrumentors registered for the same framework, and
-every span is emitted twice. Uninstall the upstream package first.
+The two distributions install to the same paths, so an environment holding both
+gets a per-file mix of them and uninstalling either one breaks the other.
+Uninstall the upstream package first. The `repository README <../../README.md>`_
+describes what a mixed install actually does.
 
 Installation
 ------------
@@ -51,6 +53,7 @@ Check out the `manual example <examples/manual>`_ for more details.
                     model="sonnet",
                 ),
             },
+            include_partial_messages=True,
         )
 
         async for message in query(
@@ -78,6 +81,50 @@ environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to o
 ::
 
     export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_AND_EVENT
+
+Any other value is rejected with a warning and falls back to ``NO_CONTENT``.
+
+Naming the Agent
+****************
+
+The root ``invoke_agent`` span is named ``claude-agent-sdk``. To name it after
+the calling application instead:
+
+.. code-block:: python
+
+    ClaudeAgentSDKInstrumentor().instrument(agent_name="support-triage")
+
+Subagents declared in ``options.agents`` do not name it. They are delegation
+targets, and each gets its own nested ``invoke_agent`` span when the Agent tool
+reaches it.
+
+Claude Agent SDK Options
+************************
+
+Two ``ClaudeAgentOptions`` fields change how much of a run the instrumentation
+can see. Neither is set on your behalf, because both change what your own
+message loop receives.
+
+``include_partial_messages=True`` makes the CLI forward stream events, which is
+what the ``chat`` spans need to report a call's final token counts and stop
+reason. Without it, those spans carry the mid-stream usage snapshot instead —
+an undercount, marked on the span so a consumer can tell the difference — and
+no ``gen_ai.client.operation.time_to_first_chunk`` or
+``gen_ai.client.operation.time_per_output_chunk`` timings are recorded. The run
+totals on the ``invoke_agent`` span are accurate either way. Turning it on adds
+``StreamEvent`` messages to the stream your loop iterates.
+
+``forward_subagent_text=True`` makes the CLI forward the text and thinking
+blocks of a subagent spawned through the Agent tool. By default it forwards
+only that subagent's ``tool_use`` and ``tool_result`` blocks, which is enough
+for a progress heartbeat: the delegation still gets its own nested
+``invoke_agent`` span, but the content recorded on it is thin, and empty if the
+subagent never called a tool. Either way the forwarded messages arrive as
+``AssistantMessage`` / ``UserMessage`` objects whose ``parent_tool_use_id`` is
+the spawning Agent ``tool_use`` id, so turning the option on adds the
+subagent's own text to your loop. It requires ``claude-agent-sdk >= 0.2.148``,
+above this package's declared minimum of 0.2.137, so guard the option if you
+support that whole range.
 
 
 References

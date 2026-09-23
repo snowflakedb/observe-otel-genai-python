@@ -1,0 +1,5 @@
+Resolve the routing flags behind `gen_ai.provider.name` the way the CLI does,
+merging `options.env` over the ambient environment one key at a time. The
+previous code swapped in `options.env` whenever it was a dict, and since it
+defaults to an empty one, every run that passed `ClaudeAgentOptions` reported
+`anthropic` regardless of Bedrock, Vertex or Foundry routing.

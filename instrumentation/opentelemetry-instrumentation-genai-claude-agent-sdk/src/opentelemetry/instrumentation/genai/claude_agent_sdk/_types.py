@@ -40,10 +40,23 @@ class MessageDelta(TypedDict, total=False):
     stop_reason: str
 
 
+class MessageStart(TypedDict, total=False):
+    """``message_start``'s ``message`` — the response envelope, no content yet.
+
+    Where an API call's identity first appears on the wire: the CLI sends this
+    before any assistant message, so it is what ``message_id`` a call is keyed
+    by and what model answered are both read from.
+    """
+
+    id: str
+    model: str
+
+
 class StreamEventPayload(TypedDict, total=False):
     """``StreamEvent.event`` — one raw Anthropic streaming event."""
 
     type: str
+    message: MessageStart
     usage: Usage
     delta: MessageDelta
 

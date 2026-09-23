@@ -79,3 +79,6 @@ MIGRATION_REPORT.md
 # dev sample projects
 dev/uv.lock
 
+# Example apps: .env.example is tracked, the .env you copy it to holds your key
+.env
+

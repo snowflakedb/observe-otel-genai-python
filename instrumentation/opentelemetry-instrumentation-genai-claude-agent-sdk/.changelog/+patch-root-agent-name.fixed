@@ -1,0 +1,7 @@
+Name the root `invoke_agent` span for the SDK rather than for a subagent the
+caller declared. `options.agents` defines, in the SDK's own words, "custom
+subagents invokable via the Agent tool" — delegation targets, not the agent
+being invoked — so with one declared the root took its name while the Task call
+that reached it opened a nested span under the same name, and declaring a second
+silently renamed the root back. Both shapes broke anything keyed on the span
+name, and the package's own usage example declares exactly one agent.

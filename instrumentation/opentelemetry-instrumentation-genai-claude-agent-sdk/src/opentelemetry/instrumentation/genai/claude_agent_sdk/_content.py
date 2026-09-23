@@ -6,6 +6,12 @@
 The SDK hands back its own block dataclasses. util-genai owns the serialized
 shape of ``gen_ai.input.messages`` / ``gen_ai.output.messages``, so blocks are
 translated into its part types and never into hand-built dicts.
+
+Blocks are matched on the attributes they carry rather than by importing the
+SDK's classes, which keeps this module independent of the SDK version. It does
+not, however, make a block type from a newer SDK survive the trip: the SDK's own
+parser is a ``match`` with no default case, so a type it does not know is
+discarded before it reaches here.
 """
 
 from __future__ import annotations
@@ -29,23 +35,26 @@ from opentelemetry.util.genai.types import (
 def block_to_parts(block: Any) -> list[MessagePart]:
     """Translate one SDK content block into zero or more message parts.
 
-    Blocks are matched on the attributes they carry rather than by importing the
-    SDK's classes, so a block type added by a newer SDK degrades to a
-    ``GenericPart`` instead of being dropped or raising.
+    An empty block still produces a part. A turn whose only block is an empty
+    TextBlock, or a ThinkingBlock the model signed but left blank, is a turn that
+    happened: dropping it took the whole message out of ``gen_ai.output.messages``
+    and out of the replayed history, leaving a gap in the conversation.
     """
     text = getattr(block, "text", None)
     if isinstance(text, str):
-        return [TextPart(content=text)] if text else []
+        return [TextPart(content=text)]
 
     thinking = getattr(block, "thinking", None)
     if isinstance(thinking, str):
-        return [ReasoningPart(content=thinking)] if thinking else []
+        return [ReasoningPart(content=thinking)]
 
     tool_use_id = getattr(block, "tool_use_id", None)
     if isinstance(tool_use_id, str):
         content = getattr(block, "content", None)
         # A server tool's result content is a raw dict; a regular tool's is text
-        # or a list of blocks.
+        # or a list of blocks. Note this test, not _is_server_tool, is what
+        # routes a result block, so a future server-result block carrying string
+        # content would be filed as a regular tool response.
         if isinstance(content, dict):
             return [
                 ServerToolCallResponsePart(
@@ -68,7 +77,20 @@ def block_to_parts(block: Any) -> list[MessagePart]:
             ToolCallRequestPart(arguments=tool_input, name=name, id=block_id)
         ]
 
-    return [GenericPart(type=type(block).__name__)]
+    return [GenericPart(type=_content_type(block))]
+
+
+def _content_type(block: Any) -> str:
+    """The schema's content-type discriminator for a block we cannot map.
+
+    ``ToolResultBlock`` is a Python class name; ``tool_result`` is what the part
+    schema expects, and what the wire calls it.
+    """
+    name = type(block).__name__.removesuffix("Block")
+    return "".join(
+        f"_{c.lower()}" if c.isupper() and i else c.lower()
+        for i, c in enumerate(name)
+    )
 
 
 def _is_server_tool(block: Any) -> bool:
@@ -76,7 +98,8 @@ def _is_server_tool(block: Any) -> bool:
 
     Server tool calls never come back to the caller for a result, so they are
     not tool executions we can span. Recognized by class name because the block
-    otherwise looks identical to a regular tool_use.
+    otherwise looks identical to a regular tool_use. Only the *call* side reaches
+    this: a server tool's result is routed by its dict content instead.
     """
     return type(block).__name__.startswith("ServerTool")
 
@@ -110,9 +133,24 @@ def parts_of(blocks: list[Any]) -> list[MessagePart]:
     return parts
 
 
-def input_message(blocks: list[Any], role: str) -> InputMessage | None:
-    parts = parts_of(blocks)
-    return InputMessage(role=role, parts=parts) if parts else None
+def input_messages(blocks: list[Any]) -> list[InputMessage]:
+    """Split one user turn into the messages it really contains.
+
+    A turn carrying both a tool_result and text is two things: the tool's
+    response, and the user speaking. Folded into one message, whichever role lost
+    the coin toss was wrong — the text ended up with role ``tool``.
+    """
+    messages: list[InputMessage] = []
+    for block in blocks:
+        role = "tool" if getattr(block, "tool_use_id", None) else "user"
+        parts = block_to_parts(block)
+        if not parts:
+            continue
+        if messages and messages[-1].role == role:
+            messages[-1].parts.extend(parts)
+        else:
+            messages.append(InputMessage(role=role, parts=parts))
+    return messages
 
 
 def output_message(

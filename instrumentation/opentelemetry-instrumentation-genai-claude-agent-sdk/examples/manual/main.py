@@ -86,6 +86,9 @@ async def code_reviewer_example():
                 model="sonnet",
             ),
         },
+        # Lets the instrumentation report each model call's final token counts,
+        # stop reason and streaming timings. See this example's README.
+        include_partial_messages=True,
     )
 
     async for message in query(
@@ -122,6 +125,7 @@ async def documentation_writer_example():
                 model="sonnet",
             ),
         },
+        include_partial_messages=True,
     )
 
     async for message in query(

@@ -1,0 +1,8 @@
+Report `gen_ai.input.messages` for `ClaudeSDKClient` sessions. The client splits
+sending from receiving — the caller awaits `query()` and then iterates
+`receive_response()` — and only the receiving half was wrapped, so the prompt
+was never in hand: both the `invoke_agent` and the `chat` span went out without
+their input, on every multi-turn conversation. The usual fallback of recovering
+it from the stream does not apply either, because in client mode the CLI emits
+no `UserMessage`. The caller's `session_id` is now reported as the conversation
+id as well, unless it is the SDK's own `"default"` placeholder.

@@ -1,0 +1,7 @@
+Keep reporting a compacted conversation after the turn that compacted it. The
+flag was reset when an agent invocation ended, so in multi-turn mode a compaction
+in turn one stopped being reported from turn two on, even though every later turn
+is still working from the compacted context. Only a conversation reset clears it
+now, since that replaces the transcript with an empty one. The key the agent span
+writes by hand, which `LocalAgentInvocation` has no field for, is a named constant
+so it cannot drift from the one util-genai writes on chat spans.

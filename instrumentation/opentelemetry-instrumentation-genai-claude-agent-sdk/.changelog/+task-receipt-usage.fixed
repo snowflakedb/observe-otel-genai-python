@@ -1,0 +1,4 @@
+Hold a `chat` span open for its `message_delta` when a Task launch receipt
+arrives first, so the delegating call reports its real token counts instead of
+the mid-stream snapshot. Measured against a recorded CLI session, the affected
+span reported 6 output tokens against a real 255.

@@ -1,0 +1,8 @@
+Unwind every patch already installed when `instrument()` fails part-way through,
+which it does against an SDK that renames or relocates one of the wrapped
+methods. `instrument()` marks the instrumentor as instrumented only once
+patching has finished, so the wrappers that did install were stranded —
+`uninstrument()` declined as already uninstrumented — while a retry was let
+through and wrapped the wrapper. Measured against a relocated
+`receive_messages`, one `query()` call then produced two `invoke_agent` spans in
+two separate traces.

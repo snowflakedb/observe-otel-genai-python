@@ -1,0 +1,9 @@
+Bound the conversation replayed as each `chat` span's input. Each API call's input
+really is the whole accumulated conversation, but it is re-serialized onto every
+span, so a 40-step tool loop with 5 KB tool results put megabytes of
+`gen_ai.input.messages` on one trace and an exporter truncated the attribute
+without saying so. The most recent 40 messages are kept, which covers a long tool
+loop at one call and one result per step. The turns before a `compact_boundary` are
+dropped as well, since the model no longer sees them; the summary the CLI put in
+their place does not reach this process, so the recorded input now understates the
+real one rather than overstating it.

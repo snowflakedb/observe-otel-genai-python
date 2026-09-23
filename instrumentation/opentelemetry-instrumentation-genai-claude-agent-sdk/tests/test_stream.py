@@ -17,13 +17,18 @@ from typing import Any
 import pytest
 from claude_agent_sdk.types import (
     AssistantMessage,
+    ClaudeAgentOptions,
+    ConversationResetMessage,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     StreamEvent,
     SystemMessage,
     TaskNotificationMessage,
     TaskStartedMessage,
     TaskUpdatedMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -33,8 +38,10 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.instrumentation.genai.claude_agent_sdk._run import AgentRun
 from opentelemetry.util.genai.handler import TelemetryHandler
+from opentelemetry.util.genai.invocation import ToolInvocation
 
 SESSION = "session-abc"
+NEW_CONVERSATION = "conversation-def"
 
 
 # ─── builders ───────────────────────────────────────────────────────────────
@@ -94,6 +101,29 @@ def delta(
     )
 
 
+def message_start(
+    *,
+    message_id: str = "msg_1",
+    model: str = "claude-sonnet-4-5",
+    parent: str | None = None,
+) -> StreamEvent:
+    return StreamEvent(
+        uuid="u",
+        session_id=SESSION,
+        parent_tool_use_id=parent,
+        event={
+            "type": "message_start",
+            "message": {
+                "type": "message",
+                "id": message_id,
+                "model": model,
+                "role": "assistant",
+                "content": [],
+            },
+        },
+    )
+
+
 def chunk(parent: str | None = None) -> StreamEvent:
     return StreamEvent(
         uuid="u",
@@ -149,6 +179,14 @@ def task_updated(
         status=status,
         session_id=SESSION,
         uuid="u",
+    )
+
+
+def conversation_reset(
+    new_conversation_id: str = NEW_CONVERSATION,
+) -> ConversationResetMessage:
+    return ConversationResetMessage(
+        new_conversation_id=new_conversation_id, uuid="u", session_id=SESSION
     )
 
 
@@ -218,6 +256,18 @@ async def drive(
         # loop finalizes it later. Do it now so the test is deterministic.
         await messages_out.aclose()
     return seen
+
+
+def metric_points(metric_reader: Any, name: str) -> list[Any]:
+    data = metric_reader.get_metrics_data()
+    return [
+        point
+        for resource in (data.resource_metrics if data else [])
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if metric.name == name
+        for point in metric.data.data_points
+    ]
 
 
 class Spans:
@@ -295,6 +345,8 @@ async def test_single_call_tree(handler, span_exporter):
 
     assert spans.parent_name(chat) == agent.name
     assert agent.parent is None
+    # A stray span under a name no assertion queries is otherwise invisible.
+    assert len(spans.all) == 2
     assert chat.attributes["gen_ai.operation.name"] == "chat"
     assert agent.attributes["gen_ai.operation.name"] == "invoke_agent"
     # Conversation id threads the Conversations view and is required on every span.
@@ -308,7 +360,9 @@ async def test_single_call_tree(handler, span_exporter):
     # Run totals fold the cache counters into input_tokens.
     assert agent.attributes["gen_ai.usage.input_tokens"] == 1070
     assert agent.attributes["gen_ai.usage.output_tokens"] == 200
-    assert agent.attributes["gen_ai.usage.cost_usd"] == pytest.approx(0.012)
+    assert agent.attributes[
+        "claude_agent_sdk.usage.cost_usd"
+    ] == pytest.approx(0.012)
 
 
 @pytest.mark.asyncio
@@ -316,6 +370,8 @@ async def test_all_messages_pass_through_unchanged(handler, span_exporter):
     messages = [init(), assistant(TextBlock("hello")), result()]
     seen = await drive(handler, messages)
     assert seen == messages
+    # Messages flowing is half of it; the run has to have been observed too.
+    assert Spans(span_exporter).named("invoke_agent claude-agent-sdk")
 
 
 @pytest.mark.asyncio
@@ -337,6 +393,7 @@ async def test_tool_loop_children_are_siblings(handler, span_exporter):
     chats = spans.named("chat claude-sonnet-4-5")
 
     assert len(chats) == 2, "one chat span per API call"
+    assert len(spans.all) == 4
     assert {c.attributes["gen_ai.response.id"] for c in chats} == {
         "msg_1",
         "msg_2",
@@ -516,6 +573,88 @@ async def test_terminal_task_updated_does_not_pre_empt_the_notification(
 
 
 @pytest.mark.asyncio
+async def test_terminal_task_updated_closes_a_task_whose_receipt_has_passed(
+    handler, span_exporter
+):
+    """The ordering the receipt rule assumes is the reverse of the live one.
+
+    Measured in a recorded session the receipt lands at 9.7s and the terminal
+    update at 36.4s, so "whichever signal arrives next closes the span" leaves
+    nothing to arrive. With the notification suppressed — which the SDK
+    documents — the span leaked to teardown and closed after the next two chat
+    spans with no status.
+    """
+    task = ToolUseBlock(
+        id="t1", name="Task", input={"subagent_type": "helper"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("t1"),
+            user(
+                ToolResultBlock(
+                    tool_use_id="t1",
+                    content="Async agent launched successfully.",
+                )
+            ),
+            task_updated(status="completed"),
+            assistant(TextBlock("moving on"), message_id="m2"),
+            assistant(TextBlock("and done"), message_id="m3"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    tool = spans.one("execute_tool Task")
+    later = [
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] in {"m2", "m3"}
+    ]
+    assert len(later) == 2
+    assert tool.status.status_code is trace.StatusCode.UNSET
+    assert all(tool.end_time < c.start_time for c in later)
+
+
+@pytest.mark.asyncio
+async def test_a_spent_receipt_still_waits_one_message_for_the_notification(
+    capturing_handler, span_exporter
+):
+    """The live ordering for a task that completes normally.
+
+    Across nine recorded sessions the notification carrying the real output
+    followed the terminal update on the same millisecond, long after the
+    receipt. Closing on the update would drop that output — measured against a
+    recorded session, the span lost a 1.8 KB report.
+    """
+    task = ToolUseBlock(
+        id="t1", name="Task", input={"subagent_type": "helper"}
+    )
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("t1"),
+            user(
+                ToolResultBlock(
+                    tool_use_id="t1",
+                    content="Async agent launched successfully.",
+                )
+            ),
+            task_updated(status="completed"),
+            task_notification("t1", summary="the real report"),
+            assistant(TextBlock("moving on"), message_id="m2"),
+            result(),
+        ],
+    )
+    tool = Spans(span_exporter).one("execute_tool Task")
+    assert tool.attributes["gen_ai.tool.call.result"] == "the real report"
+    assert tool.status.status_code is trace.StatusCode.UNSET
+
+
+@pytest.mark.asyncio
 async def test_killed_task_closes_without_a_notification(
     handler, span_exporter
 ):
@@ -618,7 +757,7 @@ async def test_message_delta_supplies_the_calls_final_usage(
     chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
     assert chat.attributes["gen_ai.usage.output_tokens"] == 181
     assert chat.attributes["gen_ai.usage.input_tokens"] == 100
-    assert "genai.usage.is_partial" not in chat.attributes
+    assert "claude_agent_sdk.usage.is_partial" not in chat.attributes
     assert chat.attributes["gen_ai.response.finish_reasons"] == ("end_turn",)
 
 
@@ -636,8 +775,187 @@ async def test_snapshot_only_usage_is_flagged_partial(handler, span_exporter):
         ],
     )
     chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
-    assert chat.attributes["genai.usage.is_partial"] is True
+    assert chat.attributes["claude_agent_sdk.usage.is_partial"] is True
     assert chat.attributes["gen_ai.usage.output_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_sparse_message_delta_keeps_the_snapshots_input_counts(
+    handler, span_exporter, metric_reader
+):
+    """Only output_tokens is guaranteed on a message_delta.
+
+    Every delta in the recorded sessions happens to carry all five counters, so
+    taking the delta wholesale looked safe; on one that carries only the field
+    the API promises, it discarded 42,500 input tokens and both cache counters,
+    and recorded a zero input observation on the token histogram.
+    """
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                TextBlock("hi"),
+                usage={
+                    "input_tokens": 12000,
+                    "cache_read_input_tokens": 30000,
+                    "cache_creation_input_tokens": 500,
+                    "output_tokens": 1,
+                },
+            ),
+            StreamEvent(
+                uuid="u",
+                session_id=SESSION,
+                event={
+                    "type": "message_delta",
+                    "usage": {"output_tokens": 812},
+                    "delta": {"stop_reason": "end_turn"},
+                },
+            ),
+            result(),
+        ],
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert chat.attributes["gen_ai.usage.output_tokens"] == 812
+    assert chat.attributes["gen_ai.usage.input_tokens"] == 42500
+    assert chat.attributes["gen_ai.usage.cache_read.input_tokens"] == 30000
+    assert chat.attributes["gen_ai.usage.cache_write.input_tokens"] == 500
+    inputs = [
+        point
+        for point in metric_points(metric_reader, "gen_ai.client.token.usage")
+        if point.attributes.get("gen_ai.token.type") == "input"
+    ]
+    assert [point.sum for point in inputs] == [42500]
+
+
+@pytest.mark.asyncio
+async def test_task_receipt_does_not_pre_empt_the_calls_final_usage(
+    handler, span_exporter
+):
+    """The CLI injects a Task launch receipt ahead of the message_delta.
+
+    Measured on CLI 2.1.220: the receipt and `message_stop` land on the same
+    tick, the receipt first. Closing the chat on it would settle for the
+    mid-stream snapshot — 6 output tokens against a real 255.
+    """
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "general-purpose"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                task,
+                message_id="msg_1",
+                usage={"input_tokens": 100, "output_tokens": 6},
+            ),
+            task_started("call-task"),
+            user(
+                ToolResultBlock(
+                    tool_use_id="call-task",
+                    content="Async agent launched successfully.",
+                )
+            ),
+            delta(
+                output_tokens=255,
+                input_tokens=100,
+                stop_reason="tool_use",
+                thinking=83,
+            ),
+            task_notification("call-task", summary="the subagent report"),
+            result(),
+        ],
+        sdk_options=ClaudeAgentOptions(include_partial_messages=True),
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert chat.attributes["gen_ai.usage.output_tokens"] == 255
+    assert chat.attributes["gen_ai.usage.reasoning.output_tokens"] == 83
+    assert chat.attributes["gen_ai.response.finish_reasons"] == ("tool_use",)
+    assert "claude_agent_sdk.usage.is_partial" not in chat.attributes
+
+
+@pytest.mark.asyncio
+async def test_tool_result_still_closes_the_call_without_stream_events(
+    handler, span_exporter
+):
+    """Without include_partial_messages no delta is ever coming, so the
+    tool_result has to close the call itself."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="call-1", name="Read", input={}),
+                message_id="msg_1",
+                usage={"input_tokens": 100, "output_tokens": 6},
+            ),
+            user(ToolResultBlock(tool_use_id="call-1", content="file body")),
+            assistant(
+                TextBlock("done"),
+                message_id="msg_2",
+                usage={"input_tokens": 200, "output_tokens": 9},
+            ),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    chats = spans.named("chat claude-sonnet-4-5")
+    assert len(chats) == 2
+    first = next(
+        c for c in chats if c.attributes["gen_ai.response.id"] == "msg_1"
+    )
+    tool = spans.one("execute_tool Read")
+    # The snapshot is all there is, and the span ends on the tool_result rather
+    # than hanging until the next call.
+    assert first.attributes["gen_ai.usage.output_tokens"] == 6
+    assert first.attributes["claude_agent_sdk.usage.is_partial"] is True
+    assert first.end_time <= tool.end_time
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_result_closes_without_waiting_for_a_delta(
+    handler, span_exporter
+):
+    """A subagent's call never gets a stream event, so its chat span must not
+    be held open for one."""
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "general-purpose"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="msg_1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            delta(output_tokens=255, stop_reason="tool_use"),
+            assistant(
+                ToolUseBlock(id="call-sub", name="Read", input={}),
+                parent="call-task",
+                message_id="msg_sub",
+                usage={"input_tokens": 50, "output_tokens": 4},
+            ),
+            user(
+                ToolResultBlock(tool_use_id="call-sub", content="body"),
+                parent="call-task",
+            ),
+            task_notification("call-task", summary="report"),
+            result(),
+        ],
+        sdk_options=ClaudeAgentOptions(include_partial_messages=True),
+    )
+    spans = Spans(span_exporter)
+    subagent = spans.one("invoke_agent general-purpose")
+    sub_chat = next(
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "msg_sub"
+    )
+    sub_tool = spans.one("execute_tool Read")
+    assert spans.parent_name(sub_chat) == subagent.name
+    assert sub_chat.attributes["claude_agent_sdk.usage.is_partial"] is True
+    assert sub_chat.end_time <= sub_tool.end_time
 
 
 @pytest.mark.asyncio
@@ -667,6 +985,48 @@ async def test_cache_counters_fold_into_input_tokens(handler, span_exporter):
     chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
     assert chat.attributes["gen_ai.usage.input_tokens"] == 1110
     assert chat.attributes["gen_ai.usage.cache_read.input_tokens"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_agent_and_chat_spans_name_the_cache_counters_alike(
+    handler, span_exporter
+):
+    """The convention renamed cache_creation to cache_write and only the new
+    name is in the registry. util-genai writes the new one on chat spans, so the
+    agent span writing the old one had a trace reporting one quantity under two
+    keys."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("hi")),
+            StreamEvent(
+                uuid="u",
+                session_id=SESSION,
+                event={
+                    "type": "message_delta",
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cache_read_input_tokens": 50,
+                        "cache_creation_input_tokens": 20,
+                    },
+                    "delta": {"stop_reason": "end_turn"},
+                },
+            ),
+            result(model_usage=MODEL_USAGE),
+        ],
+    )
+    spans = Spans(span_exporter)
+    agent = spans.one("invoke_agent claude-agent-sdk")
+    chat = spans.one("chat claude-sonnet-4-5")
+    for key in (
+        "gen_ai.usage.cache_write.input_tokens",
+        "gen_ai.usage.cache_read.input_tokens",
+    ):
+        assert agent.attributes[key] == chat.attributes[key], key
+    assert agent.attributes["gen_ai.usage.cache_write.input_tokens"] == 20
+    assert "gen_ai.usage.cache_creation.input_tokens" not in agent.attributes
 
 
 @pytest.mark.asyncio
@@ -718,6 +1078,100 @@ async def test_thinking_tokens_recorded(handler, span_exporter):
     )
     chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
     assert chat.attributes["gen_ai.usage.reasoning.output_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_chat_span_opens_on_message_start(
+    handler, span_exporter, metric_reader
+):
+    """The call begins at message_start, not at the assistant message.
+
+    Measured on CLI 2.1.220 the assistant message lands 502ms to 1751ms later,
+    once a whole content block is finished, with 21 to 35 chunks already gone
+    past. Opening there dropped every one of them, so the span understated its
+    duration and time_to_first_chunk timed the gap to the next content block
+    instead of the wait for the first token.
+    """
+    await drive(
+        handler,
+        [
+            init(),
+            message_start(message_id="msg_1"),
+            chunk(),
+            chunk(),
+            chunk(),
+            assistant(TextBlock("hi"), message_id="msg_1"),
+            delta(output_tokens=10),
+            result(),
+        ],
+        sdk_options=ClaudeAgentOptions(include_partial_messages=True),
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert chat.attributes["gen_ai.response.id"] == "msg_1"
+    # The first chunk is the time_to_first_chunk observation; the rest are gaps.
+    assert (
+        len(
+            metric_points(
+                metric_reader, "gen_ai.client.operation.time_to_first_chunk"
+            )
+        )
+        == 1
+    )
+    gaps = metric_points(
+        metric_reader, "gen_ai.client.operation.time_per_output_chunk"
+    )
+    assert sum(p.count for p in gaps) == 2
+
+
+@pytest.mark.asyncio
+async def test_message_start_identifies_a_call_with_no_assistant_message(
+    handler, span_exporter
+):
+    """message_start carries both the id and the model, so a call cut short
+    before any content block still reports which call it was."""
+    await drive(
+        handler,
+        [
+            init(model="claude-haiku-4-5"),
+            message_start(message_id="msg_1", model="claude-sonnet-4-5"),
+            chunk(),
+            delta(output_tokens=4),
+            result(),
+        ],
+        sdk_options=ClaudeAgentOptions(include_partial_messages=True),
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert chat.attributes["gen_ai.response.id"] == "msg_1"
+    assert chat.attributes["gen_ai.response.model"] == "claude-sonnet-4-5"
+
+
+@pytest.mark.asyncio
+async def test_assistant_message_extends_the_span_message_start_opened(
+    handler, span_exporter
+):
+    """One API call arrives as several assistant messages sharing a message_id,
+    each carrying one finished content block."""
+    await drive(
+        handler,
+        [
+            init(),
+            message_start(message_id="msg_1"),
+            assistant(TextBlock("first block"), message_id="msg_1"),
+            assistant(TextBlock("second block"), message_id="msg_1"),
+            delta(output_tokens=10),
+            message_start(message_id="msg_2"),
+            assistant(TextBlock("next call"), message_id="msg_2"),
+            delta(output_tokens=3),
+            result(),
+        ],
+        sdk_options=ClaudeAgentOptions(include_partial_messages=True),
+    )
+    chats = Spans(span_exporter).named("chat claude-sonnet-4-5")
+    assert len(chats) == 2
+    assert {c.attributes["gen_ai.response.id"] for c in chats} == {
+        "msg_1",
+        "msg_2",
+    }
 
 
 @pytest.mark.asyncio
@@ -807,6 +1261,75 @@ async def test_api_error_result_fails_the_model_call_too(
 
 
 @pytest.mark.asyncio
+async def test_the_clis_error_text_is_content(handler, span_exporter):
+    """The span status is exported whatever the capture setting, and an
+    ``invalid_request_error`` body can quote the request that produced it. The
+    subtype and the HTTP status are content-free, so they stay."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("API Error: 400")),
+            result(
+                is_error=True,
+                text='API Error: 400 {"error":{"message":"bad value for '
+                "system: You are Acme's internal assistant\"}}",
+                api_error_status=400,
+            ),
+        ],
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.status.description == "HTTP 400"
+    assert agent.attributes["error.type"] == "api_error"
+
+
+@pytest.mark.asyncio
+async def test_the_clis_error_text_is_kept_when_content_is_captured(
+    capturing_handler, span_exporter
+):
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(TextBlock("API Error: 400")),
+            result(
+                is_error=True,
+                text="API Error: 400 invalid model",
+                api_error_status=400,
+            ),
+        ],
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert (
+        agent.status.description == "API Error: 400 invalid model (HTTP 400)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_early_stops_reason_survives_without_its_text(
+    handler, span_exporter
+):
+    """With nothing content-free to report, the subtype still names the
+    failure."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("partial")),
+            result(
+                subtype="error_max_turns",
+                is_error=True,
+                text=None,
+                errors=["max turns reached while editing /srv/secret.py"],
+            ),
+        ],
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.attributes["error.type"] == "error_max_turns"
+    assert "secret" not in (agent.status.description or "")
+
+
+@pytest.mark.asyncio
 async def test_stream_raising_fails_the_run(handler, span_exporter):
     async def stream():
         yield init()
@@ -854,17 +1377,104 @@ async def test_abandoned_stream_still_closes_its_spans(handler, span_exporter):
 
 
 @pytest.mark.asyncio
-async def test_instrumentation_failure_does_not_break_the_stream(
+async def test_a_subagents_tools_close_before_the_subagent_at_teardown(
     handler, span_exporter
 ):
-    """A malformed message must not interrupt the caller's iteration."""
+    """The run is interrupted while a subagent has a tool open.
 
-    class Broken(SystemMessage):
-        pass
+    Draining subagents before tools left the subagent's own tool ending after the
+    span it belongs to, which renders as a bar sticking out past its parent.
+    """
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "general-purpose"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            assistant(
+                ToolUseBlock(id="call-sub", name="Read", input={}),
+                parent="call-task",
+                message_id="m_sub",
+            ),
+        ],
+    )
+    spans = Spans(span_exporter)
+    sub_tool = spans.one("execute_tool Read")
+    subagent = spans.one("invoke_agent general-purpose")
+    task_tool = spans.one("execute_tool Task")
+    assert spans.parent_name(sub_tool) == subagent.name
+    assert sub_tool.end_time <= subagent.end_time <= task_tool.end_time
 
-    messages = [init(), Broken(subtype="init", data=None), result()]
-    seen = await drive(handler, messages)
+
+@pytest.mark.asyncio
+async def test_one_span_failing_to_close_does_not_strand_the_others(
+    handler, span_exporter
+):
+    """A close raising must not abandon everything after it.
+
+    Teardown closes tools, then subagents, then chats, then the root. With the
+    first of those raising, the root was left recording and never exported, and
+    the exception escaped through ``iterate``'s ``finally`` into the caller's
+    ``async for``, where it looks like the transport failing and can mask a real
+    transport error.
+    """
+
+    def explode(*_: Any, **__: Any) -> None:
+        raise RuntimeError("_apply_finish blew up")
+
+    messages = [
+        init(),
+        assistant(ToolUseBlock(id="c1", name="Read", input={})),
+        result(),
+    ]
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(ToolInvocation, "_apply_finish", explode)
+        seen = await drive(handler, messages)
+
     assert seen == messages
+    spans = Spans(span_exporter)
+    # The tool's finish was abandoned, so it carries none of its attributes...
+    tool = spans.one("execute_tool Read")
+    assert "gen_ai.tool.call.id" not in tool.attributes
+    # ...but everything around it still closed, and still as one tree.
+    agent = spans.one("invoke_agent claude-agent-sdk")
+    chat = spans.one("chat claude-sonnet-4-5")
+    assert spans.parent_name(chat) == agent.name
+    assert len({s.context.trace_id for s in spans.all}) == 1
+    assert trace.get_current_span() is trace.INVALID_SPAN
+
+
+@pytest.mark.asyncio
+async def test_instrumentation_failure_does_not_break_the_stream(
+    handler, span_exporter, tracer
+):
+    """A message the mapping cannot handle must not interrupt the caller's
+    iteration, break the span tree, or leave a span attached."""
+
+    class Hostile(dict):  # type: ignore[type-arg]
+        """``SystemMessage.data`` is a raw CLI payload; reading it can fail."""
+
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("cannot read this message")
+
+    messages = [
+        init(),
+        SystemMessage(subtype="init", data=Hostile(session_id="x")),
+        result(),
+    ]
+    with tracer.start_as_current_span("caller") as caller:
+        seen = await drive(handler, messages)
+        assert trace.get_current_span() is caller
+
+    assert seen == messages
+    spans = Spans(span_exporter)
+    agent = spans.one("invoke_agent claude-agent-sdk")
+    assert spans.parent_name(agent) == "caller"
+    assert len({s.context.trace_id for s in spans.all}) == 1
 
 
 # ─── boundaries and context ─────────────────────────────────────────────────
@@ -887,11 +1497,277 @@ async def test_multi_turn_opens_one_agent_span_per_human_result(
     )
     spans = Spans(span_exporter)
     agents = spans.named("invoke_agent claude-agent-sdk")
+    chats = spans.named("chat claude-sonnet-4-5")
     assert len(agents) == 2
-    assert len(spans.named("chat claude-sonnet-4-5")) == 2
+    assert len(chats) == 2
     # Each turn is its own trace, threaded by the conversation id.
+    assert len({a.context.trace_id for a in agents}) == 2
     for span in spans.all:
         assert span.attributes["gen_ai.conversation.id"] == SESSION
+    # Matched by span id, since both agent spans share the same name: a chat
+    # mis-parented onto the previous turn's agent would still pass a name check.
+    pairs = {
+        c.attributes["gen_ai.response.id"]: spans.parent_of(c) for c in chats
+    }
+    assert pairs["m1"] is not pairs["m2"]
+    assert {id(a) for a in pairs.values()} == {id(a) for a in agents}
+    for chat in chats:
+        assert chat.context.trace_id == spans.parent_of(chat).context.trace_id
+
+
+def cumulative(
+    input_tokens: int, output_tokens: int, cost: float
+) -> dict[str, Any]:
+    """``model_usage`` as the CLI reports it: totals for the whole session."""
+    return {
+        "claude-sonnet-4-5": {
+            "inputTokens": input_tokens,
+            "outputTokens": output_tokens,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "costUSD": cost,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_each_turn_reports_only_its_own_tokens(handler, span_exporter):
+    """``model_usage`` and ``total_cost_usd`` accumulate over the session.
+
+    A fresh root opens per turn while the counters keep growing, so reading them
+    as they stand had turn two report turn one's tokens and cost as well as its
+    own, and turn three all three turns'.
+    """
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("one"), message_id="m1"),
+            result(
+                origin={"kind": "human"}, model_usage=cumulative(100, 10, 0.01)
+            ),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(
+                origin={"kind": "human"}, model_usage=cumulative(350, 25, 0.04)
+            ),
+            assistant(TextBlock("three"), message_id="m3"),
+            result(
+                origin={"kind": "human"}, model_usage=cumulative(900, 60, 0.10)
+            ),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    agents = sorted(
+        spans.named("invoke_agent claude-agent-sdk"), key=lambda s: s.end_time
+    )
+    assert [a.attributes["gen_ai.usage.input_tokens"] for a in agents] == [
+        100,
+        250,
+        550,
+    ]
+    assert [a.attributes["gen_ai.usage.output_tokens"] for a in agents] == [
+        10,
+        15,
+        35,
+    ]
+    assert [
+        a.attributes["claude_agent_sdk.usage.cost_usd"] for a in agents
+    ] == [
+        pytest.approx(0.01),
+        pytest.approx(0.03),
+        pytest.approx(0.06),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_reset_rebases_the_cumulative_counters(
+    handler, span_exporter
+):
+    """``/clear`` zeroes the CLI's running totals, so the baseline the next
+    turn is measured against has to go back to zero with them."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("one"), message_id="m1"),
+            result(
+                origin={"kind": "human"}, model_usage=cumulative(500, 40, 0.05)
+            ),
+            conversation_reset(),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(
+                origin={"kind": "human"}, model_usage=cumulative(120, 8, 0.01)
+            ),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    agents = sorted(
+        spans.named("invoke_agent claude-agent-sdk"), key=lambda s: s.end_time
+    )
+    assert [a.attributes["gen_ai.usage.input_tokens"] for a in agents] == [
+        500,
+        120,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_waits_for_background_work_before_ending_a_turn(
+    handler, span_exporter
+):
+    """The result that answers the caller arrives while a delegation is still
+    running — measured at 18.2s against the task's real completion at 36.4s.
+
+    Ending the turn there closes the subagent's parent out from under it, so
+    the Task tool is failed as never having returned and the subagent, its
+    launch block already discarded, reappears under the next turn's agent span
+    under a placeholder name.
+    """
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "general-purpose"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            result(origin={"kind": "human"}),
+            # The subagent only starts speaking after the caller was answered.
+            assistant(
+                TextBlock("subagent working"),
+                parent="call-task",
+                message_id="m_sub",
+            ),
+            task_notification("call-task", summary="the subagent report"),
+            assistant(TextBlock("next turn"), message_id="m2"),
+            result(origin={"kind": "human"}),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    tool = spans.one("execute_tool Task")
+    subagent = spans.one("invoke_agent general-purpose")
+    agents = spans.named("invoke_agent claude-agent-sdk")
+
+    assert tool.status.status_code is not trace.StatusCode.ERROR
+    # The delegation stays where it belongs instead of being re-rooted.
+    assert spans.parent_name(subagent) == tool.name
+    assert spans.parent_name(tool) == "invoke_agent claude-agent-sdk"
+    assert len(agents) == 2
+    # Turn one owns the delegation; turn two is a separate trace.
+    turn_one = spans.parent_of(tool)
+    assert turn_one.context.trace_id == subagent.context.trace_id
+    assert len({a.context.trace_id for a in agents}) == 2
+
+
+@pytest.mark.asyncio
+async def test_background_task_open_at_teardown_is_not_an_error(
+    handler, span_exporter
+):
+    """A tool whose receipt was deliberately ignored is not a tool that hung."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="bg-1", name="Bash", input={}),
+                message_id="m1",
+            ),
+            task_started("bg-1", task_type="local_bash"),
+            user(ToolResultBlock(tool_use_id="bg-1", content="started")),
+            result(),
+        ],
+    )
+    tool = Spans(span_exporter).one("execute_tool Bash")
+    assert tool.status.status_code is not trace.StatusCode.ERROR
+    assert "tool never returned" not in str(tool.status.description)
+
+
+@pytest.mark.asyncio
+async def test_late_message_does_not_reopen_a_finished_subagent(
+    handler, span_exporter
+):
+    """Re-opening the subtree would start a second invoke_agent that nothing is
+    left to close, so it leaks to teardown parented to the root."""
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "general-purpose"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            assistant(
+                TextBlock("subagent working"),
+                parent="call-task",
+                message_id="m_sub",
+            ),
+            task_notification("call-task", summary="report"),
+            # Straggler naming a subagent whose span has already ended.
+            assistant(
+                TextBlock("late"), parent="call-task", message_id="m_late"
+            ),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    subagent = spans.one("invoke_agent general-purpose")
+    late = next(
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m_late"
+    )
+    assert spans.parent_name(late) == "invoke_agent claude-agent-sdk"
+    assert subagent.end_time <= late.start_time
+
+
+@pytest.mark.asyncio
+async def test_a_result_does_not_split_a_subagents_call_in_two(
+    handler, span_exporter
+):
+    """A result closes the main thread's call, not a subagent's.
+
+    Measured in a recorded session: a result lands between two assistant
+    messages carrying one message_id, so closing every chat there rebuilt the
+    subagent's context from scratch and emitted a second span — half a call
+    each, the first flagged partial.
+    """
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "general-purpose"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            assistant(
+                TextBlock("thinking"), parent="call-task", message_id="m_sub"
+            ),
+            result(origin={"kind": "task-notification"}),
+            assistant(
+                TextBlock("and the answer"),
+                parent="call-task",
+                message_id="m_sub",
+                usage={"input_tokens": 50, "output_tokens": 9},
+            ),
+            task_notification("call-task", summary="report"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    sub_chats = [
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m_sub"
+    ]
+    assert len(sub_chats) == 1, "one API call is one chat span"
+    assert sub_chats[0].attributes["gen_ai.usage.output_tokens"] == 9
 
 
 @pytest.mark.asyncio
@@ -925,22 +1801,31 @@ async def test_parallel_tools_closing_out_of_order(
     Closing out of order must still leave both parented to the agent and the
     caller's active context untouched.
     """
+    messages = [
+        init(),
+        assistant(
+            ToolUseBlock(id="a", name="Read", input={}),
+            ToolUseBlock(id="b", name="Grep", input={}),
+        ),
+        user(
+            ToolResultBlock(tool_use_id="b", content="grep out"),
+            ToolResultBlock(tool_use_id="a", content="read out"),
+        ),
+        result(),
+    ]
+
+    async def stream():
+        for message in messages:
+            yield message
+
     with tracer.start_as_current_span("caller") as caller:
-        await drive(
-            handler,
-            [
-                init(),
-                assistant(
-                    ToolUseBlock(id="a", name="Read", input={}),
-                    ToolUseBlock(id="b", name="Grep", input={}),
-                ),
-                user(
-                    ToolResultBlock(tool_use_id="b", content="grep out"),
-                    ToolResultBlock(tool_use_id="a", content="read out"),
-                ),
-                result(),
-            ],
-        )
+        before = otel_context.get_current()
+        run = AgentRun(handler)
+        # The invariant is per-yield, not just per-run: these spans do not finish
+        # in the order they opened, and util-genai attaches each one it starts.
+        async for _ in run.iterate(stream, "hi"):
+            assert trace.get_current_span() is caller
+            assert otel_context.get_current() == before
         assert trace.get_current_span() is caller
 
     spans = Spans(span_exporter)
@@ -991,6 +1876,114 @@ async def test_no_warning_logs_during_a_run(handler, span_exporter, caplog):
         )
     noisy = [r for r in caplog.records if r.levelno >= 30]
     assert not noisy, [r.getMessage() for r in noisy]
+
+
+# ─── compaction and resets ──────────────────────────────────────────────────
+
+
+def compact_boundary() -> SystemMessage:
+    return SystemMessage(
+        subtype="compact_boundary",
+        data={"compact_metadata": {"trigger": "auto"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_compaction_marks_the_run_and_every_call_after_it(
+    handler, span_exporter
+):
+    """A compacted context is not the one the earlier calls saw, so the marker
+    belongs on the run and on every call from the boundary on."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("before"), message_id="m1"),
+            compact_boundary(),
+            assistant(TextBlock("after"), message_id="m2"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    agent = spans.one("invoke_agent claude-agent-sdk")
+    chats = {
+        c.attributes["gen_ai.response.id"]: c
+        for c in spans.named("chat claude-sonnet-4-5")
+    }
+    assert agent.attributes["gen_ai.conversation.compacted"] is True
+    assert chats["m2"].attributes["gen_ai.conversation.compacted"] is True
+    assert "gen_ai.conversation.compacted" not in chats["m1"].attributes
+
+
+@pytest.mark.asyncio
+async def test_compaction_outlives_the_turn_that_triggered_it(
+    handler, span_exporter
+):
+    """Compaction is a property of the conversation, not of one turn: the next
+    turn is still working from the compacted context."""
+    await drive(
+        handler,
+        [
+            init(),
+            compact_boundary(),
+            assistant(TextBlock("one"), message_id="m1"),
+            result(origin={"kind": "human"}),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(origin={"kind": "human"}),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    for span in spans.all:
+        assert span.attributes["gen_ai.conversation.compacted"] is True, (
+            span.name
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_reset_starts_a_new_conversation_id(handler, span_exporter):
+    """``/clear`` replaces the conversation mid-session. A call made before it
+    belongs to the old one."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("before"), message_id="m1"),
+            conversation_reset(),
+            assistant(TextBlock("after"), message_id="m2"),
+            result(),
+        ],
+    )
+    chats = {
+        c.attributes["gen_ai.response.id"]: c
+        for c in Spans(span_exporter).named("chat claude-sonnet-4-5")
+    }
+    assert chats["m1"].attributes["gen_ai.conversation.id"] == SESSION
+    assert chats["m2"].attributes["gen_ai.conversation.id"] == NEW_CONVERSATION
+
+
+@pytest.mark.asyncio
+async def test_a_reset_clears_the_compacted_marker(handler, span_exporter):
+    """An empty conversation is not a compacted one."""
+    await drive(
+        handler,
+        [
+            init(),
+            compact_boundary(),
+            assistant(TextBlock("one"), message_id="m1"),
+            result(origin={"kind": "human"}),
+            conversation_reset(),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(origin={"kind": "human"}),
+        ],
+        multi_turn=True,
+    )
+    chats = {
+        c.attributes["gen_ai.response.id"]: c
+        for c in Spans(span_exporter).named("chat claude-sonnet-4-5")
+    }
+    assert chats["m1"].attributes["gen_ai.conversation.compacted"] is True
+    assert "gen_ai.conversation.compacted" not in chats["m2"].attributes
 
 
 # ─── content ────────────────────────────────────────────────────────────────
@@ -1048,6 +2041,486 @@ async def test_content_shape_matches_the_contract(
 
 
 @pytest.mark.asyncio
+async def test_a_turn_with_text_and_a_tool_result_is_two_messages(
+    capturing_handler, span_exporter
+):
+    """One user turn can be both the tool answering and the user speaking.
+    Folded into one message, the text got role ``tool``."""
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="c1", name="Read", input={}), message_id="m1"
+            ),
+            user(
+                ToolResultBlock(tool_use_id="c1", content="file body"),
+                TextBlock("also, hurry up"),
+            ),
+            assistant(TextBlock("done"), message_id="m2"),
+            result(),
+        ],
+    )
+    second = next(
+        c
+        for c in Spans(span_exporter).named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m2"
+    )
+    replayed = json.loads(second.attributes["gen_ai.input.messages"])
+    by_role = {m["role"]: m for m in replayed}
+    assert by_role["tool"]["parts"][0]["type"] == "tool_call_response"
+    assert by_role["user"]["parts"][-1] == {
+        "type": "text",
+        "content": "also, hurry up",
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_replayed_conversation_is_bounded(
+    capturing_handler, span_exporter
+):
+    """Each call's input is the whole conversation, but it is re-serialized onto
+    every chat span, so an unbounded one puts megabytes on a single trace and
+    the exporter silently drops what does not fit."""
+    messages: list[Any] = [init()]
+    for step in range(30):
+        messages.append(
+            assistant(
+                ToolUseBlock(id=f"c{step}", name="Read", input={}),
+                message_id=f"m{step}",
+            )
+        )
+        messages.append(
+            user(ToolResultBlock(tool_use_id=f"c{step}", content="x" * 64))
+        )
+    messages.append(assistant(TextBlock("done"), message_id="last"))
+    messages.append(result())
+    await drive(capturing_handler, messages)
+
+    last = next(
+        c
+        for c in Spans(span_exporter).named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "last"
+    )
+    replayed = json.loads(last.attributes["gen_ai.input.messages"])
+    assert len(replayed) == 40
+    # The bound trims the oldest, so the most recent step is still there.
+    assert any(
+        part.get("id") == "c29"
+        for message in replayed
+        for part in message["parts"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_compaction_drops_the_turns_it_replaced(
+    capturing_handler, span_exporter
+):
+    """After compaction the recorded input was strictly larger than what the
+    model saw."""
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(TextBlock("before the boundary"), message_id="m1"),
+            compact_boundary(),
+            assistant(TextBlock("after"), message_id="m2"),
+            assistant(TextBlock("after again"), message_id="m3"),
+            result(),
+        ],
+    )
+    third = next(
+        c
+        for c in Spans(span_exporter).named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m3"
+    )
+    replayed = third.attributes["gen_ai.input.messages"]
+    assert "before the boundary" not in replayed
+    assert "after" in replayed
+
+
+@pytest.mark.asyncio
+async def test_streaming_input_seeds_the_root_from_the_replayed_turn(
+    capturing_handler, span_exporter
+):
+    """An async-iterable prompt cannot be read without starving the SDK, so the
+    root has no input of its own. The CLI replays the submitted turn as a
+    UserMessage, which is the same text."""
+
+    async def prompt():  # pragma: no cover - never consumed
+        yield {"type": "user", "message": {"role": "user", "content": "hi"}}
+
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            user(TextBlock("summarize the incident report")),
+            assistant(TextBlock("here you go"), message_id="m1"),
+            result(text="here you go"),
+        ],
+        prompt=prompt(),
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    seeded = json.loads(agent.attributes["gen_ai.input.messages"])
+    assert seeded == [
+        {
+            "role": "user",
+            "parts": [
+                {"type": "text", "content": "summarize the incident report"}
+            ],
+            "name": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_server_tool_is_content_not_an_execute_tool_span(
+    capturing_handler, span_exporter
+):
+    """The API runs a server tool on the model's behalf and never comes back for
+    a result, so a span opened for one would never be closed on time: it would be
+    swept up at teardown with an ERROR status. ``_is_tool_use`` guards on a class
+    name prefix, so this is what notices if that stops matching."""
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(
+                ThinkingBlock(thinking="let me look that up", signature="sig"),
+                ServerToolUseBlock(
+                    id="srv-1", name="web_search", input={"query": "otel"}
+                ),
+                message_id="m1",
+            ),
+            user(
+                ServerToolResultBlock(
+                    tool_use_id="srv-1", content={"type": "web_search_result"}
+                )
+            ),
+            assistant(TextBlock("found it"), message_id="m2"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    assert not [s for s in spans.all if s.name.startswith("execute_tool")]
+    first = next(
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m1"
+    )
+    types = [
+        part["type"]
+        for message in json.loads(first.attributes["gen_ai.output.messages"])
+        for part in message["parts"]
+    ]
+    assert types == ["reasoning", "server_tool_call"]
+    second = next(
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m2"
+    )
+    replayed = [
+        part["type"]
+        for message in json.loads(second.attributes["gen_ai.input.messages"])
+        for part in message["parts"]
+    ]
+    assert "server_tool_call_response" in replayed
+
+
+@pytest.mark.asyncio
+async def test_an_empty_assistant_turn_is_still_a_turn(
+    capturing_handler, span_exporter
+):
+    """A turn whose only block is an empty TextBlock, or a ThinkingBlock the
+    model signed but left blank, used to produce no parts — which took the whole
+    message out of the output and out of the replayed history."""
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(
+                ThinkingBlock(thinking="", signature="sig"), message_id="m1"
+            ),
+            assistant(TextBlock(""), message_id="m2"),
+            result(),
+        ],
+    )
+    chats = {
+        c.attributes["gen_ai.response.id"]: c
+        for c in Spans(span_exporter).named("chat claude-sonnet-4-5")
+    }
+    first = json.loads(chats["m1"].attributes["gen_ai.output.messages"])
+    assert first[0]["parts"] == [{"type": "reasoning", "content": ""}]
+    second = json.loads(chats["m2"].attributes["gen_ai.output.messages"])
+    assert second[0]["parts"] == [{"type": "text", "content": ""}]
+    # ...and the earlier turn is in the later call's replayed input.
+    assert (
+        len(json.loads(chats["m2"].attributes["gen_ai.input.messages"])) == 2
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_subagents_own_work_nests_under_the_subagent(
+    capturing_handler, span_exporter
+):
+    """Everything a subagent does belongs inside its own invoke_agent span.
+
+    The delta is included for the parented-stream-event path, which the CLI does
+    not currently take: measured across nine recorded sessions every stream event
+    carried ``parent_tool_use_id: null``.
+    """
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "general-purpose"}
+    )
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            assistant(
+                ToolUseBlock(
+                    id="call-sub", name="Grep", input={"pattern": "TODO"}
+                ),
+                parent="call-task",
+                message_id="m_sub",
+                usage={"input_tokens": 50, "output_tokens": 4},
+            ),
+            chunk(parent="call-task"),
+            delta(
+                output_tokens=77, stop_reason="tool_use", parent="call-task"
+            ),
+            user(
+                ToolResultBlock(tool_use_id="call-sub", content="two hits"),
+                parent="call-task",
+            ),
+            task_notification("call-task", summary="reviewed"),
+            assistant(TextBlock("all done"), message_id="m2"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    subagent = spans.one("invoke_agent general-purpose")
+    sub_tool = spans.one("execute_tool Grep")
+    sub_chat = next(
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m_sub"
+    )
+    assert spans.parent_name(sub_tool) == subagent.name
+    assert spans.parent_name(sub_chat) == subagent.name
+    assert sub_chat.attributes["gen_ai.usage.output_tokens"] == 77
+    assert "claude_agent_sdk.usage.is_partial" not in sub_chat.attributes
+    assert sub_chat.attributes["gen_ai.response.finish_reasons"] == (
+        "tool_use",
+    )
+    # The subagent's own tool_result belongs to its history, not the main
+    # thread's.
+    main_second = next(
+        c
+        for c in spans.named("chat claude-sonnet-4-5")
+        if c.attributes["gen_ai.response.id"] == "m2"
+    )
+    assert "two hits" not in main_second.attributes["gen_ai.input.messages"]
+
+
+@pytest.mark.asyncio
+async def test_a_subagents_tool_is_attributed_to_the_subagent(
+    handler, span_exporter
+):
+    """On execute_tool ``gen_ai.agent.name`` is the agent doing the executing."""
+    task = ToolUseBlock(
+        id="call-task", name="Task", input={"subagent_type": "code-reviewer"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            assistant(
+                ToolUseBlock(id="call-sub", name="Read", input={}),
+                parent="call-task",
+                message_id="m_sub",
+            ),
+            user(
+                ToolResultBlock(tool_use_id="call-sub", content="body"),
+                parent="call-task",
+            ),
+            task_notification("call-task", summary="reviewed"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    assert (
+        spans.one("execute_tool Read").attributes["gen_ai.agent.name"]
+        == "code-reviewer"
+    )
+    assert (
+        spans.one("execute_tool Task").attributes["gen_ai.agent.name"]
+        == "claude-agent-sdk"
+    )
+
+
+# ─── the options a caller passes ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_custom_system_prompt_is_captured(
+    capturing_handler, span_exporter
+):
+    """Identical content was recorded or dropped depending on which API shape
+    the caller reached for: the bare string was captured and the custom form,
+    which holds the real full prompt, returned nothing."""
+    await drive(
+        capturing_handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            system_prompt={"type": "custom", "prompt": "You are a linter."},
+            model="claude-sonnet-4-5",
+        ),
+    )
+    spans = Spans(span_exporter)
+    for span in (
+        spans.one("chat claude-sonnet-4-5"),
+        spans.one("invoke_agent claude-agent-sdk"),
+    ):
+        assert json.loads(span.attributes["gen_ai.system_instructions"]) == [
+            {"type": "text", "content": "You are a linter."}
+        ]
+
+
+@pytest.mark.asyncio
+async def test_a_preset_system_prompt_is_named_not_quoted(
+    capturing_handler, span_exporter
+):
+    """ "preset: claude_code" is a label, not something the model was told. The
+    ``append`` text beside it is the caller's own instruction."""
+    await drive(
+        capturing_handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "append": "Always answer in French.",
+            },
+            model="claude-sonnet-4-5",
+        ),
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert json.loads(chat.attributes["gen_ai.system_instructions"]) == [
+        {
+            "type": "claude_agent_sdk.system_prompt_source",
+            "source": "preset",
+            "name": "claude_code",
+        },
+        {"type": "text", "content": "Always answer in French."},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_system_prompt_file_records_its_path(
+    capturing_handler, span_exporter
+):
+    await drive(
+        capturing_handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            system_prompt={"type": "file", "path": "/etc/agent/prompt.md"},
+            model="claude-sonnet-4-5",
+        ),
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert json.loads(chat.attributes["gen_ai.system_instructions"]) == [
+        {
+            "type": "claude_agent_sdk.system_prompt_source",
+            "source": "file",
+            "name": "/etc/agent/prompt.md",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_bare_string_system_prompt_is_captured(
+    capturing_handler, span_exporter
+):
+    await drive(
+        capturing_handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            system_prompt="You are terse.", model="claude-sonnet-4-5"
+        ),
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert json.loads(chat.attributes["gen_ai.system_instructions"]) == [
+        {"type": "text", "content": "You are terse."}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_system_prompt_is_absent_without_content_capture(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            system_prompt="You are terse.", model="claude-sonnet-4-5"
+        ),
+    )
+    for span in Spans(span_exporter).all:
+        assert "gen_ai.system_instructions" not in span.attributes
+
+
+@pytest.mark.asyncio
+async def test_effort_becomes_the_reasoning_level(handler, span_exporter):
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            effort="high", model="claude-sonnet-4-5"
+        ),
+    )
+    chat = Spans(span_exporter).one("chat claude-sonnet-4-5")
+    assert chat.attributes["gen_ai.request.reasoning.level"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_a_caller_supplied_conversation_id_overrides_the_session(
+    handler, span_exporter
+):
+    async def stream():
+        for message in [init(), assistant(TextBlock("hi")), result()]:
+            yield message
+
+    run = AgentRun(handler, conversation_id="ticket-42")
+    async for _ in run.iterate(stream, "hi"):
+        pass
+    for span in Spans(span_exporter).all:
+        assert span.attributes["gen_ai.conversation.id"] == "ticket-42"
+
+
+@pytest.mark.asyncio
+async def test_options_model_is_the_fallback_when_init_carries_none(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            SystemMessage(subtype="init", data={"session_id": SESSION}),
+            assistant(TextBlock("hi"), model="", message_id="m1"),
+            result(),
+        ],
+        sdk_options=ClaudeAgentOptions(model="claude-opus-4-5"),
+    )
+    chat = Spans(span_exporter).one("chat claude-opus-4-5")
+    assert chat.attributes["gen_ai.request.model"] == "claude-opus-4-5"
+
+
+@pytest.mark.asyncio
 async def test_content_is_absent_by_default(handler, span_exporter):
     await drive(handler, [init(), assistant(TextBlock("secret")), result()])
     for span in Spans(span_exporter).all:
@@ -1068,6 +2541,129 @@ async def test_span_names_carry_no_content(handler, span_exporter):
         assert SESSION not in span.name
 
 
+@pytest.mark.asyncio
+async def test_the_task_description_is_content(handler, span_exporter):
+    """``description`` is the model's own summary of the user's request, so it
+    is content — and per-invocation data in a field semconv describes as a
+    static application-provided description."""
+    task = ToolUseBlock(
+        id="t1",
+        name="Task",
+        input={
+            "subagent_type": "general-purpose",
+            "description": "Refactor the billing reconciliation in ledger.py",
+        },
+    )
+    messages = [
+        init(),
+        assistant(task, message_id="m1"),
+        task_started("t1"),
+        assistant(TextBlock("working"), parent="t1", message_id="ms"),
+        task_notification("t1"),
+        result(),
+    ]
+    await drive(handler, messages)
+    subagent = Spans(span_exporter).one("invoke_agent general-purpose")
+    assert "gen_ai.agent.description" not in subagent.attributes
+
+
+@pytest.mark.asyncio
+async def test_the_task_description_is_recorded_when_content_is_captured(
+    capturing_handler, span_exporter
+):
+    task = ToolUseBlock(
+        id="t1",
+        name="Task",
+        input={
+            "subagent_type": "general-purpose",
+            "description": "do a thing",
+        },
+    )
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("t1"),
+            assistant(TextBlock("working"), parent="t1", message_id="ms"),
+            task_notification("t1"),
+            result(),
+        ],
+    )
+    subagent = Spans(span_exporter).one("invoke_agent general-purpose")
+    assert subagent.attributes["gen_ai.agent.description"] == "do a thing"
+
+
+@pytest.mark.asyncio
+async def test_a_non_delegation_tools_arguments_are_not_read_as_a_task(
+    handler, span_exporter
+):
+    """``_launches`` holds every tool_use block, so reading an arbitrary one as
+    a TaskToolInput picked up whatever argument happened to be named "model" and
+    wrote it to ``gen_ai.request.model`` — always emitted, and a metric
+    dimension besides."""
+    fetch = ToolUseBlock(
+        id="c1",
+        name="WebFetch",
+        input={"model": "summarizer-v2", "url": "https://example.com"},
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(fetch, message_id="m1"),
+            assistant(TextBlock("nested"), parent="c1", message_id="ms"),
+            user(ToolResultBlock(tool_use_id="c1", content="fetched")),
+            result(),
+        ],
+    )
+    nested = Spans(span_exporter).one("invoke_agent WebFetch")
+    assert nested.attributes["gen_ai.request.model"] == "claude-sonnet-4-5", (
+        "the session's model, not a tool argument"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_model_is_left_off_rather_than_invented(
+    handler, span_exporter
+):
+    """A fabricated identifier reaches the span name, both model attributes and
+    the metric attribute set; semconv makes both attributes optional."""
+    await drive(
+        handler,
+        [
+            SystemMessage(subtype="init", data={"session_id": SESSION}),
+            assistant(TextBlock("hi"), model="", message_id="m1"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    chat = spans.one("chat")
+    assert "gen_ai.request.model" not in chat.attributes
+    assert "gen_ai.response.model" not in chat.attributes
+    assert not spans.named("chat unknown")
+
+
+@pytest.mark.asyncio
+async def test_a_requested_model_is_not_reported_as_the_response_model(
+    handler, span_exporter
+):
+    """``options.model`` is what was asked for. Only the wire says what
+    answered."""
+    await drive(
+        handler,
+        [
+            SystemMessage(subtype="init", data={"session_id": SESSION}),
+            assistant(TextBlock("hi"), model="", message_id="m1"),
+            result(),
+        ],
+        sdk_options=ClaudeAgentOptions(model="sonnet"),
+    )
+    chat = Spans(span_exporter).one("chat sonnet")
+    assert chat.attributes["gen_ai.request.model"] == "sonnet"
+    assert "gen_ai.response.model" not in chat.attributes
+
+
 # ─── provider resolution ────────────────────────────────────────────────────
 
 
@@ -1082,15 +2678,14 @@ async def test_hosting_platform_outranks_the_vendor(
 
 
 @pytest.mark.asyncio
-async def test_options_env_wins_over_our_own(handler, span_exporter):
-    class Options:
-        env = {"CLAUDE_CODE_USE_VERTEX": "true"}
-        model = "claude-sonnet-4-5"
-
+async def test_options_env_sets_a_routing_flag(handler, span_exporter):
     await drive(
         handler,
         [init(), assistant(TextBlock("hi")), result()],
-        sdk_options=Options(),
+        sdk_options=ClaudeAgentOptions(
+            env={"CLAUDE_CODE_USE_VERTEX": "true"},
+            model="claude-sonnet-4-5",
+        ),
     )
     assert (
         Spans(span_exporter)
@@ -1101,11 +2696,169 @@ async def test_options_env_wins_over_our_own(handler, span_exporter):
 
 
 @pytest.mark.asyncio
-async def test_disabled_routing_flag_is_not_a_platform(
+async def test_ambient_routing_survives_an_options_object(
     handler, span_exporter, monkeypatch
 ):
-    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "0")
+    """``options.env`` defaults to an empty dict, not None.
+
+    Treating it as the whole environment whenever it is a dict hides the
+    ambient routing flags behind every options object a caller passes.
+    """
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(model="claude-sonnet-4-5"),
+    )
+    assert (
+        Spans(span_exporter)
+        .one("chat claude-sonnet-4-5")
+        .attributes["gen_ai.provider.name"]
+        == "aws.bedrock"
+    )
+
+
+@pytest.mark.asyncio
+async def test_options_env_merges_with_ours_key_by_key(
+    handler, span_exporter, monkeypatch
+):
+    """The CLI merges ``options.env`` over the inherited environment, so an
+    unrelated key does not clear the ambient routing flag, and a key the
+    options do set overrides it."""
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+            model="claude-sonnet-4-5",
+        ),
+    )
+    assert (
+        Spans(span_exporter)
+        .one("chat claude-sonnet-4-5")
+        .attributes["gen_ai.provider.name"]
+        == "aws.bedrock"
+    )
+
+
+@pytest.mark.asyncio
+async def test_options_env_can_disable_an_ambient_routing_flag(
+    handler, span_exporter, monkeypatch
+):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            env={"CLAUDE_CODE_USE_BEDROCK": "0"},
+            model="claude-sonnet-4-5",
+        ),
+    )
+    assert (
+        Spans(span_exporter)
+        .one("chat claude-sonnet-4-5")
+        .attributes["gen_ai.provider.name"]
+        == "anthropic"
+    )
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " on "])
+@pytest.mark.asyncio
+async def test_routing_flag_is_on_for_the_values_the_cli_accepts(
+    handler, span_exporter, monkeypatch, value
+):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", value)
     await drive(handler, [init(), assistant(TextBlock("hi")), result()])
+    assert (
+        Spans(span_exporter)
+        .one("chat claude-sonnet-4-5")
+        .attributes["gen_ai.provider.name"]
+        == "aws.bedrock"
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "disabled", ""])
+@pytest.mark.asyncio
+async def test_disabled_routing_flag_is_not_a_platform(
+    handler, span_exporter, monkeypatch, value
+):
+    """The CLI reads these flags through an allowlist, so anything outside it
+    is off. A denylist of just "0" and "false" would route "no" to Bedrock."""
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", value)
+    await drive(handler, [init(), assistant(TextBlock("hi")), result()])
+    assert (
+        Spans(span_exporter)
+        .one("chat claude-sonnet-4-5")
+        .attributes["gen_ai.provider.name"]
+        == "anthropic"
+    )
+
+
+@pytest.mark.parametrize(
+    ("flag", "provider"),
+    [
+        ("CLAUDE_CODE_USE_BEDROCK", "aws.bedrock"),
+        ("CLAUDE_CODE_USE_MANTLE", "aws.bedrock"),
+        ("CLAUDE_CODE_USE_VERTEX", "gcp.vertex_ai"),
+        ("CLAUDE_CODE_USE_FOUNDRY", "azure.ai.inference"),
+        ("CLAUDE_CODE_USE_ANTHROPIC_AWS", "anthropic"),
+        ("CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "anthropic"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_every_routing_flag_the_cli_reads_is_mapped(
+    handler, span_exporter, monkeypatch, flag, provider
+):
+    monkeypatch.setenv(flag, "1")
+    await drive(handler, [init(), assistant(TextBlock("hi")), result()])
+    assert (
+        Spans(span_exporter)
+        .one("chat claude-sonnet-4-5")
+        .attributes["gen_ai.provider.name"]
+        == provider
+    )
+
+
+@pytest.mark.parametrize(
+    ("also_set", "provider"),
+    [
+        # The CLI checks foundry before vertex, and vertex last of all.
+        ("CLAUDE_CODE_USE_VERTEX", "azure.ai.inference"),
+        # ...and bedrock before foundry.
+        ("CLAUDE_CODE_USE_BEDROCK", "aws.bedrock"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_two_flags_resolve_the_way_the_cli_resolves_them(
+    handler, span_exporter, monkeypatch, also_set, provider
+):
+    monkeypatch.setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+    monkeypatch.setenv(also_set, "1")
+    await drive(handler, [init(), assistant(TextBlock("hi")), result()])
+    assert (
+        Spans(span_exporter)
+        .one("chat claude-sonnet-4-5")
+        .attributes["gen_ai.provider.name"]
+        == provider
+    )
+
+
+@pytest.mark.asyncio
+async def test_options_env_clears_an_inherited_flag_with_an_empty_value(
+    handler, span_exporter, monkeypatch
+):
+    """The CLI documents the empty string as the way to clear a routing flag
+    exported by a shell profile you don't control."""
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result()],
+        sdk_options=ClaudeAgentOptions(
+            env={"CLAUDE_CODE_USE_VERTEX": ""},
+            model="claude-sonnet-4-5",
+        ),
+    )
     assert (
         Spans(span_exporter)
         .one("chat claude-sonnet-4-5")

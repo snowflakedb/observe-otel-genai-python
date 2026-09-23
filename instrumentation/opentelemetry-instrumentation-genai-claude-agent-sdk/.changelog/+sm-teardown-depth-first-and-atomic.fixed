@@ -1,0 +1,8 @@
+Close what a stopped run left open from the leaves up, and survive one close
+failing. Teardown drained subagents before tools, so a tool belonging to a
+subagent ended after the subagent span it sits inside — a bar sticking out past
+its parent, which happens whenever a run is interrupted while a delegation has a
+tool running. None of the close loops guarded an individual span either: one
+invocation raising as it finished left the agent span recording and never
+exported, and the exception escaped into the caller's `async for`, where it looks
+like the transport failing and can mask a real transport error.

@@ -55,20 +55,29 @@ Usage
 Configuration
 -------------
 
-Message content capture can be enabled by setting the environment variable:
-``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true``
+Message content capture is off by default. Enable it by setting
+``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to one of
+``NO_CONTENT``, ``SPAN_ONLY``, ``EVENT_ONLY`` or ``SPAN_AND_EVENT``. Any other
+value, ``true`` included, is not a mode and reads as ``NO_CONTENT``.
+
+The root ``invoke_agent`` span is named ``claude-agent-sdk``. Pass
+``ClaudeAgentSDKInstrumentor().instrument(agent_name="...")`` to name it after
+the calling application instead. Subagents declared in ``options.agents`` do
+not name it: they are delegation targets, and each gets its own nested
+``invoke_agent`` span when the Agent tool reaches it.
 
 For accurate per-call token counts, stop reasons, and streaming timings, pass
 ``include_partial_messages=True`` in ``ClaudeAgentOptions``. It is off by
 default and is not set for you, because it changes what the caller's own loop
 receives. Without it each ``chat`` span's token counts are a mid-stream
-snapshot and the span is marked ``genai.usage.is_partial``; the run totals on
-the ``invoke_agent`` span are accurate either way.
+snapshot and the span is marked ``claude_agent_sdk.usage.is_partial``; the run
+totals on the ``invoke_agent`` span are accurate either way.
 
 API
 ---
 """
 
+import logging
 import sys
 from collections.abc import Collection
 from typing import Any
@@ -79,6 +88,7 @@ from opentelemetry.instrumentation.genai.claude_agent_sdk.package import (
     _instruments,
 )
 from opentelemetry.instrumentation.genai.claude_agent_sdk.patch import (
+    wrap_client_query,
     wrap_query,
     wrap_receive_messages,
 )
@@ -87,8 +97,13 @@ from opentelemetry.instrumentation.genai.claude_agent_sdk.version import (
 )
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
-from opentelemetry.util.genai.completion_hook import load_completion_hook
+from opentelemetry.util.genai.completion_hook import (
+    CompletionHook,
+    load_completion_hook,
+)
 from opentelemetry.util.genai.handler import TelemetryHandler
+
+_logger = logging.getLogger(__name__)
 
 
 class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
@@ -98,9 +113,13 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
     optionally capture message content as events.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._handler: TelemetryHandler | None = None
+    # Class-level defaults rather than an ``__init__`` that assigns them:
+    # ``BaseInstrumentor.__new__`` hands back the one live instance and
+    # ``__init__`` still runs on it, so constructing a second instrumentor
+    # anywhere in the process would otherwise wipe the state of the
+    # instrumentation already in flight.
+    _handler: TelemetryHandler | None = None
+    _loaded_completion_hook: CompletionHook | None = None
 
     # pylint: disable=no-self-use
     def instrumentation_dependencies(self) -> Collection[str]:
@@ -114,6 +133,9 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
                 - tracer_provider: TracerProvider instance
                 - meter_provider: MeterProvider instance
                 - logger_provider: LoggerProvider instance
+                - completion_hook: CompletionHook instance
+                - agent_name: name for the root ``invoke_agent`` span, for a
+                  caller whose own application is the agent being invoked
         """
 
         # Get providers from kwargs
@@ -121,38 +143,68 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
         logger_provider = kwargs.get("logger_provider")
         meter_provider = kwargs.get("meter_provider")
 
+        # load_completion_hook() builds a new hook per call and the upload hook
+        # owns a thread pool, so the one loaded here is ours to shut down at
+        # teardown. A hook the caller passed in stays theirs to manage.
+        completion_hook = kwargs.get("completion_hook")
+        self._loaded_completion_hook = (
+            None if completion_hook else load_completion_hook()
+        )
         self._handler = TelemetryHandler(
             tracer_provider=tracer_provider,
             meter_provider=meter_provider,
             logger_provider=logger_provider,
-            completion_hook=kwargs.get("completion_hook")
-            or load_completion_hook(),
+            completion_hook=completion_hook or self._loaded_completion_hook,
             instrumentation_scope_name=__package__,
             instrumentation_scope_version=__version__,
         )
+        agent_name = kwargs.get("agent_name")
 
         import claude_agent_sdk
         from claude_agent_sdk import client as client_module
 
-        # ``claude_agent_sdk.query`` is both a submodule and the function the
-        # package re-exports under the same name, so the two bindings are
-        # wrapped separately. A call goes through exactly one of them.
-        wrap_function_wrapper(
-            claude_agent_sdk, "query", wrap_query(self._handler)
-        )
-        query_module = sys.modules.get("claude_agent_sdk.query")
-        if query_module is not None:
-            wrap_function_wrapper(
-                query_module, "query", wrap_query(self._handler)
-            )
+        # instrument() flips _is_instrumented_by_opentelemetry only once this
+        # returns, so a wrapper left behind by a failure part-way through could
+        # never be removed: uninstrument() declines as "already uninstrumented"
+        # while a retry is let through and wraps the wrapper, which produced two
+        # invoke_agent spans in two traces for one query() call.
+        installed: list[tuple[Any, str]] = []
+        try:
+            # ``claude_agent_sdk.query`` is both a submodule and the function
+            # the package re-exports under the same name, so the two bindings
+            # are wrapped separately. A call goes through exactly one of them.
+            # The submodule is always in sys.modules by now: importing the
+            # package runs ``from .query import query``.
+            for module in (
+                claude_agent_sdk,
+                sys.modules["claude_agent_sdk.query"],
+            ):
+                wrap_function_wrapper(
+                    module, "query", wrap_query(self._handler, agent_name)
+                )
+                installed.append((module, "query"))
 
-        # Only receive_messages: receive_response() is a convenience wrapper
-        # that iterates it, so wrapping both would build the tree twice.
-        wrap_function_wrapper(
-            client_module,
-            "ClaudeSDKClient.receive_messages",
-            wrap_receive_messages(self._handler),
-        )
+            client = client_module.ClaudeSDKClient
+            for attribute, wrapper in (
+                # query() opens no span; it is where the prompt of a client
+                # session is, and receive_messages() reports it.
+                ("query", wrap_client_query()),
+                # Only receive_messages: receive_response() is a convenience
+                # wrapper that iterates it, so wrapping both would build the
+                # tree twice.
+                (
+                    "receive_messages",
+                    wrap_receive_messages(self._handler, agent_name),
+                ),
+            ):
+                wrap_function_wrapper(client, attribute, wrapper)
+                installed.append((client, attribute))
+        except BaseException:
+            for target, attribute in reversed(installed):
+                unwrap(target, attribute)
+            self._shutdown_loaded_completion_hook()
+            self._handler = None
+            raise
 
     def _uninstrument(self, **kwargs: Any) -> None:
         """Disable Claude Agent SDK instrumentation.
@@ -163,8 +215,30 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
         from claude_agent_sdk import client as client_module
 
         unwrap(claude_agent_sdk, "query")
-        query_module = sys.modules.get("claude_agent_sdk.query")
-        if query_module is not None:
-            unwrap(query_module, "query")
+        unwrap(sys.modules["claude_agent_sdk.query"], "query")
+        unwrap(client_module.ClaudeSDKClient, "query")
         unwrap(client_module.ClaudeSDKClient, "receive_messages")
+        self._shutdown_loaded_completion_hook()
         self._handler = None
+
+    def _shutdown_loaded_completion_hook(self) -> None:
+        """Flush and stop the completion hook this instrumentor loaded.
+
+        ``UploadCompletionHook`` owns a ThreadPoolExecutor, so dropping the
+        reference leaks the pool and abandons whatever content it had not
+        uploaded yet — once per instrument/uninstrument cycle, since
+        load_completion_hook() caches nothing.
+        """
+        hook, self._loaded_completion_hook = self._loaded_completion_hook, None
+        shutdown = getattr(hook, "shutdown", None)
+        if not callable(shutdown):
+            return
+        try:
+            shutdown()
+        except Exception:  # pylint: disable=broad-except
+            # Teardown carries on regardless: the wrappers are already off, and
+            # raising here would leave the instrumentor marked as instrumented.
+            _logger.warning(
+                "claude-agent-sdk completion hook shutdown failed",
+                exc_info=True,
+            )
