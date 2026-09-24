@@ -1,5 +1,0 @@
-Accept an optional `context` on `handler.inference()`, `handler.invoke_local_agent()`,
-and `handler.invoke_remote_agent()` to parent a span explicitly, matching the
-support `handler.tool()` already has. Needed by instrumentations driven by a
-message stream rather than a call stack, where spans do not open and close in
-call-stack order.

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import timeit
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from contextvars import Token
 from dataclasses import asdict
 from types import TracebackType
@@ -22,6 +22,10 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.semconv.attributes import error_attributes
 from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
+from opentelemetry.util.genai._conversation_context import (
+    get_ambient_conversation_id,
+    with_conversation_id,
+)
 from opentelemetry.util.genai._instruments import _Instruments
 from opentelemetry.util.genai.completion_hook import (
     CompletionHook,
@@ -75,6 +79,8 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         *,
         start_attributes: dict[str, AttributeValue] | None = None,
         context: Context | None = None,
+        _attach_to_context: bool = True,
+        conversation_id: str | None = None,
         content_capturing_mode: ContentCapturingMode | None = None,
     ) -> None:
         self._tracer = tracer
@@ -96,6 +102,17 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             {} if metric_attributes is None else metric_attributes
         )
         """Additional attributes to set on metrics. Must be low cardinality. Not set on spans or events."""
+        self.conversation_id: str | None = (
+            conversation_id
+            if conversation_id is not None
+            else get_ambient_conversation_id(context)
+        )
+        """Emitted as ``gen_ai.conversation.id`` by the operations semconv
+        defines it on: inference, invoke_agent, invoke_workflow."""
+        if self.conversation_id:
+            context = with_conversation_id(
+                self.conversation_id, context=context
+            )
         self._start_attributes: dict[str, AttributeValue] = {
             GenAI.GEN_AI_OPERATION_NAME: operation_name,
             **(start_attributes or {}),
@@ -106,8 +123,10 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             attributes=self._start_attributes,
             context=context,
         )
-        self._span_context: Context = set_span_in_context(self.span)
-        self._context_token: ContextToken | None = attach(self._span_context)
+        self._span_context: Context = set_span_in_context(self.span, context)
+        self._context_token: ContextToken | None = (
+            attach(self._span_context) if _attach_to_context else None
+        )
         self._monotonic_start_s: float = timeit.default_timer()
         # Streaming state, set when the invocation is handed to a stream
         # wrapper. ``_request_stream`` marks the request as streamed
@@ -116,6 +135,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         self._request_stream: bool | None = None
         self._ttfc_seconds: float | None = None
         self._stream_last_chunk_at: float | None = None
+        self._finished: bool = False
 
     @property
     def should_capture_content(self) -> bool:
@@ -138,6 +158,33 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         """The OpenTelemetry Context containing this invocation's span."""
         return self._span_context
 
+    def suspend(self) -> None:
+        """Restore the context that was current before this invocation started.
+
+        Call this when handing control back to the caller while the invocation
+        is still running -- returning a stream the caller has not drained yet,
+        for example -- so unrelated caller work is not parented under this
+        invocation's span. Idempotent, and pairs with ``activate``.
+        """
+        token, self._context_token = self._context_token, None
+        if token is not None:
+            detach(token)
+
+    @contextmanager
+    def activate(self) -> Iterator[None]:
+        """Make this invocation's span the current span inside the block.
+
+        Restores the previous context on exit. A no-op once the invocation has finished.
+        """
+        if self._finished:
+            yield
+            return
+        token = attach(self.context)
+        try:
+            yield
+        finally:
+            detach(token)
+
     def _get_metric_attributes(self) -> dict[str, AttributeValue]:
         """Return low-cardinality attributes for metric recording."""
         return self.metric_attributes
@@ -148,7 +195,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
 
     def record_stream_chunk(self) -> None:
         """Mark the request as streamed and record one output chunk arriving."""
-        if self._context_token is None:
+        if self._finished:
             return
         self._request_stream = True
         self._on_stream_chunk(timeit.default_timer())
@@ -246,18 +293,15 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
 
     def _finish(self, error: Error | None = None) -> None:
         """Apply finish telemetry and end the span. Finishes at most once."""
-        if self._context_token is None:
+        if self._finished:
             return
-        # Clear up front so a nested or repeated finish is a no-op even if
+        # Set up front so a nested or repeated finish is a no-op even if
         # _apply_finish raises.
-        context_token, self._context_token = self._context_token, None
+        self._finished = True
         try:
             self._apply_finish(error)
         finally:
-            try:
-                detach(context_token)
-            except Exception:  # pylint: disable=broad-except
-                pass
+            self.suspend()
             self.span.end()
 
     def stop(self) -> None:
