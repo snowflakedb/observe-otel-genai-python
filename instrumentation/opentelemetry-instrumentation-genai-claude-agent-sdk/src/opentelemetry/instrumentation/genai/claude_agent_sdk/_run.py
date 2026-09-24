@@ -47,7 +47,6 @@ from opentelemetry.instrumentation.genai.claude_agent_sdk._content import (
 from opentelemetry.instrumentation.genai.claude_agent_sdk._types import (
     InitData,
     StreamEventPayload,
-    TaskPatch,
     TaskToolInput,
     Usage,
     UsageTotals,
@@ -963,32 +962,21 @@ class AgentRun:
         )
 
     def _on_task_updated(self, msg: TaskUpdatedMessage) -> None:
-        """The task has reached a terminal state.
+        """The task reached a terminal state.
 
-        What this always does is stop treating the task's tool_result as an
-        untrustworthy receipt, so whichever signal arrives next closes the span.
-
-        Whether it closes the span itself depends on what is still to come. When
-        the receipt has not arrived yet it is, so this waits for it. When the
-        receipt has already been and gone, nothing of that kind is left —
-        measured in a recorded session, the receipt lands at 9.7s and the
-        terminal update at 36.4s — and the SDK documents a terminal task whose
-        notification is suppressed entirely, so the span would leak to teardown
-        and close after the next two chat spans with no status and no result.
-        The close is queued rather than done here, because across nine recorded
-        sessions the notification carrying the real output followed the update on
-        the same millisecond every time.
+        If its tool_result is still to come, that closes the span. If the
+        tool_result already arrived as a launch receipt, no further message is
+        guaranteed, because the SDK can suppress the notification, so the close
+        is queued (see _flush_task_closes).
         """
-        patch = cast("TaskPatch", msg.patch or {})
-        status = msg.status or patch.get("status")
-        if status not in _TERMINAL_TASK_STATUSES:
+        if msg.status not in _TERMINAL_TASK_STATUSES:
             return
         tool_use_id = self._task_ids.get(msg.task_id)
         if not tool_use_id:
             return
         call = self._call(tool_use_id)
         call.task_running = False
-        call.terminal_status = status
+        call.terminal_status = msg.status
         if call.receipt_spent:
             call.close_queued = True
 

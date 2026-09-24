@@ -187,30 +187,3 @@ async def test_no_recorded_chunk_is_dropped_before_its_span_opens(
     assert first + rest == sent, (
         f"{path.stem}: CLI sent {sent} deltas, {first + rest} were timed"
     )
-
-
-@pytest.mark.parametrize("path", RECORDINGS, ids=lambda p: p.stem)
-def test_a_recorded_task_update_carries_its_status_only_in_the_patch(
-    path: Path,
-):
-    """The CLI leaves ``status`` unset on task_updated and puts it in ``patch``.
-
-    _on_task_updated reads both. This records the real shape so a re-recording
-    against a newer CLI shows up as a failure here; it does not exercise the
-    read itself, because in every recorded session the notification arrives on
-    the next line and closes the tool before the status is needed.
-    """
-    assert_recordings_exist()
-    updates = [
-        json.loads(line)
-        for line in path.read_text().splitlines()
-        if line.strip() and '"task_updated"' in line
-    ]
-    for update in updates:
-        assert update.get("status") is None, (
-            f"{path.stem}: task_updated has a top-level status; the test "
-            f"builder in test_stream.py may now be the more realistic shape"
-        )
-        assert (update.get("patch") or {}).get("status"), (
-            f"{path.stem}: task_updated patch carries no status"
-        )

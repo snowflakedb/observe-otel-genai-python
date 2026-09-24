@@ -3,11 +3,10 @@
 
 """Shapes of the CLI payloads the SDK passes through as plain dicts.
 
-``StreamEvent.event``, ``SystemMessage.data``, ``TaskUpdatedMessage.patch`` and
-``ToolUseBlock.input`` are typed ``dict[str, Any]`` by the SDK: they carry the
-CLI's raw JSON, which the SDK does not model. These declarations record the
-fields this instrumentation reads, so the assumptions are written down and
-checked rather than implied.
+``StreamEvent.event``, ``SystemMessage.data`` and ``ToolUseBlock.input`` are
+typed ``dict[str, Any]`` by the SDK: they carry the CLI's raw JSON, which the
+SDK does not model. These declarations record the fields this instrumentation
+reads, so the assumptions are written down and checked rather than implied.
 
 Every key is optional. The CLI sends what it sends, and an absent field means
 the corresponding attribute is left off the span.
@@ -66,12 +65,6 @@ class InitData(TypedDict, total=False):
 
     session_id: str
     model: str
-
-
-class TaskPatch(TypedDict, total=False):
-    """``TaskUpdatedMessage.patch`` — the fields that changed on a task."""
-
-    status: str
 
 
 class TaskToolInput(TypedDict, total=False):
