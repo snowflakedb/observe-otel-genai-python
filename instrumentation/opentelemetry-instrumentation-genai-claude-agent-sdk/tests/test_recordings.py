@@ -111,29 +111,32 @@ async def test_a_recorded_session_builds_a_well_formed_tree(
 
 @pytest.mark.parametrize("path", RECORDINGS, ids=lambda p: p.stem)
 @pytest.mark.asyncio
-async def test_a_recorded_chat_span_with_final_usage_also_has_chunk_timings(
+async def test_a_recorded_main_thread_call_with_final_usage_is_timed(
     handler, span_exporter, path: Path
 ):
-    """A call's final usage and its chunk timings both come from stream events.
-
-    So a span that is not marked partial had events flowing, and must carry the
-    timings too. The reverse does not hold: a call whose events were flowing
-    when the stream ended is timed and still partial, having never received the
-    ``message_delta`` that closes its usage.
-    """
+    """A main-thread call's final usage and its chunk timings both come from
+    stream events, so a call reporting final usage must be timed too. Subagent
+    calls are left out: their last one takes its final usage from the
+    delegation's result, and none of them is streamed."""
     assert_recordings_exist()
     await replay(handler, path, multi_turn=False)
-    chats = [
+    spans = list(span_exporter.get_finished_spans())
+    root_ids = {
+        span.context.span_id
+        for span in spans
+        if span.name == "invoke_agent claude-agent-sdk"
+    }
+    main_calls = [
         span
-        for span in span_exporter.get_finished_spans()
-        if span.name.startswith("chat ")
+        for span in spans
+        if span.name.startswith("chat ") and span.parent.span_id in root_ids
     ]
-    assert chats, f"{path.stem}: no chat spans"
-    for chat in chats:
-        if chat.attributes.get(ATTR_IS_PARTIAL):
+    assert main_calls, f"{path.stem}: no main-thread chat spans"
+    for call in main_calls:
+        if call.attributes.get(ATTR_IS_PARTIAL):
             continue
-        assert ATTR_TIME_TO_FIRST_CHUNK in chat.attributes, (
-            f"{path.stem}: {chat.name} reports final usage but no chunk timing"
+        assert ATTR_TIME_TO_FIRST_CHUNK in call.attributes, (
+            f"{path.stem}: {call.name} reports final usage but no chunk timing"
         )
 
 

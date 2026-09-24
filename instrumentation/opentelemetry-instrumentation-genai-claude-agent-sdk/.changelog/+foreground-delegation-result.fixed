@@ -1,0 +1,1 @@
+Close a foreground delegation on its tool result, recording the full output instead of the task summary, and report final token counts for its subagent's last call.

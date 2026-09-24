@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         SystemPromptPreset,
         TaskUpdatedMessage,
         ToolUseBlock,
+        UserMessage,
     )
 
 _logger = logging.getLogger(__name__)
@@ -302,6 +303,13 @@ class _ChatContext:
     # Running conversation, replayed as each chat span's input.
     history: list[InputMessage] = field(default_factory=list[InputMessage])
 
+    def set_final_usage(self, usage: Usage) -> None:
+        self.final_usage = usage
+        details = usage.get("output_tokens_details") or {}
+        thinking = details.get("thinking_tokens")
+        if isinstance(thinking, int) and thinking > 0:
+            self.thinking_tokens = thinking
+
 
 @dataclass
 class _Subagent:
@@ -347,10 +355,12 @@ class _ToolCall:
 
     @property
     def outstanding(self) -> bool:
-        """The turn has to wait for this call: its task, its subagent, or a
-        close waiting on the task's output."""
+        """The turn has to wait for this call: its task, a subagent that has not
+        reported finishing, or a close waiting on the task's output."""
         return (
-            self.task_running or self.close_queued or self.subagent is not None
+            self.task_running
+            or self.close_queued
+            or (self.subagent is not None and self.terminal_status is None)
         )
 
 
@@ -779,14 +789,27 @@ class AgentRun:
     def _finish_subagent(self, tool_use_id: str) -> None:
         """End a subagent span once the Task tool that spawned it has returned."""
         call = self._calls.get(tool_use_id)
-        entry = call.subagent if call is not None else None
-        if call is None or entry is None:
+        if call is None or call.subagent is None:
             return
-        call.subagent = None
+        # Cleared first, so a malformed stream in which the subagent owns its
+        # own launcher cannot bring the close back here.
+        entry, call.subagent = call.subagent, None
         call.subagent_finished = True
+        for owned_id, owned in list(self._calls.items()):
+            if owned.owner == tool_use_id and owned.invocation is not None:
+                if owned.task_running and owned.receipt_spent:
+                    # A background task it started keeps running without it:
+                    # detach it, as the end of a turn would.
+                    self._detached.add(owned_id)
+                self._guarded(
+                    self._close_tool,
+                    owned_id,
+                    None,
+                    self._unfinished_reason(owned_id),
+                )
         ctx = self._chats.pop(tool_use_id, None)
         if ctx is not None:
-            self._close_chat(ctx)
+            self._guarded(self._close_chat, ctx)
         if entry.output and self._handler.should_capture_content():
             entry.invocation.output_messages = entry.output
         entry.invocation.stop()
@@ -843,20 +866,20 @@ class AgentRun:
             return
         # A Task tool owns a nested subagent span. End the child first: a child
         # outliving its parent renders as a bar sticking out past it.
-        self._finish_subagent(tool_call_id)
+        self._guarded(self._finish_subagent, tool_call_id)
         call = self._calls.get(tool_call_id)
         if call is None:
             return
-        # launch and owner deliberately survive: a subagent still reads its
-        # identity from the launch, and teardown walks the owner chain to order
-        # closes, both after this span has gone.
+        # launch deliberately survives: a subagent still reads its identity from
+        # it after this span has gone.
         invocation, call.invocation = call.invocation, None
         status, call.terminal_status = call.terminal_status, None
+        call.task_running = False
         call.receipt_spent = False
         call.close_queued = False
         if invocation is None:
             return
-        if error_message is None and status not in (None, "completed"):
+        if status not in (None, "completed"):
             error_message = f"task {status}"
         if result is not None and invocation.should_capture_content:
             invocation.tool_result = result
@@ -910,21 +933,26 @@ class AgentRun:
     def _on_task_started(self, msg: Any) -> None:
         """The CLI registered this call as a task.
 
-        Always ahead of that call's tool_result, whether it then runs inline or
-        in the background.
+        Always ahead of that call's tool_result, whether it then runs in the
+        foreground or in the background.
         """
         if msg.tool_use_id:
             self._call(msg.tool_use_id).task_running = True
             self._task_ids[msg.task_id] = msg.tool_use_id
 
     def _on_task_notification(self, msg: Any) -> None:
-        """The task really finished. ``summary`` is its output — the same text an
-        inline tool_result carries, and what a backgrounded one lacks."""
+        """The task really finished. For a backgrounded task, whose tool_result
+        was only a receipt, ``summary`` is the one output it gets."""
         tool_use_id = msg.tool_use_id or self._task_ids.get(msg.task_id)
         if not tool_use_id:
             return
-        self._call(tool_use_id).task_running = False
+        call = self._call(tool_use_id)
+        call.task_running = False
         self._task_ids.pop(msg.task_id, None)
+        if not call.receipt_spent:
+            # In the foreground: its tool_result follows, with the full output.
+            call.terminal_status = msg.status
+            return
         failed = (
             msg.status in _TERMINAL_TASK_STATUSES and msg.status != "completed"
         )
@@ -1031,7 +1059,7 @@ class AgentRun:
                 ):
                     parent_call.subagent.output.append(message)
 
-    def _on_user(self, msg: Any) -> None:
+    def _on_user(self, msg: UserMessage) -> None:
         parent = msg.parent_tool_use_id
         ctx = self._chat_context(parent)
         blocks = blocks_of(msg.content)
@@ -1046,6 +1074,12 @@ class AgentRun:
         else:
             self._close_chat(ctx)
 
+        # A subagent's calls get no stream events, but its delegation's
+        # tool_result carries the final usage of its last call, which is still
+        # open. A failed tool's detail is a plain string.
+        detail = msg.tool_use_result
+        usage = detail.get("usage") if isinstance(detail, dict) else None
+
         for block in blocks:
             tool_use_id = getattr(block, "tool_use_id", None)
             if not tool_use_id:
@@ -1055,6 +1089,13 @@ class AgentRun:
             if call is not None and call.task_running:
                 call.receipt_spent = True
                 continue
+            subagent_chat = self._chats.get(tool_use_id)
+            if (
+                usage
+                and subagent_chat is not None
+                and subagent_chat.invocation is not None
+            ):
+                subagent_chat.set_final_usage(usage)
             self._close_tool(
                 tool_use_id,
                 getattr(block, "content", None),
@@ -1136,11 +1177,7 @@ class AgentRun:
                 return
             usage = event.get("usage")
             if usage:
-                ctx.final_usage = usage
-                details = usage.get("output_tokens_details") or {}
-                thinking = details.get("thinking_tokens")
-                if isinstance(thinking, int) and thinking > 0:
-                    ctx.thinking_tokens = thinking
+                ctx.set_final_usage(usage)
             stop = (event.get("delta") or {}).get("stop_reason")
             if stop:
                 ctx.stop_reason = stop
@@ -1245,8 +1282,8 @@ class AgentRun:
         """Whether the turn still has to wait on any call."""
         return any(call.outstanding for call in self._calls.values())
 
-    def _teardown_reason(self, tool_use_id: str) -> str | None:
-        """Why a tool still open when the stream ended is a failure, if it is."""
+    def _unfinished_reason(self, tool_use_id: str) -> str | None:
+        """Why a tool closed before reporting back is a failure, if it is."""
         call = self._call(tool_use_id)
         status = call.terminal_status
         if status == "completed":
@@ -1258,23 +1295,6 @@ class AgentRun:
             # reported is not work that failed.
             return None
         return "tool never returned"
-
-    def _depth(self, tool_use_id: str) -> int:
-        """How many subagents deep this tool sits.
-
-        Walks ids the CLI supplied, so the chain is only as trustworthy as the
-        stream: the visited set is there so a malformed one that points back at
-        itself terminates instead of spinning.
-        """
-        seen = {tool_use_id}
-        depth = 0
-        owner = self._call(tool_use_id).owner
-        while owner is not None and owner not in seen:
-            seen.add(owner)
-            depth += 1
-            next_call = self._calls.get(owner)
-            owner = next_call.owner if next_call is not None else None
-        return depth
 
     def _detach_outstanding_work(self) -> None:
         """Mark what outlives this turn: work it is still waiting on, and the
@@ -1293,10 +1313,6 @@ class AgentRun:
     def _end_root(self) -> None:
         """Close everything still open and end the agent span.
 
-        Deepest first, because ``_close_tool`` ends a Task tool's subagent just
-        before the tool itself and a subagent's own tools have to be gone by
-        then: a child outliving its parent renders as a bar sticking out past it.
-
         Every close is guarded. One invocation raising as it finishes must not
         leave the rest open, and must not escape into the caller's ``async for``,
         where it would look like a transport failure and mask a real one.
@@ -1309,14 +1325,14 @@ class AgentRun:
                 for tool_use_id, call in self._calls.items()
                 if call.invocation is not None
             ]
-            for tool_use_id in sorted(
-                open_tools, key=self._depth, reverse=True
-            ):
+            # Closing a delegation closes its subagent's tools first, so the
+            # order here does not matter.
+            for tool_use_id in open_tools:
                 self._guarded(
                     self._close_tool,
                     tool_use_id,
                     None,
-                    self._teardown_reason(tool_use_id),
+                    self._unfinished_reason(tool_use_id),
                 )
             for tool_use_id, call in list(self._calls.items()):
                 if call.subagent is not None:

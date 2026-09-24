@@ -121,6 +121,11 @@ no ``gen_ai.client.operation.time_to_first_chunk`` or
 totals on the ``invoke_agent`` span are accurate either way. Turning it on adds
 ``StreamEvent`` messages to the stream your loop iterates.
 
+A subagent's calls get no stream events even with the option on. When the
+delegation runs in the foreground, its last call still reports final counts,
+taken from the delegation's result; every other subagent call stays marked as
+a snapshot.
+
 ``forward_subagent_text=True`` makes the CLI forward the text and thinking
 blocks of a subagent spawned through the Agent tool. By default it forwards
 only that subagent's ``tool_use`` and ``tool_result`` blocks, which is enough

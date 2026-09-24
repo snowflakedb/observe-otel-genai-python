@@ -39,7 +39,10 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.instrumentation.genai.claude_agent_sdk._run import AgentRun
 from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import ToolInvocation
+from opentelemetry.util.genai.invocation import (
+    LocalAgentInvocation,
+    ToolInvocation,
+)
 
 SESSION = "session-abc"
 NEW_CONVERSATION = "conversation-def"
@@ -72,8 +75,16 @@ def assistant(
     )
 
 
-def user(*blocks: Any, parent: str | None = None) -> UserMessage:
-    return UserMessage(content=list(blocks), parent_tool_use_id=parent)
+def user(
+    *blocks: Any,
+    parent: str | None = None,
+    tool_use_result: dict[str, Any] | str | None = None,
+) -> UserMessage:
+    return UserMessage(
+        content=list(blocks),
+        parent_tool_use_id=parent,
+        tool_use_result=tool_use_result,
+    )
 
 
 def delta(
@@ -528,31 +539,6 @@ async def test_backgrounded_task_closes_on_notification_not_receipt(
     # The tool span spans the real work, so it must outlive the subagent's.
     assert tool.end_time >= subagent.end_time
     assert tool.start_time <= subagent.start_time
-
-
-@pytest.mark.asyncio
-async def test_inline_task_notification_first_then_receipt_is_noop(
-    capturing_handler, span_exporter
-):
-    """Run inline the notification simply arrives first."""
-    task = ToolUseBlock(
-        id="t1", name="Task", input={"subagent_type": "helper"}
-    )
-    await drive(
-        capturing_handler,
-        [
-            init(),
-            assistant(task),
-            task_started("t1"),
-            task_notification("t1", summary="inline report"),
-            user(ToolResultBlock(tool_use_id="t1", content="inline report")),
-            result(),
-        ],
-    )
-    spans = Spans(span_exporter)
-    tool = spans.one("execute_tool Task")
-    assert tool.attributes["gen_ai.tool.call.result"] == "inline report"
-    assert tool.status.status_code is trace.StatusCode.UNSET
 
 
 @pytest.mark.asyncio
@@ -1746,6 +1732,7 @@ async def test_late_message_does_not_reopen_a_finished_subagent(
                 message_id="m_sub",
             ),
             task_notification("call-task", summary="report"),
+            user(ToolResultBlock(tool_use_id="call-task", content="report")),
             # Straggler naming a subagent whose span has already ended.
             assistant(
                 TextBlock("late"), parent="call-task", message_id="m_late"
@@ -3100,6 +3087,144 @@ async def test_a_subagent_named_after_its_tool_span_closed_keeps_its_identity(
     assert subagent.attributes["gen_ai.request.model"] == "claude-opus-4"
 
 
+@pytest.mark.asyncio
+async def test_a_foreground_delegation_closes_on_its_tool_result(
+    capturing_handler, span_exporter
+):
+    """A foreground task reports finishing before its tool_result arrives, and
+    only the tool_result carries the full output."""
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="cA", name="Agent", input={}), message_id="m1"
+            ),
+            task_started("cA"),
+            task_updated(status="completed"),
+            task_notification("cA", summary="short summary"),
+            user(ToolResultBlock(tool_use_id="cA", content="the full report")),
+            result(),
+        ],
+    )
+    tool = Spans(span_exporter).one("execute_tool Agent")
+    assert tool.attributes["gen_ai.tool.call.result"] == "the full report"
+
+
+@pytest.mark.asyncio
+async def test_a_delegations_result_completes_its_subagents_last_call(
+    handler, span_exporter
+):
+    """A subagent's calls get no stream events, so none of them sees its final
+    usage — except the last, whose usage the delegation's tool_result carries.
+
+    It is that one call's usage, not the subagent's total: recorded sessions
+    where the subagent made two calls match the second call exactly.
+    """
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="cA", name="Agent", input={}), message_id="m1"
+            ),
+            task_started("cA"),
+            assistant(
+                TextBlock("first"),
+                parent="cA",
+                message_id="s1",
+                usage={"input_tokens": 10, "output_tokens": 6},
+            ),
+            assistant(
+                TextBlock("last"),
+                parent="cA",
+                message_id="s2",
+                usage={"input_tokens": 12, "output_tokens": 1},
+            ),
+            task_updated(status="completed"),
+            task_notification("cA"),
+            user(
+                ToolResultBlock(tool_use_id="cA", content="report"),
+                tool_use_result={
+                    "status": "completed",
+                    "usage": {"input_tokens": 12, "output_tokens": 479},
+                },
+            ),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    calls = {
+        c.attributes["gen_ai.response.id"]: c
+        for c in spans.all
+        if c.name.startswith("chat ")
+    }
+    assert calls["s2"].attributes["gen_ai.usage.output_tokens"] == 479
+    assert "claude_agent_sdk.usage.is_partial" not in calls["s2"].attributes
+    assert calls["s1"].attributes["claude_agent_sdk.usage.is_partial"] is True
+    # A total for the subagent would need every call's usage, which only the
+    # last one has.
+    agent = spans.one("invoke_agent Agent")
+    assert "gen_ai.usage.output_tokens" not in agent.attributes
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_ended_mid_stream_closes_its_own_tools_first(
+    handler, span_exporter
+):
+    """A subagent killed while one of its tools is open ends then and there, not
+    at teardown, so its tools have to be closed with it."""
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "researcher"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            assistant(
+                ToolUseBlock(id="call-sub", name="Read", input={}),
+                parent="call-task",
+                message_id="m_sub",
+            ),
+            task_notification("call-task", status="killed"),
+            assistant(TextBlock("moving on"), message_id="m2"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    sub_tool = spans.one("execute_tool Read")
+    subagent = spans.one("invoke_agent researcher")
+    assert sub_tool.end_time <= subagent.end_time
+    assert sub_tool.status.description == "tool never returned"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tools_string_result_still_closes_it(
+    handler, span_exporter
+):
+    """The CLI sends a failed tool's detail as a plain string, not a dict."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(ToolUseBlock(id="b", name="Bash", input={})),
+            user(
+                ToolResultBlock(
+                    tool_use_id="b", content="boom", is_error=True
+                ),
+                tool_use_result="Error: Exit code 1",
+            ),
+            result(),
+        ],
+    )
+    tool = Spans(span_exporter).one("execute_tool Bash")
+    assert tool.status.status_code is trace.StatusCode.ERROR
+    assert tool.status.description == "tool error"
+
+
 def _backgrounded_delegation() -> list[Any]:
     """A turn that ends at its result with a delegation still running."""
     return [
@@ -3294,6 +3419,85 @@ async def test_a_delegation_launched_before_its_turn_ended_is_detached_with_its_
 
 
 @pytest.mark.asyncio
+async def test_a_killed_background_subagent_ends_before_its_turn(
+    capturing_handler, span_exporter
+):
+    """In the CLI's order: task_updated, then the notification with the summary.
+    The turn ends only after the notification, once, and a late message from
+    the killed subagent does not reopen it in the next turn."""
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "researcher"}
+    )
+    messages = [
+        init(),
+        assistant(task, message_id="m1"),
+        task_started("call-task"),
+        user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+        result(),
+        assistant(
+            ToolUseBlock(id="call-sub", name="Read", input={}),
+            parent="call-task",
+            message_id="m_sub",
+        ),
+        task_updated(status="killed"),
+        task_notification("call-task", status="killed", summary="partial"),
+        assistant(TextBlock("late"), parent="call-task", message_id="m_late"),
+        init(),
+        assistant(TextBlock("two"), message_id="m2"),
+        result(),
+    ]
+    assert await roots_ended_at_each_result(
+        capturing_handler, messages, span_exporter
+    ) == [0, 2]
+    spans = Spans(span_exporter)
+    delegation = spans.one("execute_tool Agent")
+    assert delegation.status.description == "task killed"
+    assert delegation.attributes["gen_ai.tool.call.result"] == "partial"
+    assert (
+        spans.one("invoke_agent researcher").end_time
+        <= delegation.end_time
+        <= spans.named("invoke_agent claude-agent-sdk")[0].end_time
+    )
+    assert not spans.named("invoke_agent subagent")
+
+
+@pytest.mark.asyncio
+async def test_a_subagents_background_task_outlives_it_without_failing(
+    handler, span_exporter
+):
+    """A foreground subagent can return while a background command it started
+    is still running. That command has not failed, and it no longer holds the
+    turn open: its parent is gone, so it is detached."""
+    messages = [
+        init(),
+        assistant(
+            ToolUseBlock(id="agent", name="Agent", input={}), message_id="m1"
+        ),
+        task_started("agent", task_id="t-agent"),
+        assistant(
+            ToolUseBlock(id="bash", name="Bash", input={}),
+            parent="agent",
+            message_id="s1",
+        ),
+        task_started("bash", task_id="t-bash", task_type="local_bash"),
+        user(
+            ToolResultBlock(tool_use_id="bash", content="started"),
+            parent="agent",
+        ),
+        task_notification("agent", task_id="t-agent"),
+        user(ToolResultBlock(tool_use_id="agent", content="report")),
+        result(),
+    ]
+
+    ended_at_result = await roots_ended_at_each_result(
+        handler, messages, span_exporter
+    )
+    assert ended_at_result == [1]
+    bash = Spans(span_exporter).one("execute_tool Bash")
+    assert bash.status.status_code is trace.StatusCode.UNSET
+
+
+@pytest.mark.asyncio
 async def test_a_late_message_from_a_finished_subagent_opens_no_turn(
     handler, span_exporter
 ):
@@ -3328,6 +3532,120 @@ async def test_a_late_message_from_a_finished_subagent_opens_no_turn(
         if s.name.startswith("chat ")
     }
     assert responses == {"m1", "s1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_a_subagents_tool_failing_to_close_does_not_strand_the_delegation(
+    handler, span_exporter
+):
+    """The subagent's own tools close on the way to closing the delegation, so
+    one of them raising must not leave the delegation behind."""
+    finish = ToolInvocation._apply_finish  # pylint: disable=protected-access
+
+    def explode_for_read(
+        self: ToolInvocation, *args: Any, **kwargs: Any
+    ) -> Any:
+        if self.tool_call_id == "read":
+            raise RuntimeError("_apply_finish blew up")
+        return finish(self, *args, **kwargs)
+
+    messages = [
+        init(),
+        assistant(
+            ToolUseBlock(id="agent", name="Agent", input={}), message_id="m1"
+        ),
+        task_started("agent"),
+        assistant(
+            ToolUseBlock(id="read", name="Read", input={}),
+            parent="agent",
+            message_id="s1",
+        ),
+        result(),
+    ]
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(ToolInvocation, "_apply_finish", explode_for_read)
+        await drive(handler, messages)
+    assert Spans(span_exporter).one("execute_tool Agent")
+
+
+@pytest.mark.asyncio
+async def test_a_foreground_delegation_without_its_tool_result_does_not_hold_the_turn(
+    handler, span_exporter
+):
+    """Its notification says it finished; the turn can end at its result."""
+    messages = [
+        init(),
+        assistant(
+            ToolUseBlock(id="agent", name="Agent", input={}), message_id="m1"
+        ),
+        task_started("agent"),
+        assistant(TextBlock("sub"), parent="agent", message_id="s1"),
+        task_notification("agent", status="stopped"),
+        result(),
+    ]
+
+    ended_at_result = await roots_ended_at_each_result(
+        handler, messages, span_exporter
+    )
+    assert ended_at_result == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_foreground_delegation_reports_that_it_was_stopped(
+    handler, span_exporter
+):
+    """Its tool_result is flagged as an error too, but the notification says
+    why."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="agent", name="Agent", input={}),
+                message_id="m1",
+            ),
+            task_started("agent"),
+            task_notification("agent", status="stopped"),
+            user(
+                ToolResultBlock(
+                    tool_use_id="agent", content="stopped", is_error=True
+                )
+            ),
+            result(),
+        ],
+    )
+    tool = Spans(span_exporter).one("execute_tool Agent")
+    assert tool.status.description == "task stopped"
+
+
+@pytest.mark.asyncio
+async def test_a_foreground_delegation_inside_a_killed_subagent_never_returned(
+    handler, span_exporter
+):
+    """Only background work outlives the subagent that started it. A
+    foreground delegation still waiting on its own subagent never returned."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="outer", name="Agent", input={}),
+                message_id="m1",
+            ),
+            task_started("outer", task_id="t-outer"),
+            assistant(
+                ToolUseBlock(id="inner", name="Task", input={}),
+                parent="outer",
+                message_id="s1",
+            ),
+            task_started("inner", task_id="t-inner"),
+            task_notification("outer", task_id="t-outer", status="killed"),
+            user(ToolResultBlock(tool_use_id="outer", content="killed")),
+            result(),
+        ],
+    )
+    inner = Spans(span_exporter).one("execute_tool Task")
+    assert inner.status.description == "tool never returned"
 
 
 @pytest.mark.asyncio
@@ -3385,6 +3703,57 @@ async def test_close_leaves_the_callers_span_current(
         run.close()
         assert trace.get_current_span() is cleanup
     assert Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+
+
+@pytest.mark.asyncio
+async def test_a_foreground_task_stopped_after_its_turns_result_ends_the_turn(
+    handler, span_exporter
+):
+    """Only the notification arrives, with no task_updated before it."""
+    messages = [
+        init(),
+        assistant(
+            ToolUseBlock(id="agent", name="Agent", input={}), message_id="m1"
+        ),
+        task_started("agent"),
+        assistant(TextBlock("sub"), parent="agent", message_id="s1"),
+        result(),
+        task_notification("agent", status="stopped"),
+    ]
+    await drive(handler, messages, multi_turn=True, stop_after=len(messages))
+    assert Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    delegation = Spans(span_exporter).one("execute_tool Agent")
+    assert delegation.status.description == "task stopped"
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_its_turn_closed_stays_closed_in_the_next_turn(
+    handler, span_exporter
+):
+    """The turn closes a stopped foreground subagent itself, since no
+    tool_result came. A late message from it must not reopen it."""
+    messages = [
+        init(),
+        assistant(
+            ToolUseBlock(
+                id="agent", name="Agent", input={"subagent_type": "researcher"}
+            ),
+            message_id="m1",
+        ),
+        task_started("agent"),
+        assistant(TextBlock("sub"), parent="agent", message_id="s1"),
+        result(),
+        task_notification("agent", status="stopped"),
+        assistant(TextBlock("late"), parent="agent", message_id="s2"),
+        init(),
+        result(),
+    ]
+    assert await roots_ended_at_each_result(
+        handler, messages, span_exporter
+    ) == [0, 2]
+    spans = Spans(span_exporter)
+    assert len(spans.named("invoke_agent researcher")) == 1
+    assert not spans.named("invoke_agent subagent")
 
 
 @pytest.mark.asyncio
@@ -3496,6 +3865,30 @@ async def test_a_delegation_killed_before_its_subagent_spoke_stays_closed(
 
 
 @pytest.mark.asyncio
+async def test_a_foreground_task_inside_a_killed_subagent_does_not_hold_the_turn(
+    handler, span_exporter
+):
+    messages = [
+        init(),
+        assistant(
+            ToolUseBlock(id="outer", name="Agent", input={}), message_id="m1"
+        ),
+        task_started("outer", task_id="t-outer"),
+        user(ToolResultBlock(tool_use_id="outer", content="launched")),
+        result(),
+        assistant(
+            ToolUseBlock(id="inner", name="Task", input={}),
+            parent="outer",
+            message_id="s1",
+        ),
+        task_started("inner", task_id="t-inner"),
+        task_notification("outer", task_id="t-outer", status="killed"),
+    ]
+    await drive(handler, messages, multi_turn=True, stop_after=len(messages))
+    assert Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+
+
+@pytest.mark.asyncio
 async def test_a_stream_failing_to_start_leaves_the_callers_span_current(
     handler, span_exporter, tracer
 ):
@@ -3510,3 +3903,52 @@ async def test_a_stream_failing_to_start_leaves_the_callers_span_current(
         assert trace.get_current_span() is caller
     root = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
     assert root.status.status_code is trace.StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multi_turn", [False, True])
+async def test_a_subagent_failing_to_close_does_not_strand_its_delegation(
+    handler, span_exporter, monkeypatch, multi_turn
+):
+    def explode(self: LocalAgentInvocation, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("_apply_finish blew up")
+
+    monkeypatch.setattr(LocalAgentInvocation, "_apply_finish", explode)
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="agent", name="Agent", input={}),
+                message_id="m1",
+            ),
+            task_started("agent"),
+            assistant(TextBlock("sub"), parent="agent", message_id="s1"),
+            result(),
+        ],
+        multi_turn=multi_turn,
+    )
+    assert Spans(span_exporter).one("execute_tool Agent")
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_that_owns_its_own_launcher_still_closes(
+    handler, span_exporter
+):
+    """Malformed: the delegation's tool_use arrives inside the subagent it
+    launches."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("x"), parent="A", message_id="s1"),
+            assistant(
+                ToolUseBlock(id="A", name="Agent", input={}),
+                parent="A",
+                message_id="s2",
+            ),
+            user(ToolResultBlock(tool_use_id="A", content="report")),
+            result(),
+        ],
+    )
+    assert Spans(span_exporter).one("execute_tool Agent")
