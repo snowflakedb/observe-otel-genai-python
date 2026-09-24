@@ -748,6 +748,7 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-instrumentation" },
     { name = "opentelemetry-semantic-conventions" },
+    { name = "wrapt" },
 ]
 
 [package.optional-dependencies]
@@ -762,6 +763,7 @@ requires-dist = [
     { name = "opentelemetry-api", specifier = "~=1.43" },
     { name = "opentelemetry-instrumentation", specifier = ">=0.64b0,<1" },
     { name = "opentelemetry-semantic-conventions", specifier = ">=0.64b0,<1" },
+    { name = "wrapt", specifier = ">=1.17.0,<3.0.0" },
 ]
 provides-extras = ["instruments"]
 
