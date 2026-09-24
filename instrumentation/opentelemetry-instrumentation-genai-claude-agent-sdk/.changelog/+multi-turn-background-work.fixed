@@ -1,8 +1,1 @@
-Keep a `receive_messages` turn open until the work it started has finished. The
-result that answers the caller arrives while a backgrounded delegation is still
-running, and ending the turn there closed the subagent's parent out from under
-it: the Task tool was failed as never having returned, and the subagent — its
-launch block already discarded — reappeared under the next turn's agent span
-under a placeholder name. A task still running when the stream ends is no
-longer reported as an error either, and a message naming a subagent whose span
-has already ended no longer re-opens the subtree.
+Keep a `ClaudeSDKClient` turn open until the background work it started finishes or the next turn begins, and ignore what that work reports afterwards. Such work cut off by the end of the stream, or by cancelling the reader, is not reported as an error.

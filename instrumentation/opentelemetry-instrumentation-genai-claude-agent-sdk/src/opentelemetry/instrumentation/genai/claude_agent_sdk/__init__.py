@@ -89,6 +89,7 @@ from opentelemetry.instrumentation.genai.claude_agent_sdk.package import (
 )
 from opentelemetry.instrumentation.genai.claude_agent_sdk.patch import (
     wrap_client_query,
+    wrap_disconnect,
     wrap_query,
     wrap_receive_messages,
 )
@@ -185,9 +186,9 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
 
             client = client_module.ClaudeSDKClient
             for attribute, wrapper in (
-                # query() opens no span; it is where the prompt of a client
-                # session is, and receive_messages() reports it.
-                ("query", wrap_client_query()),
+                # query() opens no span; it hands the prompt to the
+                # connection's run.
+                ("query", wrap_client_query(self._handler, agent_name)),
                 # Only receive_messages: receive_response() is a convenience
                 # wrapper that iterates it, so wrapping both would build the
                 # tree twice.
@@ -195,6 +196,7 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
                     "receive_messages",
                     wrap_receive_messages(self._handler, agent_name),
                 ),
+                ("disconnect", wrap_disconnect()),
             ):
                 wrap_function_wrapper(client, attribute, wrapper)
                 installed.append((client, attribute))
@@ -217,6 +219,7 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
         unwrap(sys.modules["claude_agent_sdk.query"], "query")
         unwrap(client_module.ClaudeSDKClient, "query")
         unwrap(client_module.ClaudeSDKClient, "receive_messages")
+        unwrap(client_module.ClaudeSDKClient, "disconnect")
         self._shutdown_loaded_completion_hook()
         self._handler = None
 

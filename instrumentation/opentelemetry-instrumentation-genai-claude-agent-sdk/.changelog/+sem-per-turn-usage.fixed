@@ -1,9 +1,1 @@
-Report each `receive_messages` turn's own tokens and cost rather than the
-session's running totals. The CLI documents `model_usage` and `total_cost_usd` as
-cumulative over the session — a resumed session starts them fresh and a
-mid-session `/clear` zeroes them — which is the right value for `query()`, where
-the session is the invocation, but not for multi-turn mode, where a fresh
-`invoke_agent` span opens per turn while the counters keep growing. Turn two
-reported turn one's tokens and cost on top of its own, and turn three all three
-turns'. The totals are snapshotted when a turn ends and the baseline goes back to
-zero on a conversation reset, which is when the CLI's counters do.
+Report each `ClaudeSDKClient` turn's own tokens and cost rather than the session's running totals, including when each turn is read by its own `receive_response()` call or a result carries no usage.

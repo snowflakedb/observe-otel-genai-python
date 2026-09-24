@@ -68,6 +68,13 @@ Check out the `manual example <examples/manual>`_ for more details.
     anyio.run(main)
 
 
+With ``ClaudeSDKClient``, each turn of a connection gets its own
+``invoke_agent`` span, however many ``receive_response()`` calls read it. The
+span opens under whatever span was active when you called ``query()`` for that
+turn. A turn that starts background work stays open until that work finishes or
+the next turn begins, so its span can include the time you spent before sending
+the next prompt.
+
 Configuration
 -------------
 

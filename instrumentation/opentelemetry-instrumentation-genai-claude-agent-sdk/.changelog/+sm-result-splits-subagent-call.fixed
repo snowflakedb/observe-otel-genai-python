@@ -1,7 +1,1 @@
-Leave a subagent's model call alone when a result arrives. A result is a
-checkpoint rather than the end of the run, and closing every open `chat` span on
-one split a single API call in two: measured against a recorded session, a result
-landed between two assistant messages carrying the same message id, so the first
-half of the call was reported as a span of its own flagged partial and the second
-half rebuilt its context from scratch with no conversation history. Only the main
-thread's call closes on a result now, the same rule already applied to tools.
+Leave a subagent's model call alone when a result arrives, instead of closing it and splitting one API call into two spans.

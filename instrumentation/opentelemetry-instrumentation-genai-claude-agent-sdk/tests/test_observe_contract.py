@@ -145,7 +145,8 @@ async def test_every_span_that_names_an_agent_carries_the_attribute(
             yield message
 
     run = AgentRun(handler)
-    async for _ in run.iterate(stream, "review the ledger"):
+    run.submit("review the ledger")
+    async for _ in run.iterate(stream):
         pass
 
     spans = list(span_exporter.get_finished_spans())

@@ -29,6 +29,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -80,6 +83,7 @@ if TYPE_CHECKING:
         SystemPromptFile,
         SystemPromptPreset,
         TaskUpdatedMessage,
+        ToolUseBlock,
     )
 
 _logger = logging.getLogger(__name__)
@@ -316,7 +320,7 @@ class _ToolCall:
     """
 
     # The span, while it is open. None once closed, and for a block that never
-    # opened one, so this is what "still running" is read from.
+    # opened one.
     invocation: ToolInvocation | None = None
     # The tool_use block. A delegation tool's subagent takes its name, model and
     # prompt from here, so it outlives the tool's own span.
@@ -341,15 +345,25 @@ class _ToolCall:
     # the subtree.
     subagent_finished: bool = False
 
+    @property
+    def outstanding(self) -> bool:
+        """The turn has to wait for this call: its task, its subagent, or a
+        close waiting on the task's output."""
+        return (
+            self.task_running or self.close_queued or self.subagent is not None
+        )
+
 
 class AgentRun:
     """Turns one SDK message stream into spans.
 
-    ``multi_turn`` selects the agent-invocation boundary. ``query()`` and
-    ``receive_response()`` each read exactly one invocation, so their span ends
-    with the stream. ``receive_messages()`` is continuous, so it closes an
-    invocation on a result that answers a prompt the caller submitted and opens
-    the next one on the following message.
+    ``multi_turn`` selects the agent-invocation boundary. ``query()`` reads
+    exactly one invocation, so its span ends with the stream. A client
+    connection is one continuous stream, however many ``receive_response()``
+    calls read it, so it opens one invocation per turn. A turn ends at its
+    result, or, when background work it started is still running, once that work
+    finishes or the next turn's init arrives. A reader that stops early leaves the
+    turn open for the next read; ``close()`` ends it.
     """
 
     def __init__(
@@ -358,13 +372,12 @@ class AgentRun:
         *,
         sdk_options: Any = None,
         agent_name: str | None = None,
-        conversation_id: str | None = None,
         multi_turn: bool = False,
     ) -> None:
         self._handler = handler
         self._sdk_options = sdk_options
         self._agent_name = agent_name or DEFAULT_AGENT_NAME
-        self._conversation_id_override = conversation_id
+        self._conversation_id_override: str | None = None
         self._multi_turn = multi_turn
         self._provider = resolve_provider(sdk_options)
         # Whether the CLI forwards stream events. Off, a call's final usage
@@ -375,6 +388,8 @@ class AgentRun:
 
         self._root: LocalAgentInvocation | None = None
         self._root_context: Context | None = None
+        # The caller's context at the last submit(). A turn the CLI starts by
+        # itself opens here.
         self._caller_context: Context = otel_context.get_current()
 
         # Chat-span state per agent context, keyed by _MAIN or a subagent's
@@ -386,12 +401,15 @@ class AgentRun:
         self._calls: dict[str, _ToolCall] = {}
         # task_id -> tool_use_id, because task_updated carries only the task_id.
         self._task_ids: dict[str, str] = {}
-        # The caller has their answer, but background work is still running, so
-        # the invocation is not over yet.
+        # The turn has its result, and ends once no call is outstanding.
         self._end_pending = False
+        # tool_use_ids the CLI may still report on after their turn or subagent
+        # ended. Anything naming one is dropped, and one closed before it
+        # reported back is not a failure.
+        self._detached: set[str] = set()
 
         # The CLI's cumulative counters as of the last result, and their value
-        # when the previous invocation ended. See _usage_delta.
+        # when the previous turn ended. See _usage_delta.
         self._usage_totals: UsageTotals = _zero_usage()
         self._usage_baseline: UsageTotals = _zero_usage()
 
@@ -399,19 +417,36 @@ class AgentRun:
         self._model: str | None = None
         self._compacted = False
         self._prompt: Any = None
+        # What the caller sent, in order, for the turns about to open.
+        self._submitted: deque[tuple[Any, str | None, Context]] = deque()
         self._final_error: Error | None = None
         self._saw_result = False
 
     # --- public surface ---------------------------------------------------
 
-    async def iterate(self, start: Any, prompt: Any = None) -> Any:
+    def submit(self, prompt: Any, conversation_id: str | None = None) -> None:
+        """Record what the caller sent, and the context they sent it in, for the
+        next turn to report and open under.
+
+        Only a plain prompt is queued. A streamed one can hold any number of
+        turns, including none, so it cannot be matched to one.
+        """
+        self._caller_context = otel_context.get_current()
+        if isinstance(prompt, str):
+            self._submitted.append(
+                (prompt, conversation_id, self._caller_context)
+            )
+
+    def close(self) -> None:
+        """End whatever is still open, as when the connection goes away."""
+        self._teardown(self._dispose)
+
+    async def iterate(self, start: Any) -> Any:
         """Wrap the SDK's stream, observing each message on the way past."""
-        self._prompt = prompt
         try:
             stream = start()
         except Exception as exc:
-            self._open_root()
-            self._guarded(self._fail_root, exc)
+            self._teardown(self._fail_start, exc)
             raise
 
         try:
@@ -419,39 +454,38 @@ class AgentRun:
                 self._observe(message)
                 yield message
         except GeneratorExit:
-            # The consumer stopped reading. That is their choice, not a failure
-            # of the run, so this falls through to _dispose like any other early
-            # exit. Ahead of BaseException, which would otherwise fail the span.
+            # The consumer stopped reading, which is not a failure. A client
+            # connection goes on: receive_response() stops at each result and
+            # the next call picks up the same stream.
+            if not self._multi_turn:
+                self._teardown(self._dispose)
             raise
         except BaseException as exc:
             # BaseException so a cancelled or interrupted run is recorded as
             # such, rather than as a stream that stopped for no stated reason.
-            self._guarded(self._fail_root, exc)
+            # A turn that already has its result was only waiting on background
+            # work, so being cancelled then is not a failure.
+            if self._end_pending and not isinstance(exc, Exception):
+                self._teardown(self._end_root)
+            else:
+                self._teardown(self._fail_root, exc)
             raise
-        finally:
-            # Reached on a break, an abandoned generator, and on the way out of
-            # the exceptions above, which must stay the ones that surface.
-            self._guarded(self._dispose)
+        self._teardown(self._dispose)
 
     def _observe(self, message: Any) -> None:
-        """Handle one message without letting it affect the caller.
-
-        A mapping slip must not interrupt the stream, and the caller's active
-        context must look untouched: spans are parented explicitly, but
-        util-genai still attaches each span it starts, and these spans do not
-        finish in the order they opened.
-        """
-        saved = otel_context.get_current()
-        try:
-            self._on_message(message)
-        except Exception:  # pylint: disable=broad-except
-            _logger.debug(
-                "claude-agent-sdk instrumentation failed on a message",
-                exc_info=True,
-            )
-        finally:
-            if otel_context.get_current() is not saved:
-                otel_context.attach(saved)
+        """Handle one message without letting it affect the caller: a mapping
+        slip must not interrupt the stream or change the caller's context."""
+        with _keep_current_context():
+            try:
+                self._on_message(message)
+            except Exception:  # pylint: disable=broad-except
+                _logger.debug(
+                    "claude-agent-sdk instrumentation failed on a message",
+                    exc_info=True,
+                )
+            # Checked once the message is fully handled, never part-way through
+            # closing something.
+            self._guarded(self._maybe_end_root)
 
     # --- dispatch ---------------------------------------------------------
 
@@ -475,6 +509,13 @@ class AgentRun:
         )
 
         self._flush_task_closes(msg, TaskNotificationMessage)
+        if self._is_detached(msg):
+            # Detach the calls it launches as well: their task messages name
+            # only their own tool_use_id, not the launcher's.
+            for block in blocks_of(getattr(msg, "content", None)):
+                if _is_tool_use(block):
+                    self._detached.add(cast("ToolUseBlock", block).id)
+            return
 
         # The Task* messages subclass SystemMessage, so they are matched first.
         if isinstance(msg, TaskStartedMessage):
@@ -496,6 +537,14 @@ class AgentRun:
         elif isinstance(msg, ConversationResetMessage):
             self._on_conversation_reset(msg)
 
+    def _is_detached(self, msg: Any) -> bool:
+        """Whether this message reports on work that outlived its turn, or the
+        subagent that started it."""
+        return (
+            getattr(msg, "parent_tool_use_id", None) in self._detached
+            or getattr(msg, "tool_use_id", None) in self._detached
+        )
+
     # --- root agent -------------------------------------------------------
 
     @property
@@ -505,11 +554,19 @@ class AgentRun:
     def _open_root(self) -> LocalAgentInvocation:
         if self._root is not None:
             return self._root
+        # A turn the caller did not start, like one reporting a finished task,
+        # has no prompt, and stays where the caller last was.
+        if self._submitted:
+            self._prompt, self._conversation_id_override, context = (
+                self._submitted.popleft()
+            )
+        else:
+            self._prompt, context = None, self._caller_context
         root = self._handler.invoke_local_agent(
             agent_name=self._agent_name,
             request_model=getattr(self._sdk_options, "model", None)
             or self._model,
-            context=self._caller_context,
+            context=context,
         )
         root.conversation_id = self._conversation_id
         # LocalAgentInvocation is INTERNAL and carries no provider of its own,
@@ -789,7 +846,6 @@ class AgentRun:
         self._finish_subagent(tool_call_id)
         call = self._calls.get(tool_call_id)
         if call is None:
-            self._maybe_end_root()
             return
         # launch and owner deliberately survive: a subagent still reads its
         # identity from the launch, and teardown walks the owner chain to order
@@ -799,7 +855,6 @@ class AgentRun:
         call.receipt_spent = False
         call.close_queued = False
         if invocation is None:
-            self._maybe_end_root()
             return
         if error_message is None and status not in (None, "completed"):
             error_message = f"task {status}"
@@ -809,12 +864,16 @@ class AgentRun:
             invocation.fail(Error(type="tool_error", message=error_message))
         else:
             invocation.stop()
-        self._maybe_end_root()
 
     # --- message handlers -------------------------------------------------
 
     def _on_system(self, msg: SystemMessage) -> None:
         if msg.subtype == "init":
+            # Every turn opens with an init. A turn still waiting on background
+            # work ends here, or a task that never finishes would keep every
+            # later turn inside it.
+            if self._end_pending:
+                self._end_root()
             data = cast("InitData", msg.data or {})
             self._session_id = data.get("session_id") or self._session_id
             self._model = data.get("model") or self._model
@@ -904,8 +963,6 @@ class AgentRun:
         call.terminal_status = status
         if call.receipt_spent:
             call.close_queued = True
-            return
-        self._maybe_end_root()
 
     def _flush_task_closes(
         self, msg: Any, notification_type: type[Any]
@@ -921,6 +978,9 @@ class AgentRun:
         for tool_use_id, call in list(self._calls.items()):
             if call.close_queued:
                 self._close_tool(tool_use_id)
+        # A queued close can be the last thing its turn was waiting for, and
+        # this message then belongs to the next turn.
+        self._guarded(self._maybe_end_root)
 
     def _on_assistant(self, msg: Any) -> None:
         parent = msg.parent_tool_use_id
@@ -1113,14 +1173,13 @@ class AgentRun:
         self._open_chat(ctx, message_id, message.get("model"))
 
     def _on_result(self, msg: Any) -> None:
-        """A result is a checkpoint, not necessarily the end.
+        """Record the turn's usage and outcome, and close the main thread's call
+        in flight.
 
-        It closes the main thread's model call in flight and supersedes the
-        previous result. Tools and subagents are left alone — a backgrounded
-        delegation legitimately outlives the result that announced it, and so
-        does the call it is in the middle of: measured in a recorded session, a
-        result lands between two assistant messages carrying one message_id, and
-        closing the subagent's chat there split one API call into two spans.
+        In multi-turn mode this marks the turn to end once nothing it started is
+        outstanding. Subagent calls and tools are left open: a backgrounded
+        delegation outlives the result that announced it, and so can its current
+        call, which a result can land in the middle of.
         """
         root = self._open_root()
         self._session_id = msg.session_id or self._session_id
@@ -1136,13 +1195,14 @@ class AgentRun:
             self._close_chat(main, api_error)
         self._final_error = error
 
-        totals = _fold_model_usage(msg.model_usage)
-        if not totals["cost_usd"]:
-            totals["cost_usd"] = float(msg.total_cost_usd or 0.0)
-        # A later result supersedes an earlier one rather than adding to it: the
-        # counters are cumulative, so the last one to arrive holds the answer.
-        self._usage_totals = totals
-        turn = _usage_delta(totals, self._usage_baseline)
+        if msg.model_usage:
+            totals = _fold_model_usage(msg.model_usage)
+            if not totals["cost_usd"]:
+                totals["cost_usd"] = float(msg.total_cost_usd or 0.0)
+            # A later result supersedes an earlier one rather than adding to it:
+            # the counters are cumulative, so the last one holds the answer.
+            self._usage_totals = totals
+        turn = _usage_delta(self._usage_totals, self._usage_baseline)
         if turn["input_tokens"]:
             root.input_tokens = turn["input_tokens"]
         if turn["output_tokens"]:
@@ -1167,35 +1227,23 @@ class AgentRun:
         ):
             root.output_messages = text_output(msg.result)
 
-        if self._multi_turn and _answers_caller(msg):
+        if self._multi_turn:
             self._end_pending = True
-            self._maybe_end_root()
 
     # --- teardown ---------------------------------------------------------
 
     def _maybe_end_root(self) -> None:
-        """End the invocation once the caller has their answer and nothing is
-        still running for it.
+        """End the turn once its result is in and nothing is outstanding.
 
-        A backgrounded delegation outlives the result that announced it —
-        measured at 18.2s for the result against 36.4s for the task's real
-        completion — and everything it does in between still belongs to this
-        invocation. Ending on the result would close the subagent's parent out
-        from under it.
-
-        The drain is the trigger rather than a later result, because the result
-        a finished task produces carries ``origin.kind == "task-notification"``
-        and so is not one that answers the caller.
+        A backgrounded delegation outlives the result that announced it, and
+        everything it does in between still belongs to this turn.
         """
         if self._end_pending and not self._work_outstanding():
             self._end_root()
 
     def _work_outstanding(self) -> bool:
-        """Whether anything is still running for this invocation."""
-        return any(
-            call.task_running or call.subagent is not None
-            for call in self._calls.values()
-        )
+        """Whether the turn still has to wait on any call."""
+        return any(call.outstanding for call in self._calls.values())
 
     def _teardown_reason(self, tool_use_id: str) -> str | None:
         """Why a tool still open when the stream ended is a failure, if it is."""
@@ -1205,9 +1253,9 @@ class AgentRun:
             return None
         if status is not None:
             return f"task {status}"
-        if call.task_running:
-            # Still running in the background when the stream ended. Work that
-            # never reported is not work that failed.
+        if tool_use_id in self._detached:
+            # Still running when its turn or its subagent ended. Work that never
+            # reported is not work that failed.
             return None
         return "tool never returned"
 
@@ -1228,6 +1276,20 @@ class AgentRun:
             owner = next_call.owner if next_call is not None else None
         return depth
 
+    def _detach_outstanding_work(self) -> None:
+        """Mark what outlives this turn: work it is still waiting on, and the
+        calls its subagents are making. Closing them then is not a failure."""
+        outstanding = {
+            tool_use_id
+            for tool_use_id, call in self._calls.items()
+            if call.outstanding
+        }
+        self._detached |= outstanding | {
+            tool_use_id
+            for tool_use_id, call in self._calls.items()
+            if call.owner in outstanding
+        }
+
     def _end_root(self) -> None:
         """Close everything still open and end the agent span.
 
@@ -1239,9 +1301,9 @@ class AgentRun:
         leave the rest open, and must not escape into the caller's ``async for``,
         where it would look like a transport failure and mask a real one.
         """
-        # Re-entrant: closing a tool asks whether the invocation can now end.
         self._end_pending = False
         try:
+            self._detach_outstanding_work()
             open_tools = [
                 tool_use_id
                 for tool_use_id, call in self._calls.items()
@@ -1262,6 +1324,10 @@ class AgentRun:
             for ctx in list(self._chats.values()):
                 self._guarded(self._close_chat, ctx)
             self._chats.clear()
+            # Only after the closes, since _unfinished_reason treats a detached
+            # call as not failed. From here on, whatever the CLI still says
+            # about these calls is dropped.
+            self._detached |= self._calls.keys()
             self._calls.clear()
             self._task_ids.clear()
             # Where the next turn's cumulative counters are measured from.
@@ -1281,6 +1347,12 @@ class AgentRun:
                     self._guarded(root.fail, error)
                 else:
                     self._guarded(root.stop)
+
+    def _teardown(self, close: Any, *args: Any) -> None:
+        """Run a close outside _observe: absorb what it raises and leave the
+        caller's context as it was."""
+        with _keep_current_context():
+            self._guarded(close, *args)
 
     def _guarded(self, close: Any, *args: Any) -> None:
         """Run one close, absorbing whatever it raises.
@@ -1308,9 +1380,13 @@ class AgentRun:
         finally:
             self._end_root()
 
+    def _fail_start(self, exc: Exception) -> None:
+        """The SDK raised before streaming anything: report a failed run."""
+        self._open_root()
+        self._fail_root(exc)
+
     def _dispose(self) -> None:
-        """Close anything the stream left open — a break, or an abandoned
-        generator."""
+        """Close anything the stream left open."""
         if self._root is None:
             return
         if not self._saw_result and self._final_error is None:
@@ -1319,6 +1395,21 @@ class AgentRun:
                 message="agent stream ended before any result message",
             )
         self._end_root()
+
+
+@contextmanager
+def _keep_current_context() -> Iterator[None]:
+    """Leave the caller's active context as it was.
+
+    util-genai attaches each span it starts and detaches it when the span ends,
+    and these spans do not end in the order they opened.
+    """
+    saved = otel_context.get_current()
+    try:
+        yield
+    finally:
+        if otel_context.get_current() is not saved:
+            otel_context.attach(saved)
 
 
 def _is_tool_use(block: Any) -> bool:
@@ -1333,19 +1424,6 @@ def _is_tool_use(block: Any) -> bool:
         and getattr(block, "input", None) is not None
         and not type(block).__name__.startswith("ServerTool")
     )
-
-
-def _answers_caller(msg: Any) -> bool:
-    """True when this result answers a prompt the caller submitted.
-
-    In streaming-input mode the session also injects its own turns — background
-    task notifications, scheduled prompts, messages relayed from peers — and
-    each produces a result of its own. Those are internal checkpoints.
-    """
-    origin = getattr(msg, "origin", None)
-    if origin is None:
-        return True
-    return origin.get("kind") == "human"
 
 
 def _zero_usage() -> UsageTotals:
@@ -1365,9 +1443,8 @@ def _usage_delta(totals: UsageTotals, baseline: UsageTotals) -> UsageTotals:
     invocation: the CLI documents them that way, a resumed session starts them
     fresh, and a mid-session ``/clear`` zeroes them. With ``query()`` the session
     is the invocation, so the totals are already the invocation's. In multi-turn
-    mode a fresh root opens per turn while the counters keep growing, so turn two
-    reported turn one's tokens and cost as well as its own, and turn three all
-    three turns'.
+    mode a fresh root opens per turn while the counters keep growing, so each
+    turn reports the difference from where the previous one ended.
 
     Clamped at zero, because a counter reset the stream did not announce would
     otherwise be reported as a negative token count.

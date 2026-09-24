@@ -7,15 +7,16 @@ Two of them produce a stream, and they define different agent-invocation
 boundaries:
 
 * ``query()`` — one call is one invocation; the span ends with the stream.
-* ``ClaudeSDKClient.receive_messages()`` — continuous over many turns, so the
-  boundary is a result that answers a prompt the caller submitted.
+* ``ClaudeSDKClient.receive_messages()`` — continuous over the connection's
+  turns, so each turn is one invocation.
 
-``ClaudeSDKClient.query()`` is wrapped as well, but opens no span: it only
-writes a prompt to the CLI's stdin, and the invocation it starts is spanned by
-the receiving half. It is wrapped to capture the prompt, which the receiving
-half never sees — the CLI does not echo a client-mode prompt back as a
-``UserMessage``. A prompt passed to ``connect()`` instead is written by the SDK
-itself and is not captured.
+``ClaudeSDKClient.query()`` and ``disconnect()`` are wrapped as well, but open
+no span. ``query()`` only writes a prompt to the CLI's stdin. It is wrapped to
+hand the connection's run that prompt and the span active when it was sent,
+which is where the turn's span opens. By default the CLI does not echo a
+client-mode prompt back as a ``UserMessage``, so this is the only place it is
+seen. A prompt passed to ``connect()`` is written by the SDK itself and is not
+captured. ``disconnect()`` ends whatever the connection left open.
 
 ``ClaudeSDKClient.receive_response()`` is deliberately **not** wrapped. It is a
 convenience method whose whole body iterates ``receive_messages()``, so wrapping
@@ -29,8 +30,9 @@ delegation targets rather than the agent being invoked — _run.py opens their
 spans from the Task calls that reach them. A caller whose own application is
 the agent can name the root explicitly with ``instrument(agent_name=...)``.
 
-Each wrapper returns an async iterator yielding the same messages in the same
-order. Nothing is injected into the caller's options, and no message is altered.
+Each stream wrapper returns an async iterator yielding the same messages in the
+same order. Nothing is injected into the caller's options, and no message is
+altered.
 """
 
 from __future__ import annotations
@@ -44,13 +46,11 @@ from opentelemetry.util.genai.handler import TelemetryHandler
 
 _logger = logging.getLogger(__name__)
 
-# Where ``ClaudeSDKClient.query`` leaves what it was asked to send. The client
-# splits sending from receiving — the caller awaits ``query()`` and then
-# iterates ``receive_response()`` — so the receiving half has no prompt of its
-# own, and in client mode the CLI emits no UserMessage to recover one from: a
-# recorded session's raw stream held only SystemMessage, StreamEvent,
-# AssistantMessage, ResultMessage and HookEventMessage.
-_PENDING = "_otel_pending_query"
+# Where a client connection keeps its AgentRun: on the SDK's reader for that
+# connection, which ``connect()`` builds and ``disconnect()`` drops. Every read
+# of one connection, however many ``receive_response()`` calls it takes, feeds
+# the same run, the way the CLI sends it: as one stream.
+_RUN = "_otel_run"
 
 # ``query``'s own default session id. The CLI does not use it as its own session
 # id — it reports a UUID on the init message — so passing the placeholder
@@ -76,20 +76,28 @@ def _conversation_id(session_id: Any) -> str | None:
     return None
 
 
-def _take_pending_query(instance: Any) -> tuple[Any, str | None]:
-    """Consume what the last ``query`` on this client left behind.
+def _existing_run(client: Any) -> AgentRun | None:
+    return getattr(getattr(client, "_query", None), _RUN, None)
 
-    Popped rather than read, so a receive that follows no new query does not
-    replay the previous turn's prompt.
-    """
-    pending = getattr(instance, _PENDING, None)
-    if pending is None:
-        return None, None
-    try:
-        delattr(instance, _PENDING)
-    except AttributeError:
-        pass
-    return pending
+
+def _connection_run(
+    handler: TelemetryHandler, client: Any, agent_name: str | None
+) -> AgentRun | None:
+    """The run for the client's current connection, or None when it is not
+    connected."""
+    reader = getattr(client, "_query", None)
+    if reader is None:
+        return None
+    run: AgentRun | None = getattr(reader, _RUN, None)
+    if run is None:
+        run = AgentRun(
+            handler,
+            sdk_options=getattr(client, "options", None),
+            agent_name=agent_name,
+            multi_turn=True,
+        )
+        setattr(reader, _RUN, run)
+    return run
 
 
 def wrap_query(
@@ -111,33 +119,31 @@ def wrap_query(
             sdk_options=bound.arguments.get("options"),
             agent_name=agent_name,
         )
-        return run.iterate(
-            lambda: wrapped(*args, **kwargs), bound.arguments.get("prompt")
-        )
+        run.submit(bound.arguments.get("prompt"))
+        return run.iterate(lambda: wrapped(*args, **kwargs))
 
     return traced_query
 
 
-def wrap_client_query() -> Any:
-    """Build a replacement for ``ClaudeSDKClient.query`` that records the
-    prompt for the receiving half to report."""
+def wrap_client_query(
+    handler: TelemetryHandler, agent_name: str | None = None
+) -> Any:
+    """Build a replacement for ``ClaudeSDKClient.query`` that hands the prompt
+    to the connection's run."""
 
     def traced(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
         try:
-            # ``query(self, prompt, session_id="default")`` takes both
-            # positionally, unchanged across every 0.1.14-0.2.157 release, so
-            # they are read through the signature. The prompt is only ever
-            # stored: in streaming-input mode it is an async iterable and
-            # reading it would consume what the SDK has to send.
+            # Bound through the signature: prompt and session_id can come
+            # positionally or by keyword. The prompt is only stored: in
+            # streaming-input mode it is an async iterable, and reading it would
+            # consume what the SDK has to send.
             bound = _bind(wrapped, args, kwargs)
-            setattr(
-                instance,
-                _PENDING,
-                (
+            run = _connection_run(handler, instance, agent_name)
+            if run is not None:
+                run.submit(
                     bound.arguments.get("prompt"),
                     _conversation_id(bound.arguments.get("session_id")),
-                ),
-            )
+                )
         except Exception:  # pylint: disable=broad-except
             _logger.debug(
                 "claude-agent-sdk instrumentation could not record the prompt",
@@ -154,14 +160,23 @@ def wrap_receive_messages(
     """Build a replacement for ``ClaudeSDKClient.receive_messages``."""
 
     def traced(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
-        prompt, conversation_id = _take_pending_query(instance)
-        run = AgentRun(
-            handler,
-            sdk_options=getattr(instance, "options", None),
-            agent_name=agent_name,
-            conversation_id=conversation_id,
-            multi_turn=True,
-        )
-        return run.iterate(lambda: wrapped(*args, **kwargs), prompt)
+        run = _connection_run(handler, instance, agent_name)
+        if run is None:
+            # Not connected: the SDK raises for itself.
+            return wrapped(*args, **kwargs)
+        return run.iterate(lambda: wrapped(*args, **kwargs))
+
+    return traced
+
+
+def wrap_disconnect() -> Any:
+    """Build a replacement for ``ClaudeSDKClient.disconnect`` that ends what
+    the connection left open, such as a turn waiting on background work."""
+
+    def traced(wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+        run = _existing_run(instance)
+        if run is not None:
+            run.close()
+        return wrapped(*args, **kwargs)
 
     return traced

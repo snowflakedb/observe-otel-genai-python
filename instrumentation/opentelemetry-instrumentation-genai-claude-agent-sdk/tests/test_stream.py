@@ -11,6 +11,7 @@ directly rather than inferred from a live run.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -239,12 +240,17 @@ async def drive(
     stop_after: int | None = None,
     sdk_options: Any = None,
 ) -> list[Any]:
+    """Feed messages through an AgentRun. ``stop_after`` breaks out after that
+    many, as a caller would, which skips the end-of-stream cleanup: a
+    multi-turn run then exports only turns that ended by themselves."""
+
     async def stream():
         for message in messages:
             yield message
 
     run = AgentRun(handler, sdk_options=sdk_options, multi_turn=multi_turn)
-    messages_out = run.iterate(stream, prompt)
+    run.submit(prompt)
+    messages_out = run.iterate(stream)
     seen = []
     try:
         async for message in messages_out:
@@ -256,6 +262,39 @@ async def drive(
         # loop finalizes it later. Do it now so the test is deterministic.
         await messages_out.aclose()
     return seen
+
+
+async def roots_ended_at_each_result(
+    handler: TelemetryHandler, messages: list[Any], span_exporter: Any
+) -> list[int]:
+    """How many turn spans had ended as each result went past the caller."""
+
+    async def stream():
+        for message in messages:
+            yield message
+
+    run = AgentRun(handler, multi_turn=True)
+    ended = []
+    async for message in run.iterate(stream):
+        if isinstance(message, ResultMessage):
+            ended.append(
+                len(
+                    Spans(span_exporter).named("invoke_agent claude-agent-sdk")
+                )
+            )
+    return ended
+
+
+def turn_waiting_on_a_background_command() -> list[Any]:
+    return [
+        init(),
+        assistant(
+            ToolUseBlock(id="bash", name="Bash", input={}), message_id="m1"
+        ),
+        task_started("bash", task_id="t-bash", task_type="local_bash"),
+        user(ToolResultBlock(tool_use_id="bash", content="started")),
+        result(),
+    ]
 
 
 def metric_points(metric_reader: Any, name: str) -> list[Any]:
@@ -1338,7 +1377,8 @@ async def test_stream_raising_fails_the_run(handler, span_exporter):
 
     run = AgentRun(handler)
     with pytest.raises(RuntimeError):
-        async for _ in run.iterate(stream, "hi"):
+        run.submit("hi")
+        async for _ in run.iterate(stream):
             pass
     spans = Spans(span_exporter)
     agent = spans.one("invoke_agent claude-agent-sdk")
@@ -1418,14 +1458,9 @@ async def test_a_subagents_tools_close_before_the_subagent_at_teardown(
 async def test_one_span_failing_to_close_does_not_strand_the_others(
     handler, span_exporter
 ):
-    """A close raising must not abandon everything after it.
-
-    Teardown closes tools, then subagents, then chats, then the root. With the
-    first of those raising, the root was left recording and never exported, and
-    the exception escaped through ``iterate``'s ``finally`` into the caller's
-    ``async for``, where it looks like the transport failing and can mask a real
-    transport error.
-    """
+    """A close raising must not abandon everything after it: the root would
+    stay recording and never export, and the exception would reach the caller's
+    ``async for``, where it looks like a transport failure."""
 
     def explode(*_: Any, **__: Any) -> None:
         raise RuntimeError("_apply_finish blew up")
@@ -1775,25 +1810,116 @@ async def test_a_result_does_not_split_a_subagents_call_in_two(
 
 
 @pytest.mark.asyncio
-async def test_injected_turn_result_is_only_a_checkpoint(
+async def test_a_turn_the_cli_injects_is_its_own_invocation(
     handler, span_exporter
 ):
-    """A background-task notification produces a result of its own. It does not
-    answer the caller's prompt, so it must not end the invocation."""
+    """A finished background task makes the CLI run a turn of its own, with its
+    own model calls and its own share of the session's usage."""
     await drive(
         handler,
         [
             init(),
-            assistant(TextBlock("working"), message_id="m1"),
-            result(origin={"kind": "task-notification"}),
-            assistant(TextBlock("real answer"), message_id="m2"),
-            result(origin={"kind": "human"}),
+            assistant(TextBlock("one"), message_id="m1"),
+            result(model_usage=cumulative(100, 10, 0.1)),
+            assistant(TextBlock("task finished"), message_id="m2"),
+            result(
+                origin={"kind": "task-notification"},
+                model_usage=cumulative(200, 20, 0.2),
+            ),
+            assistant(TextBlock("two"), message_id="m3"),
+            result(model_usage=cumulative(300, 30, 0.3)),
         ],
         multi_turn=True,
     )
     spans = Spans(span_exporter)
-    assert len(spans.named("invoke_agent claude-agent-sdk")) == 1
-    assert len(spans.named("chat claude-sonnet-4-5")) == 2
+    agents = spans.named("invoke_agent claude-agent-sdk")
+    assert [a.attributes["gen_ai.usage.output_tokens"] for a in agents] == [
+        10,
+        10,
+        10,
+    ]
+    parents = {
+        chat.attributes["gen_ai.response.id"]: spans.parent_of(chat)
+        for chat in spans.named("chat claude-sonnet-4-5")
+    }
+    assert [parents[m] for m in ("m1", "m2", "m3")] == agents
+
+
+@pytest.mark.asyncio
+async def test_a_turn_waiting_on_background_work_ends_when_the_next_begins(
+    handler, span_exporter
+):
+    """A background task can outlive every later turn — a dev server never
+    reports finishing — so waiting for it cannot hold its turn open for good."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="bg", name="Bash", input={}), message_id="m1"
+            ),
+            task_started("bg", task_type="local_bash"),
+            user(ToolResultBlock(tool_use_id="bg", content="started")),
+            result(model_usage=cumulative(100, 10, 0.1)),
+            init(),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(model_usage=cumulative(200, 20, 0.2)),
+            init(),
+            assistant(TextBlock("three"), message_id="m3"),
+            result(model_usage=cumulative(300, 30, 0.3)),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    agents = spans.named("invoke_agent claude-agent-sdk")
+    assert [a.attributes["gen_ai.usage.output_tokens"] for a in agents] == [
+        10,
+        10,
+        10,
+    ]
+    tool = spans.one("execute_tool Bash")
+    assert spans.parent_of(tool) is agents[0]
+    assert tool.end_time <= agents[0].end_time
+    # Still running is not failed.
+    assert tool.status.status_code is trace.StatusCode.UNSET
+
+
+@pytest.mark.asyncio
+async def test_background_work_reporting_after_its_turn_ended_is_dropped(
+    handler, span_exporter
+):
+    """The turn that owned it has ended, so a late subagent message has no
+    parent left: attaching it to the current turn would credit that turn with
+    work it never asked for."""
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "researcher"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+            result(),
+            assistant(TextBlock("early"), parent="call-task", message_id="s1"),
+            init(),
+            assistant(TextBlock("next turn"), message_id="m2"),
+            assistant(TextBlock("late"), parent="call-task", message_id="s2"),
+            task_notification("call-task", summary="the report"),
+            result(),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    assert len(spans.named("invoke_agent claude-agent-sdk")) == 2
+    assert len(spans.named("invoke_agent researcher")) == 1
+    responses = {
+        c.attributes["gen_ai.response.id"]
+        for c in spans.all
+        if c.name.startswith("chat ")
+    }
+    assert responses == {"m1", "s1", "m2"}
 
 
 @pytest.mark.asyncio
@@ -1827,7 +1953,8 @@ async def test_parallel_tools_closing_out_of_order(
         run = AgentRun(handler)
         # The invariant is per-yield, not just per-run: these spans do not finish
         # in the order they opened, and util-genai attaches each one it starts.
-        async for _ in run.iterate(stream, "hi"):
+        run.submit("hi")
+        async for _ in run.iterate(stream):
             assert trace.get_current_span() is caller
             assert otel_context.get_current() == before
         assert trace.get_current_span() is caller
@@ -2500,10 +2627,13 @@ async def test_a_caller_supplied_conversation_id_overrides_the_session(
         for message in [init(), assistant(TextBlock("hi")), result()]:
             yield message
 
-    run = AgentRun(handler, conversation_id="ticket-42")
-    async for _ in run.iterate(stream, "hi"):
+    run = AgentRun(handler)
+    run.submit("hi", "ticket-42")
+    async for _ in run.iterate(stream):
         pass
-    for span in Spans(span_exporter).all:
+    spans = Spans(span_exporter).all
+    assert spans
+    for span in spans:
         assert span.attributes["gen_ai.conversation.id"] == "ticket-42"
 
 
@@ -2968,3 +3098,415 @@ async def test_a_subagent_named_after_its_tool_span_closed_keeps_its_identity(
     )
     subagent = Spans(span_exporter).one("invoke_agent archivist")
     assert subagent.attributes["gen_ai.request.model"] == "claude-opus-4"
+
+
+def _backgrounded_delegation() -> list[Any]:
+    """A turn that ends at its result with a delegation still running."""
+    return [
+        init(),
+        assistant(
+            ToolUseBlock(id="outer", name="Agent", input={}), message_id="m1"
+        ),
+        task_started("outer", task_id="t-outer"),
+        user(ToolResultBlock(tool_use_id="outer", content="launched")),
+        result(model_usage=cumulative(100, 10, 0.1)),
+    ]
+
+
+def _backgrounded_delegation_then_next_turn() -> list[Any]:
+    """Turn two starts while turn one's delegation is still running."""
+    return _backgrounded_delegation() + [
+        init(),
+        assistant(TextBlock("two"), message_id="m2"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_task_started_by_detached_work_does_not_hold_the_next_turn(
+    handler, span_exporter
+):
+    """The detached subagent starts a background command of its own. Task
+    messages name no parent, so without tracking that command as detached too,
+    turn two would wait on it instead of ending at its result."""
+    messages = _backgrounded_delegation_then_next_turn() + [
+        assistant(
+            ToolUseBlock(id="bash", name="Bash", input={}),
+            parent="outer",
+            message_id="s1",
+        ),
+        task_started("bash", task_id="t-bash", task_type="local_bash"),
+        result(model_usage=cumulative(200, 20, 0.2)),
+    ]
+
+    ended_at_result = await roots_ended_at_each_result(
+        handler, messages, span_exporter
+    )
+    # Turn one waits on its delegation; turn two has nothing of its own left.
+    assert ended_at_result == [0, 2]
+
+
+@pytest.mark.asyncio
+async def test_a_delegation_launched_by_detached_work_is_dropped(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        _backgrounded_delegation_then_next_turn()
+        + [
+            assistant(
+                ToolUseBlock(id="inner", name="Agent", input={}),
+                parent="outer",
+                message_id="s1",
+            ),
+            task_started("inner", task_id="t-inner"),
+            assistant(TextBlock("nested"), parent="inner", message_id="n1"),
+            result(model_usage=cumulative(200, 20, 0.2)),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    assert not spans.named("invoke_agent Agent")
+    responses = {
+        s.attributes["gen_ai.response.id"]
+        for s in spans.all
+        if s.name.startswith("chat ")
+    }
+    assert responses == {"m1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_the_next_turns_replayed_prompt_opens_the_next_turn(
+    capturing_handler, span_exporter
+):
+    """With ``extra_args={"replay-user-messages": None}`` the CLI echoes each
+    prompt back. A turn left open by background work must end before that echo
+    arrives, or the prompt is recorded on the wrong turn."""
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="bg", name="Bash", input={}), message_id="m1"
+            ),
+            task_started("bg", task_type="local_bash"),
+            user(ToolResultBlock(tool_use_id="bg", content="started")),
+            result(),
+            init(),
+            user(TextBlock("second question")),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(),
+        ],
+        multi_turn=True,
+        prompt=None,
+    )
+    first, second = Spans(span_exporter).named("invoke_agent claude-agent-sdk")
+    assert "gen_ai.input.messages" not in first.attributes
+    assert json.loads(second.attributes["gen_ai.input.messages"]) == [
+        {
+            "role": "user",
+            "parts": [{"type": "text", "content": "second question"}],
+            "name": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_result_without_usage_does_not_reset_the_count(
+    handler, span_exporter
+):
+    """The counters are cumulative, so a result that reports none has not
+    zeroed them: the next turn is still measured from the last real count."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("one"), message_id="m1"),
+            result(model_usage=cumulative(100, 10, 0.1)),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(model_usage=None),
+            assistant(TextBlock("three"), message_id="m3"),
+            result(model_usage=cumulative(300, 30, 0.3)),
+        ],
+        multi_turn=True,
+    )
+    agents = Spans(span_exporter).named("invoke_agent claude-agent-sdk")
+    assert [
+        a.attributes.get("gen_ai.usage.output_tokens") for a in agents
+    ] == [
+        10,
+        None,
+        20,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_running_inside_detached_work_is_not_a_failure(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        _backgrounded_delegation()
+        + [
+            assistant(
+                ToolUseBlock(id="slow", name="Bash", input={}),
+                parent="outer",
+                message_id="s1",
+            ),
+            init(),
+            result(model_usage=cumulative(200, 20, 0.2)),
+        ],
+        multi_turn=True,
+    )
+    tool = Spans(span_exporter).one("execute_tool Bash")
+    assert tool.status.status_code is trace.StatusCode.UNSET
+
+
+@pytest.mark.asyncio
+async def test_a_delegation_launched_before_its_turn_ended_is_detached_with_its_owner(
+    handler, span_exporter
+):
+    """The detached subagent launched it while its turn was still open, so it
+    was never dropped as a message; it is detached along with its owner."""
+    await drive(
+        handler,
+        _backgrounded_delegation()
+        + [
+            assistant(
+                ToolUseBlock(id="inner", name="Agent", input={}),
+                parent="outer",
+                message_id="s1",
+            ),
+            init(),
+            task_started("inner", task_id="t-inner"),
+            assistant(TextBlock("nested"), parent="inner", message_id="n1"),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(model_usage=cumulative(200, 20, 0.2)),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    responses = {
+        s.attributes["gen_ai.response.id"]
+        for s in spans.all
+        if s.name.startswith("chat ")
+    }
+    assert responses == {"m1", "s1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_a_late_message_from_a_finished_subagent_opens_no_turn(
+    handler, span_exporter
+):
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "researcher"}
+    )
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            task_started("call-task"),
+            assistant(
+                TextBlock("working"), parent="call-task", message_id="s1"
+            ),
+            task_notification("call-task"),
+            user(ToolResultBlock(tool_use_id="call-task", content="report")),
+            result(),
+            assistant(TextBlock("late"), parent="call-task", message_id="s2"),
+            init(),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    assert len(spans.named("invoke_agent claude-agent-sdk")) == 2
+    assert len(spans.named("invoke_agent researcher")) == 1
+    responses = {
+        s.attributes["gen_ai.response.id"]
+        for s in spans.all
+        if s.name.startswith("chat ")
+    }
+    assert responses == {"m1", "s1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_reader_of_a_finished_turn_is_not_a_failure(
+    handler, span_exporter
+):
+    """The turn has its result and is only waiting on background work."""
+    messages = turn_waiting_on_a_background_command()
+    drained = asyncio.Event()
+
+    async def stream():
+        for message in messages:
+            yield message
+        drained.set()
+        await asyncio.Event().wait()
+
+    run = AgentRun(handler, multi_turn=True)
+    run.submit("hi")
+
+    async def read():
+        async for _ in run.iterate(stream):
+            pass
+
+    reader = asyncio.create_task(read())
+    await drained.wait()
+    reader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reader
+    root = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert root.status.status_code is trace.StatusCode.UNSET
+
+
+@pytest.mark.asyncio
+async def test_close_leaves_the_callers_span_current(
+    handler, span_exporter, tracer
+):
+    messages = turn_waiting_on_a_background_command()
+
+    async def stream():
+        for message in messages:
+            yield message
+
+    run = AgentRun(handler, multi_turn=True)
+    with tracer.start_as_current_span("turn"):
+        run.submit("hi")
+        # Stops at the result, as receive_response() does, leaving the turn
+        # open on its background command.
+        reader = run.iterate(stream)
+        async for message in reader:
+            if isinstance(message, ResultMessage):
+                break
+        await reader.aclose()
+    assert not Spans(span_exporter).named("invoke_agent claude-agent-sdk")
+    with tracer.start_as_current_span("cleanup") as cleanup:
+        run.close()
+        assert trace.get_current_span() is cleanup
+    assert Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+
+
+@pytest.mark.asyncio
+async def test_a_stream_error_while_a_turn_waits_on_background_work_is_a_failure(
+    handler, span_exporter
+):
+    messages = turn_waiting_on_a_background_command()
+
+    async def stream():
+        for message in messages:
+            yield message
+        raise RuntimeError("CLI exited")
+
+    run = AgentRun(handler, multi_turn=True)
+    run.submit("hi")
+    with pytest.raises(RuntimeError):
+        async for _ in run.iterate(stream):
+            pass
+    root = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert root.status.status_code is trace.StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+async def test_a_later_read_that_ends_the_turn_leaves_its_span_current(
+    handler, span_exporter, tracer
+):
+    messages = turn_waiting_on_a_background_command()
+
+    async def first_turn():
+        for message in messages:
+            yield message
+
+    async def nothing_more():
+        return
+        yield
+
+    run = AgentRun(handler, multi_turn=True)
+    with tracer.start_as_current_span("turn"):
+        run.submit("hi")
+        reader = run.iterate(first_turn)
+        async for message in reader:
+            if isinstance(message, ResultMessage):
+                break
+        await reader.aclose()
+    with tracer.start_as_current_span("later") as later:
+        async for _ in run.iterate(nothing_more):
+            pass
+        assert trace.get_current_span() is later
+    assert Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+
+
+@pytest.mark.asyncio
+async def test_a_message_after_the_close_its_turn_waited_on_opens_nothing_in_it(
+    handler, span_exporter
+):
+    """task_updated with no notification after it: the next message closes the
+    delegation, ends the turn, and is itself dropped as late."""
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "researcher"}
+    )
+    messages = [
+        init(),
+        assistant(task, message_id="m1"),
+        task_started("call-task"),
+        user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+        result(),
+        task_updated(status="killed"),
+        assistant(TextBlock("late"), parent="call-task", message_id="m_late"),
+        init(),
+        assistant(TextBlock("two"), message_id="m2"),
+        result(),
+    ]
+    assert await roots_ended_at_each_result(
+        handler, messages, span_exporter
+    ) == [0, 2]
+    spans = Spans(span_exporter)
+    assert not spans.named("invoke_agent researcher")
+    assert {
+        s.attributes["gen_ai.response.id"]
+        for s in spans.all
+        if s.name.startswith("chat ")
+    } == {"m1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_a_delegation_killed_before_its_subagent_spoke_stays_closed(
+    handler, span_exporter
+):
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "researcher"}
+    )
+    messages = [
+        init(),
+        assistant(task, message_id="m1"),
+        task_started("call-task"),
+        user(ToolResultBlock(tool_use_id="call-task", content="launched")),
+        result(),
+        task_notification("call-task", status="killed"),
+        init(),
+        assistant(TextBlock("late"), parent="call-task", message_id="m_late"),
+        result(),
+    ]
+    assert await roots_ended_at_each_result(
+        handler, messages, span_exporter
+    ) == [0, 2]
+    spans = Spans(span_exporter)
+    assert not spans.named("invoke_agent researcher")
+    assert not spans.named("invoke_agent subagent")
+
+
+@pytest.mark.asyncio
+async def test_a_stream_failing_to_start_leaves_the_callers_span_current(
+    handler, span_exporter, tracer
+):
+    def start():
+        raise RuntimeError("no CLI")
+
+    run = AgentRun(handler)
+    with tracer.start_as_current_span("caller") as caller:
+        with pytest.raises(RuntimeError):
+            async for _ in run.iterate(start):
+                pass
+        assert trace.get_current_span() is caller
+    root = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert root.status.status_code is trace.StatusCode.ERROR

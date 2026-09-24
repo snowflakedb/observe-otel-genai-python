@@ -62,7 +62,8 @@ async def replay(
             yield message
 
     run = AgentRun(handler, multi_turn=multi_turn)
-    async for _ in run.iterate(stream, "replay"):
+    run.submit("replay")
+    async for _ in run.iterate(stream):
         pass
 
 

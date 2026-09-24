@@ -1,0 +1,1 @@
+Give a turn the CLI runs by itself, such as reporting a finished background task, its own `invoke_agent` span instead of merging it into the next turn.
