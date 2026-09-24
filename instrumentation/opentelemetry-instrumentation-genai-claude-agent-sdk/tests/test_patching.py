@@ -22,7 +22,6 @@ import json
 import sys
 from collections import Counter
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import claude_agent_sdk
 import pytest
@@ -39,7 +38,6 @@ from opentelemetry.instrumentation.genai.claude_agent_sdk import (
     ClaudeAgentSDKInstrumentor,
 )
 from opentelemetry.test_util_genai.instrumentor import instrument
-from opentelemetry.util.genai.completion_hook import _SafeCompletionHook
 
 SESSION = "session-abc"
 MODEL = "claude-sonnet-4-5"
@@ -874,51 +872,3 @@ def test_constructing_a_second_instrumentor_keeps_the_live_handler(
             ClaudeAgentSDKInstrumentor()._handler  # pylint: disable=protected-access
             is handler
         )
-
-
-def test_uninstrument_shuts_down_the_hook_it_loaded(
-    tracer_provider,
-    logger_provider,
-    meter_provider,
-    uninstrument_claude_agent_sdk,
-):
-    """The upload hook owns a thread pool and load_completion_hook() builds a
-    fresh one per _instrument(), so every cycle that only dropped the handler
-    leaked a pool and abandoned whatever it had not uploaded."""
-    hook = MagicMock()
-    with patch(
-        "opentelemetry.instrumentation.genai.claude_agent_sdk.load_completion_hook",
-        # What the real loader returns: the hook behind util-genai's private
-        # safety wrapper, which forwards on_completion and nothing else.
-        return_value=_SafeCompletionHook(hook),
-    ):
-        with instrument(
-            ClaudeAgentSDKInstrumentor(),
-            tracer_provider=tracer_provider,
-            logger_provider=logger_provider,
-            meter_provider=meter_provider,
-        ):
-            hook.shutdown.assert_not_called()
-
-    hook.shutdown.assert_called_once()
-
-
-def test_a_caller_supplied_hook_is_left_alone(
-    tracer_provider,
-    logger_provider,
-    meter_provider,
-    uninstrument_claude_agent_sdk,
-):
-    """A hook passed to instrument() belongs to the caller, who may well be
-    using it for more than this one instrumentation."""
-    hook = MagicMock()
-    with instrument(
-        ClaudeAgentSDKInstrumentor(),
-        tracer_provider=tracer_provider,
-        logger_provider=logger_provider,
-        meter_provider=meter_provider,
-        completion_hook=hook,
-    ):
-        pass
-
-    hook.shutdown.assert_not_called()

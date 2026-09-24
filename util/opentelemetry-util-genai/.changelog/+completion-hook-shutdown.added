@@ -1,5 +1,0 @@
-Forward `shutdown` through the wrapper `load_completion_hook` returns, so the
-caller that loaded a hook can flush and stop it. A hook owning a thread pool —
-`UploadCompletionHook` does — was otherwise unreachable for teardown, and every
-instrument/uninstrument cycle leaked the pool along with whatever content it
-had not uploaded.

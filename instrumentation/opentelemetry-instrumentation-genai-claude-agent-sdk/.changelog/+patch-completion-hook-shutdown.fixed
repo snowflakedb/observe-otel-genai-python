@@ -1,6 +1,0 @@
-Shut the completion hook down on `uninstrument()`. The hook is built fresh on
-every `instrument()` and nothing cached it, so with
-`OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK=upload` each instrument/uninstrument
-cycle leaked the upload hook's thread pool, and the last cycle before exit
-dropped whatever content it had not finished uploading. A hook passed to
-`instrument()` is left alone: it belongs to the caller.

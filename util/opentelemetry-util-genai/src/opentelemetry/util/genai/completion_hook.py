@@ -108,19 +108,6 @@ class _SafeCompletionHook(CompletionHook):
                 exc_info=ex,
             )
 
-    def shutdown(self, *args: Any, **kwargs: Any) -> None:
-        """Forward teardown to the wrapped hook.
-
-        A hook that owns a thread pool — ``UploadCompletionHook`` does — has to
-        be reachable for shutdown by whoever loaded it, or every
-        instrument/uninstrument cycle leaks the pool and drops whatever content
-        it had not uploaded. The wrapper is what callers hold, so it has to pass
-        the call through. Hooks without a teardown are left alone.
-        """
-        shutdown = getattr(self._wrapped, "shutdown", None)
-        if callable(shutdown):
-            shutdown(*args, **kwargs)
-
 
 def load_completion_hook() -> CompletionHook:
     """Load the completion hook from entry point or return a noop implementation

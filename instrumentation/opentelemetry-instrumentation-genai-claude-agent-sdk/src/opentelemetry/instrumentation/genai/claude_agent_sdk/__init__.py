@@ -77,7 +77,6 @@ API
 ---
 """
 
-import logging
 import sys
 from collections.abc import Collection
 from typing import Any
@@ -98,13 +97,8 @@ from opentelemetry.instrumentation.genai.claude_agent_sdk.version import (
 )
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
-from opentelemetry.util.genai.completion_hook import (
-    CompletionHook,
-    load_completion_hook,
-)
+from opentelemetry.util.genai.completion_hook import load_completion_hook
 from opentelemetry.util.genai.handler import TelemetryHandler
-
-_logger = logging.getLogger(__name__)
 
 
 class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
@@ -120,7 +114,6 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
     # anywhere in the process would otherwise wipe the state of the
     # instrumentation already in flight.
     _handler: TelemetryHandler | None = None
-    _loaded_completion_hook: CompletionHook | None = None
 
     # pylint: disable=no-self-use
     def instrumentation_dependencies(self) -> Collection[str]:
@@ -144,18 +137,12 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
         logger_provider = kwargs.get("logger_provider")
         meter_provider = kwargs.get("meter_provider")
 
-        # load_completion_hook() builds a new hook per call and the upload hook
-        # owns a thread pool, so the one loaded here is ours to shut down at
-        # teardown. A hook the caller passed in stays theirs to manage.
-        completion_hook = kwargs.get("completion_hook")
-        self._loaded_completion_hook = (
-            None if completion_hook else load_completion_hook()
-        )
         self._handler = TelemetryHandler(
             tracer_provider=tracer_provider,
             meter_provider=meter_provider,
             logger_provider=logger_provider,
-            completion_hook=completion_hook or self._loaded_completion_hook,
+            completion_hook=kwargs.get("completion_hook")
+            or load_completion_hook(),
             instrumentation_scope_name=__package__,
             instrumentation_scope_version=__version__,
         )
@@ -203,7 +190,6 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
         except BaseException:
             for target, attribute in reversed(installed):
                 unwrap(target, attribute)
-            self._shutdown_loaded_completion_hook()
             self._handler = None
             raise
 
@@ -220,27 +206,4 @@ class ClaudeAgentSDKInstrumentor(BaseInstrumentor):
         unwrap(client_module.ClaudeSDKClient, "query")
         unwrap(client_module.ClaudeSDKClient, "receive_messages")
         unwrap(client_module.ClaudeSDKClient, "disconnect")
-        self._shutdown_loaded_completion_hook()
         self._handler = None
-
-    def _shutdown_loaded_completion_hook(self) -> None:
-        """Flush and stop the completion hook this instrumentor loaded.
-
-        ``UploadCompletionHook`` owns a ThreadPoolExecutor, so dropping the
-        reference leaks the pool and abandons whatever content it had not
-        uploaded yet — once per instrument/uninstrument cycle, since
-        load_completion_hook() caches nothing.
-        """
-        hook, self._loaded_completion_hook = self._loaded_completion_hook, None
-        shutdown = getattr(hook, "shutdown", None)
-        if not callable(shutdown):
-            return
-        try:
-            shutdown()
-        except Exception:  # pylint: disable=broad-except
-            # Teardown carries on regardless: the wrappers are already off, and
-            # raising here would leave the instrumentor marked as instrumented.
-            _logger.warning(
-                "claude-agent-sdk completion hook shutdown failed",
-                exc_info=True,
-            )
