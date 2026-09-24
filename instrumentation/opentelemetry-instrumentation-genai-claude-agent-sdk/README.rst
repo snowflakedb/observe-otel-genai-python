@@ -134,7 +134,7 @@ for a progress heartbeat: the delegation still gets its own nested
 subagent never called a tool. Either way the forwarded messages arrive as
 ``AssistantMessage`` / ``UserMessage`` objects whose ``parent_tool_use_id`` is
 the spawning Agent ``tool_use`` id, so turning the option on adds the
-subagent's own text to your loop. It requires ``claude-agent-sdk >= 0.2.148``,
+subagent's own text to your loop. It requires ``claude-agent-sdk >= 0.2.140``,
 above this package's declared minimum of 0.2.137, so guard the option if you
 support that whole range.
 

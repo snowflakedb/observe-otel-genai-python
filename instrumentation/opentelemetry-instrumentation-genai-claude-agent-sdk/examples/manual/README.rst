@@ -48,7 +48,6 @@ Next, set up a virtual environment like this:
     source .venv/bin/activate
     pip install "python-dotenv[cli]"
     pip install -r requirements.txt
-    cp .env.example .env
 
 Run
 ---
