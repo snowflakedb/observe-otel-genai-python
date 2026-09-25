@@ -56,7 +56,7 @@ fi
 # Paths this fork does not carry. Upstream additions under them merge cleanly, so
 # the prune has to be re-applied rather than merely defended by conflicts.
 KEEP_UNDER_INSTRUMENTATION='^instrumentation/(AGENTS\.md|CLAUDE\.md|opentelemetry-instrumentation-genai-claude-agent-sdk/)'
-KEEP_WORKFLOWS='^\.github/workflows/(ci|test|misc|changelog)\.yml$'
+KEEP_WORKFLOWS='^\.github/workflows/(ci\.yml|test\.yml|misc\.yml|changelog\.yml|check-links\.yml|check_links_config\.json)$'
 PRUNED_PATHS=(
   docs
   .readthedocs.yml
@@ -100,4 +100,9 @@ Next:
   UV_DEFAULT_INDEX=https://pypi.org/simple uv lock   # if any dependency moved
   uvx --with tox-uv tox            # run everything
   git status                       # review, then commit the merge yourself
+
+main only takes PRs. Push the merge to a branch and open a PR with the
+"Skip Changelog" label (upstream releases edit CHANGELOG.md directly). Merge
+it with "Create a merge commit": a squash or rebase drops upstream's history,
+and the next sync would conflict on everything again.
 NEXT
