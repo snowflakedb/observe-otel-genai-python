@@ -39,6 +39,17 @@ to manage context:
 - ``context``: An explicit OpenTelemetry ``Context`` to parent the span. When omitted, the current
   ambient context is used.
 
+Conversation ID on Every Span
+-----------------------------
+
+This fork sets ``gen_ai.conversation.id`` on every span, including tool, embeddings, retrieval
+and fetch-response spans, where semconv omits it. The value is the invocation's
+``conversation_id``, which defaults to the one on the OTel Context. Setting ``conversation_id``
+after creation also reaches the operations started under the invocation afterwards: those
+parented on its ``context``, and, while nothing else has been attached on top of it, those using
+the current context. Set it in the thread or task that created the invocation, as with
+``stop()``. A value an instrumentation sets on ``attributes`` takes precedence.
+
 Agent Name on Child Operations
 ------------------------------
 

@@ -15,7 +15,7 @@ from typing import Any, TypeAlias, cast
 from typing_extensions import Self
 
 from opentelemetry._logs import Logger, LogRecord
-from opentelemetry.context import Context, attach, detach
+from opentelemetry.context import Context, attach, detach, get_current
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
@@ -107,13 +107,11 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             {} if metric_attributes is None else metric_attributes
         )
         """Additional attributes to set on metrics. Must be low cardinality. Not set on spans or events."""
-        self.conversation_id: str | None = (
+        self._conversation_id: str | None = (
             conversation_id
             if conversation_id is not None
             else get_ambient_conversation_id(context)
         )
-        """Emitted as ``gen_ai.conversation.id`` by the operations semconv
-        defines it on: inference, invoke_agent, invoke_workflow."""
         if self.conversation_id:
             context = with_conversation_id(
                 self.conversation_id, context=context
@@ -164,6 +162,33 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             ContentCapturingMode.SPAN_ONLY,
             ContentCapturingMode.SPAN_AND_EVENT,
         )
+
+    @property
+    def conversation_id(self) -> str | None:
+        """Emitted as ``gen_ai.conversation.id`` on every span; semconv defines it
+        only on inference, invoke_agent and invoke_workflow.
+
+        Setting it also reaches operations started under this one later. Set it
+        in the thread or task that created the invocation and outside
+        ``activate()``. Clearing it affects only this invocation's own span.
+        """
+        return self._conversation_id
+
+    @conversation_id.setter
+    def conversation_id(self, value: str | None) -> None:
+        self._conversation_id = value
+        if not value or value == get_ambient_conversation_id(
+            self._span_context
+        ):
+            return
+        # Set after creation, it still has to reach the operations started
+        # under this one: those parented on self.context, and, while nothing
+        # else has been attached on top of it, those using the current context.
+        attached = self._span_context
+        self._span_context = with_conversation_id(value, attached)
+        if self._context_token is not None and get_current() is attached:
+            detach(self._context_token)
+            self._context_token = attach(self._span_context)
 
     @property
     def context(self) -> Context:
@@ -311,6 +336,13 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         # _apply_finish raises.
         self._finished = True
         try:
+            if self.conversation_id:
+                # On every span, not only where semconv defines it, since LLM
+                # Explorer lists only spans that carry it. Set first so
+                # self.attributes wins.
+                self.span.set_attribute(
+                    GenAI.GEN_AI_CONVERSATION_ID, self.conversation_id
+                )
             self._apply_finish(error)
         finally:
             self.suspend()
