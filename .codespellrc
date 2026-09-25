@@ -3,5 +3,5 @@
 [codespell]
 check-hidden = true
 # skipping auto generated folders
-skip = ./.git,./.tox,./.venv,./.mypy_cache,./docs/_build,./target,*/LICENSE,./venv,*/cassettes
-ignore-words-list = ot
+skip = ./.git,./.tox,./.venv,./.mypy_cache,./docs/_build,./target,*/LICENSE,./venv,*/cassettes,*/tests/recordings
+ignore-words-list = ot,invokable
