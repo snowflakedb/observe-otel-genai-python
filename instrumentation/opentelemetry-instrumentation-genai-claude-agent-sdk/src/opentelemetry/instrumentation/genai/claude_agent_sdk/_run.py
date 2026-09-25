@@ -459,7 +459,7 @@ class AgentRun:
 
     def close(self) -> None:
         """End whatever is still open, as when the connection goes away."""
-        self._teardown(self._dispose)
+        self._teardown(self._stop)
 
     async def iterate(self, start: Any) -> Any:
         """Wrap the SDK's stream, observing each message on the way past."""
@@ -478,7 +478,7 @@ class AgentRun:
             # connection goes on: receive_response() stops at each result and
             # the next call picks up the same stream.
             if not self._multi_turn:
-                self._teardown(self._dispose)
+                self._teardown(self._stop)
             raise
         except BaseException as exc:
             # BaseException so a cancelled or interrupted run is recorded as
@@ -1416,6 +1416,12 @@ class AgentRun:
         """The SDK raised before streaming anything: report a failed run."""
         self._open_root()
         self._fail_root(exc)
+
+    def _stop(self) -> None:
+        """The caller ended the run. Whatever was still going was cut short,
+        not failed."""
+        self._detached |= self._calls.keys()
+        self._end_root()
 
     def _dispose(self) -> None:
         """Close anything the stream left open."""

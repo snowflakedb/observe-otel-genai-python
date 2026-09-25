@@ -1401,11 +1401,9 @@ async def test_abandoned_stream_still_closes_its_spans(handler, span_exporter):
     spans = Spans(span_exporter)
     assert spans.named("execute_tool Bash")
     assert all(s.end_time is not None for s in spans.all)
-    # Abandoned before any result, so the run really is incomplete. What it must
-    # not be is the GeneratorExit that abandoning the generator throws in.
-    agent = spans.one("invoke_agent claude-agent-sdk")
-    assert agent.status.status_code is trace.StatusCode.ERROR
-    assert agent.attributes["error.type"] == "incomplete_stream"
+    # The caller chose to stop, so nothing it left running failed.
+    for span in spans.all:
+        assert span.status.status_code is trace.StatusCode.UNSET
 
 
 @pytest.mark.asyncio
@@ -4289,3 +4287,73 @@ async def test_other_tools_passing_run_in_background_close_on_their_result(
         span_exporter,
     )
     assert ended == [1]
+
+
+# ─── the caller stopping ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_disconnecting_mid_turn_is_not_a_failure(handler, span_exporter):
+    """After an interrupt the caller can disconnect before the turn's result
+    arrives, or disconnect mid-turn outright. Either way they chose to stop."""
+    run = AgentRun(handler, multi_turn=True)
+    messages = [
+        init(),
+        assistant(ToolUseBlock(id="c1", name="Bash", input={})),
+    ]
+
+    async def stream():
+        for message in messages:
+            yield message
+
+    reader = run.iterate(stream)
+    async for message in reader:
+        if message is messages[-1]:
+            break
+    await reader.aclose()
+    run.close()
+
+    spans = Spans(span_exporter)
+    assert spans.one("execute_tool Bash")
+    for span in spans.all:
+        assert span.status.status_code is trace.StatusCode.UNSET
+
+
+@pytest.mark.asyncio
+async def test_stopping_after_an_error_result_still_fails_the_run(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("..."), message_id="m1"),
+            result(subtype="error_max_turns", is_error=True, text=None),
+            assistant(TextBlock("more"), message_id="m2"),
+        ],
+        stop_after=3,
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.status.status_code is trace.StatusCode.ERROR
+    assert agent.attributes["error.type"] == "error_max_turns"
+
+
+@pytest.mark.asyncio
+async def test_stopping_does_not_hide_a_task_that_already_failed(
+    handler, span_exporter
+):
+    task = ToolUseBlock(id="t1", name="Agent", input={"subagent_type": "x"})
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(task),
+            task_started("t1"),
+            task_updated(status="failed"),
+            assistant(TextBlock("next"), message_id="m2"),
+        ],
+        stop_after=4,
+    )
+    tool = Spans(span_exporter).one("execute_tool Agent")
+    assert tool.status.status_code is trace.StatusCode.ERROR
+    assert tool.status.description == "task failed"
