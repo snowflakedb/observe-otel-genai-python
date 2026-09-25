@@ -764,6 +764,7 @@ def test_on_tool_start_carries_nearest_agent_name():
     output.content = "sunny"
     output.tool_call_id = None
     handler.on_tool_end(output=output, run_id=tool_run_id)
+    handler.on_chain_end(outputs={}, run_id=agent_run_id)
 
     tool_spans = [
         s

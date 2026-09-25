@@ -39,6 +39,20 @@ to manage context:
 - ``context``: An explicit OpenTelemetry ``Context`` to parent the span. When omitted, the current
   ambient context is used.
 
+Agent Name on Child Operations
+------------------------------
+
+This fork adds ``gen_ai.agent.name`` to the inference, embeddings, retrieval and fetch-response
+spans an agent runs, and to the metrics they record, which semconv does not define. It travels on
+the OTel Context the way the conversation id does: ``handler.inference()``, ``embedding()``,
+``retrieval()``, ``fetch_response()`` and ``tool()`` take an ``agent_name``, and default to the
+enclosing agent's, so the name reaches operations another instrumentation package creates.
+
+As with the conversation id, an explicit ``agent_name`` also reaches the operations under that
+invocation. An agent always sets its own name, so the nearest agent wins, and one with no name
+hides an outer agent's. A value an instrumentation sets itself, on ``attributes`` or
+``metric_attributes``, takes precedence.
+
 
 Modalities
 ----------

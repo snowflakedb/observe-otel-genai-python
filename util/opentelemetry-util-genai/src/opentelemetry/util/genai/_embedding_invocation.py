@@ -37,6 +37,7 @@ class EmbeddingInvocation(GenAIInvocation):
         content_capturing_mode: ContentCapturingMode | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        agent_name: str | None = None,
     ) -> None:
         """Use handler.embedding(provider) rather than calling this directly."""
         _operation_name = GenAI.GenAiOperationNameValues.EMBEDDINGS.value
@@ -64,6 +65,7 @@ class EmbeddingInvocation(GenAIInvocation):
             content_capturing_mode=content_capturing_mode,
             context=context,
             _attach_to_context=_attach_to_context,
+            agent_name=agent_name,
         )
         # e.g., azure.ai.openai, openai, aws.bedrock
         self._provider: str = provider
@@ -84,6 +86,7 @@ class EmbeddingInvocation(GenAIInvocation):
             (GenAI.GEN_AI_RESPONSE_MODEL, self.response_model_name),
             (server_attributes.SERVER_ADDRESS, self._server_address),
             (server_attributes.SERVER_PORT, self._server_port),
+            (GenAI.GEN_AI_AGENT_NAME, self._agent_name),
         )
         attrs: dict[str, AttributeValue] = {
             GenAI.GEN_AI_OPERATION_NAME: self._operation_name,
@@ -103,6 +106,7 @@ class EmbeddingInvocation(GenAIInvocation):
             (GenAI.GEN_AI_REQUEST_ENCODING_FORMATS, self.encoding_formats),
             (GenAI.GEN_AI_RESPONSE_MODEL, self.response_model_name),
             (GenAI.GEN_AI_USAGE_INPUT_TOKENS, self.input_tokens),
+            (GenAI.GEN_AI_AGENT_NAME, self._agent_name),
         )
         attributes: dict[str, AttributeValue] = {
             key: value for key, value in optional_attrs if value is not None
