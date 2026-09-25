@@ -421,6 +421,13 @@ class AgentRun:
         # when the previous turn ended. See _usage_delta.
         self._usage_totals: UsageTotals = _zero_usage()
         self._usage_baseline: UsageTotals = _zero_usage()
+        # A resumed or continued session's counters carry on from the earlier
+        # session's, by an amount the stream never states. Until a turn has set
+        # the baseline from them, a turn's own share is unknown.
+        self._inherits_usage = bool(
+            getattr(sdk_options, "resume", None)
+            or getattr(sdk_options, "continue_conversation", False)
+        )
 
         self._session_id: str | None = None
         self._model: str | None = None
@@ -925,6 +932,7 @@ class AgentRun:
         self._session_id = msg.new_conversation_id
         self._usage_totals = _zero_usage()
         self._usage_baseline = _zero_usage()
+        self._inherits_usage = False
         self._compacted = False
         for ctx in self._chats.values():
             ctx.history.clear()
@@ -1227,6 +1235,22 @@ class AgentRun:
             # A later result supersedes an earlier one rather than adding to it:
             # the counters are cumulative, so the last one holds the answer.
             self._usage_totals = totals
+        if not self._inherits_usage:
+            self._record_turn_usage(root)
+        if msg.stop_reason:
+            root.finish_reasons = [msg.stop_reason]
+        if (
+            self._handler.should_capture_content()
+            and isinstance(msg.result, str)
+            and msg.result
+            and not msg.is_error
+        ):
+            root.output_messages = text_output(msg.result)
+
+        if self._multi_turn:
+            self._end_pending = True
+
+    def _record_turn_usage(self, root: LocalAgentInvocation) -> None:
         turn = _usage_delta(self._usage_totals, self._usage_baseline)
         if turn["input_tokens"]:
             root.input_tokens = turn["input_tokens"]
@@ -1242,18 +1266,6 @@ class AgentRun:
             ]
         if turn["cost_usd"]:
             root.attributes[ATTR_USAGE_COST_USD] = turn["cost_usd"]
-        if msg.stop_reason:
-            root.finish_reasons = [msg.stop_reason]
-        if (
-            self._handler.should_capture_content()
-            and isinstance(msg.result, str)
-            and msg.result
-            and not msg.is_error
-        ):
-            root.output_messages = text_output(msg.result)
-
-        if self._multi_turn:
-            self._end_pending = True
 
     # --- teardown ---------------------------------------------------------
 
@@ -1338,6 +1350,8 @@ class AgentRun:
             self._usage_baseline = cast(
                 "UsageTotals", dict(self._usage_totals)
             )
+            if any(self._usage_totals.values()):
+                self._inherits_usage = False
         finally:
             root, self._root = self._root, None
             self._root_context = None
@@ -1444,11 +1458,11 @@ def _usage_delta(totals: UsageTotals, baseline: UsageTotals) -> UsageTotals:
     """One invocation's share of counts the CLI reports cumulatively.
 
     ``model_usage`` and ``total_cost_usd`` accumulate over the *session*, not the
-    invocation: the CLI documents them that way, a resumed session starts them
-    fresh, and a mid-session ``/clear`` zeroes them. With ``query()`` the session
-    is the invocation, so the totals are already the invocation's. In multi-turn
-    mode a fresh root opens per turn while the counters keep growing, so each
-    turn reports the difference from where the previous one ended.
+    invocation: the CLI documents them that way, a resumed session carries on
+    from the earlier session's totals, and a mid-session ``/clear`` zeroes them.
+    In multi-turn mode a fresh root opens per turn while the counters keep
+    growing, so each turn reports the difference from where the previous one
+    ended.
 
     Clamped at zero, because a counter reset the stream did not announce would
     otherwise be reported as a negative token count.

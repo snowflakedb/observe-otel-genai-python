@@ -136,6 +136,13 @@ subagent never called a tool. Either way the forwarded messages arrive as
 the spawning Agent ``tool_use`` id, so turning the option on adds the
 subagent's own text to your loop.
 
+``resume`` and ``continue_conversation`` pick up an earlier session. Its first
+result already includes the earlier session's token usage and cost, without
+saying how much. For those runs, the ``invoke_agent`` span leaves out token and
+cost totals rather than report inflated ones. With ``ClaudeSDKClient``, later
+turns are measured from the first and report their own totals. The ``chat``
+spans are unaffected.
+
 
 References
 ----------

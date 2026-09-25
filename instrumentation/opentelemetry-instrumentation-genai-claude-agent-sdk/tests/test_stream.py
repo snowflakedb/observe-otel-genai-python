@@ -3952,3 +3952,125 @@ async def test_a_subagent_that_owns_its_own_launcher_still_closes(
         ],
     )
     assert Spans(span_exporter).one("execute_tool Agent")
+
+
+# ─── resumed sessions ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "options",
+    [
+        ClaudeAgentOptions(resume="earlier-session"),
+        ClaudeAgentOptions(continue_conversation=True),
+    ],
+    ids=["resume", "continue"],
+)
+async def test_a_resumed_session_reports_no_run_totals(
+    handler, span_exporter, options
+):
+    """The first result of a resumed session already carries the earlier
+    session's usage, by an amount the stream never states."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("hi"), usage={"input_tokens": 12}),
+            result(model_usage=MODEL_USAGE),
+        ],
+        sdk_options=options,
+    )
+    spans = Spans(span_exporter)
+    agent = spans.one("invoke_agent claude-agent-sdk")
+    for key in (
+        "gen_ai.usage.input_tokens",
+        "gen_ai.usage.output_tokens",
+        "gen_ai.usage.cache_read.input_tokens",
+        "gen_ai.usage.cache_write.input_tokens",
+        "claude_agent_sdk.usage.cost_usd",
+    ):
+        assert key not in agent.attributes
+    # Per-call counts are not cumulative, so they stay.
+    chat = spans.one("chat claude-sonnet-4-5")
+    assert chat.attributes["gen_ai.usage.input_tokens"] == 12
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_client_measures_later_turns_from_the_first(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("one"), message_id="m1"),
+            result(model_usage=cumulative(5000, 400, 0.5)),
+            init(),
+            assistant(TextBlock("two"), message_id="m2"),
+            result(model_usage=cumulative(5300, 425, 0.53)),
+        ],
+        multi_turn=True,
+        sdk_options=ClaudeAgentOptions(resume="earlier-session"),
+    )
+    agents = sorted(
+        Spans(span_exporter).named("invoke_agent claude-agent-sdk"),
+        key=lambda s: s.end_time,
+    )
+    assert "gen_ai.usage.input_tokens" not in agents[0].attributes
+    assert agents[1].attributes["gen_ai.usage.input_tokens"] == 300
+    assert agents[1].attributes["gen_ai.usage.output_tokens"] == 25
+    assert agents[1].attributes[
+        "claude_agent_sdk.usage.cost_usd"
+    ] == pytest.approx(0.03)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_turn_that_ends_without_usage_sets_no_baseline(
+    handler, span_exporter
+):
+    """A turn that never saw the session's totals leaves the baseline at zero,
+    so the next turn's totals would still include the earlier session's."""
+    run = AgentRun(
+        handler,
+        sdk_options=ClaudeAgentOptions(resume="earlier-session"),
+        multi_turn=True,
+    )
+
+    async def failing_read():
+        yield init()
+        yield assistant(TextBlock("one"), message_id="m1")
+        raise ConnectionError("dropped")
+
+    async def next_read():
+        yield init()
+        yield assistant(TextBlock("two"), message_id="m2")
+        yield result(model_usage=cumulative(5300, 425, 0.53))
+
+    with pytest.raises(ConnectionError):
+        async for _ in run.iterate(failing_read):
+            pass
+    async for _ in run.iterate(next_read):
+        pass
+
+    agents = Spans(span_exporter).named("invoke_agent claude-agent-sdk")
+    assert len(agents) == 2
+    for agent in agents:
+        assert "gen_ai.usage.input_tokens" not in agent.attributes
+
+
+@pytest.mark.asyncio
+async def test_a_reset_after_resuming_starts_the_totals_fresh(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            init(),
+            conversation_reset(),
+            assistant(TextBlock("hi")),
+            result(model_usage=cumulative(120, 8, 0.01)),
+        ],
+        sdk_options=ClaudeAgentOptions(resume="earlier-session"),
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.attributes["gen_ai.usage.input_tokens"] == 120
