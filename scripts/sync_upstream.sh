@@ -55,7 +55,7 @@ fi
 
 # Paths this fork does not carry. Upstream additions under them merge cleanly, so
 # the prune has to be re-applied rather than merely defended by conflicts.
-KEEP_UNDER_INSTRUMENTATION='^instrumentation/(AGENTS\.md|CLAUDE\.md|opentelemetry-instrumentation-genai-claude-agent-sdk/)'
+KEEP_UNDER_INSTRUMENTATION='^instrumentation/(AGENTS\.md|CLAUDE\.md|opentelemetry-instrumentation-genai-(bedrock|claude-agent-sdk|langchain|openai|openai-agents)/)'
 KEEP_WORKFLOWS='^\.github/workflows/(ci\.yml|test\.yml|misc\.yml|changelog\.yml|check-links\.yml|check_links_config\.json)$'
 PRUNED_PATHS=(
   docs

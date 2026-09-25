@@ -1,0 +1,178 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Langchain instrumentation supporting `ChatOpenAI` and `ChatBedrock`, it can be enabled by
+using ``LangChainInstrumentor``. Other providers/LLMs may be supported in the future and telemetry for them is skipped for now.
+
+Usage
+-----
+.. code:: python
+    from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+
+    LangChainInstrumentor().instrument()
+    llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, max_tokens=1000)
+    messages = [
+        SystemMessage(content="You are a helpful assistant!"),
+        HumanMessage(content="What is the capital of France?"),
+    ]
+    result = llm.invoke(messages)
+    LangChainInstrumentor().uninstrument()
+
+API
+---
+"""
+
+from collections.abc import Callable, Collection
+from typing import Any
+
+from langchain_core.callbacks import BaseCallbackManager
+from langchain_core.callbacks.manager import AsyncCallbackManager
+from wrapt import wrap_function_wrapper
+
+from opentelemetry.instrumentation.genai.langchain.agent_context import (
+    wrap_astream,
+    wrap_stream,
+)
+from opentelemetry.instrumentation.genai.langchain.callback_handler import (
+    OpenTelemetryLangChainCallbackHandler,
+)
+from opentelemetry.instrumentation.genai.langchain.invocation_manager import (
+    _InvocationManager,
+)
+from opentelemetry.instrumentation.genai.langchain.package import _instruments
+from opentelemetry.instrumentation.genai.langchain.version import __version__
+from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+from opentelemetry.instrumentation.utils import unwrap
+from opentelemetry.util.genai.completion_hook import load_completion_hook
+from opentelemetry.util.genai.handler import TelemetryHandler
+
+
+class LangChainInstrumentor(BaseInstrumentor):
+    """
+    OpenTelemetry instrumentor for LangChain.
+    This adds a custom callback handler to the LangChain callback manager
+    to capture LLM telemetry.
+    """
+
+    def __init__(
+        self,
+    ):
+        super().__init__()
+
+    def instrumentation_dependencies(self) -> Collection[str]:
+        return _instruments
+
+    def _instrument(self, **kwargs: Any):
+        """
+        Enable Langchain instrumentation.
+        """
+        tracer_provider = kwargs.get("tracer_provider")
+        meter_provider = kwargs.get("meter_provider")
+        logger_provider = kwargs.get("logger_provider")
+
+        telemetry_handler = TelemetryHandler(
+            tracer_provider=tracer_provider,
+            meter_provider=meter_provider,
+            logger_provider=logger_provider,
+            completion_hook=kwargs.get("completion_hook")
+            or load_completion_hook(),
+            instrumentation_scope_name=__package__,
+            instrumentation_scope_version=__version__,
+        )
+        invocation_manager = _InvocationManager()
+        sync_handler = OpenTelemetryLangChainCallbackHandler(
+            telemetry_handler=telemetry_handler,
+            _attach_to_context=True,
+            invocation_manager=invocation_manager,
+        )
+        async_handler = OpenTelemetryLangChainCallbackHandler(
+            telemetry_handler=telemetry_handler,
+            _attach_to_context=False,
+            invocation_manager=invocation_manager,
+        )
+
+        wrap_function_wrapper(
+            "langchain_core.callbacks",
+            "BaseCallbackManager.__init__",
+            _BaseCallbackManagerInitWrapper(sync_handler, async_handler),
+        )
+        self._instrument_agent_entry_points()
+
+    @staticmethod
+    def _instrument_agent_entry_points() -> None:
+        """Recover the create_agent provenance the callback metadata does not carry."""
+        for method, wrapper in (
+            ("Pregel.stream", wrap_stream),
+            ("Pregel.astream", wrap_astream),
+        ):
+            try:
+                wrap_function_wrapper("langgraph.pregel", method, wrapper)
+            except (ImportError, AttributeError):
+                # Without langgraph there are no agent graphs to announce, and
+                # classification stays metadata-based.
+                return
+
+    def _uninstrument(self, **kwargs: Any):
+        """
+        Cleanup instrumentation (unwrap).
+        """
+        unwrap("langchain_core.callbacks.base.BaseCallbackManager", "__init__")
+        try:
+            import langgraph.pregel
+
+            for method in ("stream", "astream"):
+                unwrap(langgraph.pregel.Pregel, method)
+        except (ImportError, AttributeError):
+            pass
+
+
+class _BaseCallbackManagerInitWrapper:
+    """
+    Wrap the BaseCallbackManager __init__ to insert custom callback handler in the manager's handlers list.
+    """
+
+    def __init__(
+        self,
+        sync_handler: OpenTelemetryLangChainCallbackHandler,
+        async_handler: OpenTelemetryLangChainCallbackHandler,
+    ):
+        self._sync_handler = sync_handler
+        self._async_handler = async_handler
+
+    def __call__(
+        self,
+        wrapped: Callable[..., None],
+        instance: BaseCallbackManager,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ):
+        wrapped(*args, **kwargs)
+        target_handler = (
+            self._async_handler
+            if isinstance(instance, AsyncCallbackManager)
+            else self._sync_handler
+        )
+        other_handler = (
+            self._sync_handler
+            if isinstance(instance, AsyncCallbackManager)
+            else self._async_handler
+        )
+        if other_handler in instance.handlers:
+            instance.handlers = [
+                target_handler if h is other_handler else h
+                for h in instance.handlers
+            ]
+        if other_handler in instance.inheritable_handlers:
+            instance.inheritable_handlers = [
+                target_handler if h is other_handler else h
+                for h in instance.inheritable_handlers
+            ]
+        if target_handler not in instance.inheritable_handlers:
+            for handler in instance.inheritable_handlers:
+                if isinstance(handler, OpenTelemetryLangChainCallbackHandler):
+                    break
+            else:
+                instance.add_handler(target_handler, inherit=True)

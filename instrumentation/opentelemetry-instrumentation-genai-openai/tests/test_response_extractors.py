@@ -1,0 +1,1836 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+import datetime
+import importlib.util
+import json
+from dataclasses import asdict
+from types import SimpleNamespace
+from unittest import mock
+
+import openai
+import pytest
+from openai import NOT_GIVEN
+from pydantic import BaseModel
+
+from opentelemetry.instrumentation.genai.openai import response_extractors
+from opentelemetry.instrumentation.genai.openai.utils import get_served_model
+from opentelemetry.semconv._incubating.attributes import (
+    openai_attributes as OpenAIAttributes,
+)
+from opentelemetry.util.genai.types import (
+    BlobPart,
+    FilePart,
+    FunctionToolDefinition,
+    GenericToolDefinition,
+    LLMInvocation,
+    ServerToolCallPart,
+    ServerToolCallResponsePart,
+    TextPart,
+    ToolCallRequestPart,
+    ToolCallResponsePart,
+    UriPart,
+)
+from opentelemetry.util.genai.utils import gen_ai_json_dumps
+
+try:
+    # Responses types are not available in the oldest supported OpenAI SDK.
+    # pylint: disable-next=no-name-in-module
+    from openai.types.responses.response import Response
+
+    # pylint: disable-next=no-name-in-module
+    from openai.types.responses.response_function_tool_call import (
+        ResponseFunctionToolCall,
+    )
+
+    # pylint: disable-next=no-name-in-module
+    from openai.types.responses.response_input_text import ResponseInputText
+
+    HAS_RESPONSES_TYPES = True
+    # `tool_search` server tool items arrived in a later 1.x release than the
+    # Responses API itself.
+    _has_tool_search_types = (
+        importlib.util.find_spec(
+            "openai.types.responses.response_tool_search_call"
+        )
+        is not None
+    )
+except ImportError:
+    Response = None
+    ResponseFunctionToolCall = None
+    ResponseInputText = None
+    HAS_RESPONSES_TYPES = False
+    _has_tool_search_types = False
+
+_UTC_2026 = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+
+pytestmark = pytest.mark.skipif(
+    not HAS_RESPONSES_TYPES,
+    reason="Responses SDK types require a newer openai SDK",
+)
+
+
+@pytest.fixture(scope="module", name="loaded_module")
+def _loaded_module_fixture():
+    return response_extractors
+
+
+def _make_response(output=None, **overrides):
+    payload = {
+        "id": "resp_123",
+        "created_at": 0.0,
+        "model": "gpt-4.1",
+        "object": "response",
+        "output": output or [],
+        "parallel_tool_calls": False,
+        "tool_choice": "auto",
+        "tools": [],
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "usage": {
+            "input_tokens": 11,
+            "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+            },
+            "output_tokens": 7,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": 18,
+        },
+    }
+    payload.update(overrides)
+    return Response.model_validate(payload)
+
+
+class _RawResponse:
+    def __init__(self, parsed_response):
+        self.headers = {"x-ms-served-model": "served-gpt-4.1"}
+        self.parsed_response = parsed_response
+        self.parse_count = 0
+
+    def parse(self):
+        self.parse_count += 1
+        return self.parsed_response
+
+
+class _RawResponseWithHeaders(_RawResponse):
+    def __init__(self, parsed_response, headers):
+        super().__init__(parsed_response)
+        self.headers = headers
+
+
+def test_extract_system_instruction_returns_text_for_string(loaded_module):
+    params = loaded_module.extract_params(instructions="Be concise")
+    instructions = loaded_module.get_system_instruction(params.instructions)
+
+    assert [part.content for part in instructions] == ["Be concise"]
+
+
+def test_extract_input_messages_supports_string_and_mixed_message_content(
+    loaded_module,
+):
+    from_string = loaded_module.get_input_messages("Hello")
+    from_list = loaded_module.get_input_messages(
+        [
+            {"role": "user", "content": "First"},
+            SimpleNamespace(
+                role="assistant",
+                content=[
+                    {"type": "input_text", "text": "Second"},
+                    SimpleNamespace(text="Third"),
+                    {
+                        "type": "input_image",
+                        "image_url": "https://example.com/image.png",
+                    },
+                ],
+            ),
+            {"role": None, "content": "ignored"},
+            {
+                "role": "user",
+                "content": [{"type": "input_audio", "audio_url": "ignored"}],
+            },
+        ]
+    )
+
+    assert [
+        (msg.role, [part.content for part in msg.parts]) for msg in from_string
+    ] == [("user", ["Hello"])]
+    assert [(msg.role, msg.parts) for msg in from_list] == [
+        ("user", [TextPart(content="First")]),
+        (
+            "assistant",
+            [
+                TextPart(content="Second"),
+                TextPart(content="Third"),
+                UriPart(
+                    mime_type=None,
+                    modality="image",
+                    uri="https://example.com/image.png",
+                ),
+            ],
+        ),
+    ]
+
+
+def test_extract_input_messages_keeps_assistant_output_text(loaded_module):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hi"}],
+            },
+            {
+                "role": "assistant",
+                "name": "example_assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Hello!",
+                        "annotations": [],
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert [(msg.role, msg.parts) for msg in messages] == [
+        ("user", [TextPart(content="Hi")]),
+        ("assistant", [TextPart(content="Hello!")]),
+    ]
+    assert messages[1].name == "example_assistant"
+
+
+def test_extract_input_messages_supports_sdk_response_output(loaded_module):
+    response = _make_response(
+        output=[
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "First response",
+                        "annotations": [],
+                    },
+                    {
+                        "type": "output_text",
+                        "text": "Second response",
+                        "annotations": [],
+                    },
+                ],
+            }
+        ]
+    )
+
+    messages = loaded_module.get_input_messages(response.output)
+
+    assert [(msg.role, msg.parts) for msg in messages] == [
+        (
+            "assistant",
+            [
+                TextPart(content="First response"),
+                TextPart(content="Second response"),
+            ],
+        )
+    ]
+
+
+def test_extract_input_messages_supports_image_data_url_and_file_id(
+    loaded_module,
+):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": "https://example.com/image.png",
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,aGVsbG8=",
+                    },
+                    {"type": "input_image", "file_id": "file-123"},
+                ],
+            }
+        ]
+    )
+
+    assert messages[0].parts == [
+        UriPart(
+            mime_type=None,
+            modality="image",
+            uri="https://example.com/image.png",
+        ),
+        BlobPart(
+            mime_type="image/png",
+            modality="image",
+            content=b"hello",
+        ),
+        FilePart(mime_type=None, modality="image", file_id="file-123"),
+    ]
+
+
+def test_extract_input_messages_extracts_name(loaded_module):
+    messages = loaded_module.get_input_messages(
+        [
+            {"role": "user", "content": "Hello", "name": "Alice"},
+            SimpleNamespace(role="assistant", content="Hi", name="Bob"),
+            {"role": "user", "content": "How are you?"},
+        ]
+    )
+    assert [(msg.role, msg.name) for msg in messages] == [
+        ("user", "Alice"),
+        ("assistant", "Bob"),
+        ("user", None),
+    ]
+
+
+def test_extract_input_messages_records_tool_loop_history(loaded_module):
+    """A tool-call turn replayed as input must survive as tool_call/tool_call_response."""
+    messages = loaded_module.get_input_messages(
+        [
+            {"role": "user", "content": "Where is order 42?"},
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_abc",
+                "name": "lookup_order",
+                "arguments": '{"order_id": 42}',
+                "status": "completed",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_abc",
+                "output": "Order 42 shipped on Tuesday.",
+            },
+        ]
+    )
+
+    assert [message.role for message in messages] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+    (tool_call,) = messages[1].parts
+    assert isinstance(tool_call, ToolCallRequestPart)
+    assert tool_call.type == "tool_call"
+    assert tool_call.id == "call_abc"
+    assert tool_call.name == "lookup_order"
+    assert tool_call.arguments == {"order_id": 42}
+
+    (tool_response,) = messages[2].parts
+    assert isinstance(tool_response, ToolCallResponsePart)
+    assert tool_response.type == "tool_call_response"
+    # The response part must be pairable with the call that produced it.
+    assert tool_response.id == tool_call.id
+    assert tool_response.response == "Order 42 shipped on Tuesday."
+
+
+def test_extract_input_messages_handles_tool_items_as_sdk_models(
+    loaded_module,
+):
+    """Callers replay `response.output` items verbatim, so they arrive as models."""
+    messages = loaded_module.get_input_messages(
+        [
+            ResponseFunctionToolCall(
+                id="fc_1",
+                call_id="call_abc",
+                name="lookup_order",
+                arguments='{"order_id": 42}',
+                type="function_call",
+                status="completed",
+            ),
+            SimpleNamespace(
+                type="function_call_output",
+                call_id="call_abc",
+                output="shipped",
+            ),
+        ]
+    )
+
+    assert [message.role for message in messages] == ["assistant", "tool"]
+    assert messages[0].parts[0].arguments == {"order_id": 42}
+    assert messages[1].parts[0].response == "shipped"
+
+
+def test_extract_input_messages_tool_items_serialize_onto_a_span(
+    loaded_module,
+):
+    """Structured tool output arrives as SDK models the span serializer can't encode."""
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "type": "function_call_output",
+                "call_id": "call_abc",
+                "output": [
+                    ResponseInputText(type="input_text", text="shipped")
+                ],
+            },
+        ]
+    )
+
+    (message,) = messages
+    # gen_ai_json_dumps raises TypeError on a value it cannot encode.
+    (serialized,) = json.loads(gen_ai_json_dumps([asdict(message)]))
+    (response_item,) = serialized["parts"][0]["response"]
+    assert response_item["type"] == "input_text"
+    assert response_item["text"] == "shipped"
+
+
+def test_extract_input_messages_tool_output_reduces_to_plain_data(
+    loaded_module,
+):
+    """A structured tool output must reach the span as encodable data.
+
+    `gen_ai_json_dumps` raises on anything it cannot encode, and that exception
+    would surface from the caller's `responses.create(...)`.
+    """
+
+    class Nested(BaseModel):
+        text: str
+
+    class Wrapper(BaseModel):
+        nested: Nested
+        when: datetime.datetime
+
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "type": "function_call_output",
+                "call_id": "call_abc",
+                "output": [
+                    ResponseInputText(type="input_text", text="shipped"),
+                    # A dumped model holds its own models, so the dump has to
+                    # be walked rather than returned as-is.
+                    Wrapper(nested=Nested(text="inner"), when=_UTC_2026),
+                ],
+            },
+        ]
+    )
+
+    (message,) = messages
+    (serialized,) = json.loads(gen_ai_json_dumps([asdict(message)]))
+    item, wrapper = serialized["parts"][0]["response"]
+    assert item["type"] == "input_text"
+    assert item["text"] == "shipped"
+    assert wrapper["nested"] == {"text": "inner"}
+    # A datetime is not something a tool output can hold, so it is dropped
+    # instead of being turned into a guessed string.
+    assert wrapper["when"] is None
+
+
+def test_extract_input_messages_tolerates_incomplete_tool_items(
+    loaded_module,
+):
+    messages = loaded_module.get_input_messages(
+        [
+            # No `call_id`: see _get_call_id on why `id` stands in for it.
+            {"type": "function_call", "id": "fc_1", "name": "f"},
+            # Unparsable arguments are recorded as the raw string.
+            {
+                "type": "function_call",
+                "call_id": "call_bad",
+                "name": "f",
+                "arguments": "not-json",
+            },
+            {"type": "function_call_output"},
+        ]
+    )
+
+    # The two calls are consecutive, so they merge into one assistant turn.
+    assert [message.role for message in messages] == ["assistant", "tool"]
+    first, second = messages[0].parts
+    assert first.id == "fc_1"
+    assert first.arguments is None
+    assert second.arguments == "not-json"
+    assert messages[1].parts[0].id is None
+    assert messages[1].parts[0].response is None
+
+
+def test_extract_input_messages_pair_ids_when_provider_omits_call_id(
+    loaded_module,
+):
+    """Defensive: no provider is known to omit `call_id`, which is required.
+
+    If one did, a caller would have only the item's `id` for the output item's
+    `call_id`, so both sides must resolve it the same way to stay correlatable.
+    """
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "name": "lookup_order",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "fc_1",
+                "output": "ok",
+            },
+        ]
+    )
+
+    parts = [part for message in messages for part in message.parts]
+    ids = {part.type: part.id for part in parts}
+    assert ids == {"tool_call": "fc_1", "tool_call_response": "fc_1"}
+
+
+def test_extract_input_messages_merges_parallel_tool_calls(loaded_module):
+    """Consecutive tool-call items are one assistant turn, so one message.
+
+    The flat item list splits a parallel-call turn into several items; results
+    stay one message each, matching the Chat Completions shape.
+    """
+    messages = loaded_module.get_input_messages(
+        [
+            {"role": "user", "content": "Weather in both cities?"},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "get_current_weather",
+                "arguments": '{"location":"Seattle, WA"}',
+            },
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_2",
+                "name": "run_sql",
+                "input": "SELECT 1",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "raining",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_2",
+                "output": "1 row",
+            },
+        ]
+    )
+
+    assert [message.role for message in messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+    ]
+    assert [part.id for part in messages[1].parts] == ["call_1", "call_2"]
+    assert [message.parts[0].id for message in messages[2:]] == [
+        "call_1",
+        "call_2",
+    ]
+
+
+def test_extract_input_messages_keeps_separate_tool_turns_apart(
+    loaded_module,
+):
+    """A result between two calls ends the turn, so they are not merged."""
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "f",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "ok",
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "f",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    assert [message.role for message in messages] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+
+
+def test_extract_input_messages_does_not_merge_assistant_text(loaded_module):
+    """Only tool-call-only turns merge; a text message stays its own."""
+    messages = loaded_module.get_input_messages(
+        [
+            {"role": "assistant", "content": "let me check"},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "f",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    assert [message.role for message in messages] == ["assistant", "assistant"]
+    assert [part.type for part in messages[0].parts] == ["text"]
+    assert [part.type for part in messages[1].parts] == ["tool_call"]
+
+
+def test_extract_input_messages_records_custom_tool_calls(loaded_module):
+    """A custom tool's `input` is free-form text, not a JSON arguments string."""
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_custom",
+                "name": "run_sql",
+                "input": "SELECT 1",
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_custom",
+                "output": "1 row",
+            },
+        ]
+    )
+
+    assert [message.role for message in messages] == ["assistant", "tool"]
+    (tool_call,) = messages[0].parts
+    assert isinstance(tool_call, ToolCallRequestPart)
+    assert tool_call.name == "run_sql"
+    # Not JSON-parsed: "SELECT 1" is the argument, verbatim.
+    assert tool_call.arguments == "SELECT 1"
+
+    (tool_response,) = messages[1].parts
+    assert isinstance(tool_response, ToolCallResponsePart)
+    assert tool_response.id == tool_call.id == "call_custom"
+    assert tool_response.response == "1 row"
+
+
+def test_extract_input_messages_without_tool_part_types(loaded_module):
+    tool_items = [
+        {
+            "type": "function_call",
+            "call_id": "call_abc",
+            "name": "f",
+            "arguments": "{}",
+        },
+        {"type": "function_call_output", "call_id": "call_abc", "output": "x"},
+    ]
+
+    with (
+        mock.patch.object(loaded_module, "ToolCall", None),
+        mock.patch.object(loaded_module, "ToolCallResponsePart", None),
+    ):
+        assert loaded_module.get_input_messages(tool_items) == []
+
+
+def test_extract_output_messages_maps_parts_and_finish_reasons(loaded_module):
+    response = _make_response(
+        output=[
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "Done", "annotations": []},
+                    {"type": "refusal", "refusal": "Cannot comply"},
+                ],
+            },
+            {
+                "id": "msg_2",
+                "type": "message",
+                "role": "assistant",
+                "status": "incomplete",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Partial",
+                        "annotations": [],
+                    }
+                ],
+            },
+            {
+                "id": "msg_3",
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Pending",
+                        "annotations": [],
+                    }
+                ],
+            },
+            {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "completed",
+                "name": "get_weather",
+                "call_id": "call_123",
+                "arguments": '{"city":"SF"}',
+            },
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{"type": "summary_text", "text": "Thought step"}],
+                "content": None,
+            },
+        ]
+    )
+
+    messages = loaded_module.get_output_messages_from_response(response)
+
+    assert [(msg.role, msg.finish_reason) for msg in messages] == [
+        ("assistant", "stop"),
+        ("assistant", "incomplete"),
+        ("assistant", "tool_call"),
+        ("assistant", "stop"),
+    ]
+    assert [part.content for part in messages[0].parts] == [
+        "Done",
+        "Cannot comply",
+    ]
+    assert [part.content for part in messages[1].parts] == ["Partial"]
+    assert messages[2].parts[0].type == "tool_call"
+    assert messages[2].parts[0].name == "get_weather"
+    assert messages[2].parts[0].arguments == {"city": "SF"}
+    assert messages[3].parts[0].type == "reasoning"
+    assert messages[3].parts[0].content == "Thought step"
+
+
+@pytest.mark.skipif(
+    not _has_tool_search_types,
+    reason="openai SDK too old to support tool_search server tool items",
+)
+@pytest.mark.parametrize(
+    ("item", "expected_name", "expected_payload"),
+    [
+        (
+            {
+                "id": "fs_1",
+                "type": "file_search_call",
+                "status": "completed",
+                "queries": ["OpenTelemetry"],
+                "results": [],
+            },
+            "file_search",
+            {
+                "type": "file_search",
+                "status": "completed",
+                "queries": ["OpenTelemetry"],
+                "results": [],
+            },
+        ),
+        (
+            {
+                "id": "ws_1",
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {"type": "search", "query": "OpenTelemetry"},
+            },
+            "web_search",
+            {
+                "type": "web_search",
+                "status": "completed",
+                "action": {"type": "search", "query": "OpenTelemetry"},
+            },
+        ),
+        (
+            {
+                "id": "ci_1",
+                "type": "code_interpreter_call",
+                "status": "completed",
+                "code": "print(1)",
+                "container_id": "container_1",
+                "outputs": [{"type": "logs", "logs": "1"}],
+            },
+            "code_interpreter",
+            {
+                "type": "code_interpreter",
+                "status": "completed",
+                "code": "print(1)",
+                "container_id": "container_1",
+                "outputs": [{"type": "logs", "logs": "1"}],
+            },
+        ),
+        (
+            {
+                "id": "mcp_1",
+                "type": "mcp_call",
+                "status": "completed",
+                "name": "get_weather",
+                "server_label": "weather",
+                "arguments": '{"city":"Seattle"}',
+                "output": "rain",
+            },
+            "get_weather",
+            {
+                "type": "mcp",
+                "status": "completed",
+                "server_label": "weather",
+                "arguments": '{"city":"Seattle"}',
+                "output": "rain",
+            },
+        ),
+        (
+            {
+                "id": "ig_1",
+                "type": "image_generation_call",
+                "status": "completed",
+                "result": "image-data",
+            },
+            "image_generation",
+            {
+                "type": "image_generation",
+                "status": "completed",
+                "result": "image-data",
+            },
+        ),
+        (
+            {
+                "id": "mcp_list_1",
+                "type": "mcp_list_tools",
+                "server_label": "weather",
+                "tools": [],
+            },
+            "mcp_list_tools",
+            {
+                "type": "mcp_list_tools",
+                "server_label": "weather",
+                "tools": [],
+            },
+        ),
+        (
+            {
+                "id": "ts_item_1",
+                "type": "tool_search_call",
+                "call_id": "ts_call_1",
+                "execution": "server",
+                "status": "completed",
+                "arguments": {"query": "weather"},
+            },
+            "tool_search",
+            {
+                "type": "tool_search",
+                "execution": "server",
+                "status": "completed",
+                "arguments": {"query": "weather"},
+            },
+        ),
+    ],
+)
+def test_extract_output_messages_maps_server_tools(
+    loaded_module, item, expected_name, expected_payload
+):
+    response = _make_response(output=[item])
+
+    messages = loaded_module.get_output_messages_from_response(response)
+
+    assert len(messages) == 1
+    assert messages[0].finish_reason == "stop"
+    assert len(messages[0].parts) == 1
+    part = messages[0].parts[0]
+    assert isinstance(part, ServerToolCallPart)
+    assert part.id == item.get("call_id", item["id"])
+    assert part.name == expected_name
+    assert part.server_tool_call == expected_payload
+
+
+@pytest.mark.skipif(
+    not _has_tool_search_types,
+    reason="openai SDK too old to support tool_search server tool items",
+)
+def test_extract_output_messages_maps_server_tool_search_result(loaded_module):
+    item = {
+        "id": "ts_2",
+        "type": "tool_search_output",
+        "call_id": "ts_1",
+        "execution": "server",
+        "status": "completed",
+        "tools": [],
+    }
+    response = _make_response(output=[item])
+
+    messages = loaded_module.get_output_messages_from_response(response)
+
+    part = messages[0].parts[0]
+    assert isinstance(part, ServerToolCallResponsePart)
+    assert part.id == "ts_1"
+    assert part.server_tool_call_response == {
+        "execution": "server",
+        "status": "completed",
+        "tools": [],
+        "type": "tool_search",
+    }
+
+
+@pytest.mark.skipif(
+    not _has_tool_search_types,
+    reason="openai SDK too old to support tool_search server tool items",
+)
+def test_extract_output_messages_does_not_classify_client_tool_search(
+    loaded_module,
+):
+    item = {
+        "id": "ts_1",
+        "type": "tool_search_call",
+        "call_id": "call_1",
+        "execution": "client",
+        "status": "completed",
+        "arguments": {},
+    }
+    response = _make_response(output=[item])
+
+    assert loaded_module.get_output_messages_from_response(response) == []
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_finish_reason"),
+    [
+        ("in_progress", None),
+        ("failed", "error"),
+        ("incomplete", "incomplete"),
+    ],
+)
+def test_extract_output_messages_uses_server_tool_status(
+    loaded_module, status, expected_finish_reason
+):
+    response = _make_response(
+        output=[
+            {
+                "id": "fs_1",
+                "type": "file_search_call",
+                "status": status,
+                "queries": ["OpenTelemetry"],
+                "results": [],
+            }
+        ]
+    )
+
+    messages = loaded_module.get_output_messages_from_response(response)
+
+    if expected_finish_reason is None:
+        assert messages == []
+    else:
+        assert messages[0].finish_reason == expected_finish_reason
+
+
+def test_extract_output_messages_maps_failed_mcp_list_tools(loaded_module):
+    response = _make_response(
+        output=[
+            {
+                "id": "mcp_list_1",
+                "type": "mcp_list_tools",
+                "server_label": "weather",
+                "tools": [],
+                "error": "unavailable",
+            }
+        ]
+    )
+
+    messages = loaded_module.get_output_messages_from_response(response)
+
+    assert messages[0].finish_reason == "error"
+
+
+def test_extract_output_messages_merges_parallel_tool_calls(loaded_module):
+    """One generation cannot span messages, so parallel calls stay together."""
+    response = _make_response(
+        output=[
+            {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_1",
+                "name": "get_current_weather",
+                "arguments": '{"location":"Seattle, WA"}',
+            },
+            {
+                "id": "fc_2",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_2",
+                "name": "get_current_weather",
+                "arguments": '{"location":"Boston, MA"}',
+            },
+        ]
+    )
+
+    (message,) = loaded_module.get_output_messages_from_response(response)
+    assert message.role == "assistant"
+    assert message.finish_reason == "tool_call"
+    assert [part.id for part in message.parts] == ["call_1", "call_2"]
+
+
+def test_extract_output_messages_merges_text_and_tool_calls(loaded_module):
+    """Assistant text and the calls it introduces are one generation."""
+    response = _make_response(
+        output=[
+            {
+                "id": "msg_1",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "I will check the weather for both cities.",
+                        "annotations": [],
+                    }
+                ],
+            },
+            {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_1",
+                "name": "get_current_weather",
+                "arguments": '{"location":"Seattle, WA"}',
+            },
+            {
+                "id": "fc_2",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_2",
+                "name": "get_current_weather",
+                "arguments": '{"location":"Boston, MA"}',
+            },
+        ]
+    )
+
+    (message,) = loaded_module.get_output_messages_from_response(response)
+    assert message.role == "assistant"
+    assert message.finish_reason == "tool_call"
+    assert [part.type for part in message.parts] == [
+        "text",
+        "tool_call",
+        "tool_call",
+    ]
+    assert [part.id for part in message.parts[1:]] == ["call_1", "call_2"]
+
+
+def test_extract_output_messages_absorbs_into_a_partless_message(
+    loaded_module,
+):
+    """A message that carried no parts still holds the generation's tool call."""
+    response = _make_response(
+        output=[
+            {
+                "id": "msg_1",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [],
+            },
+            {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_1",
+                "name": "f",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    (message,) = loaded_module.get_output_messages_from_response(response)
+    assert message.finish_reason == "tool_call"
+    assert [part.type for part in message.parts] == ["tool_call"]
+
+
+def test_extract_output_messages_keeps_unfinished_message_separate(
+    loaded_module,
+):
+    """A turn that ended early keeps its own finish reason."""
+    response = _make_response(
+        output=[
+            {
+                "id": "msg_1",
+                "type": "message",
+                "status": "incomplete",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": "hi", "annotations": []}
+                ],
+            },
+            {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_1",
+                "name": "f",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    text_message, tool_message = (
+        loaded_module.get_output_messages_from_response(response)
+    )
+    assert text_message.finish_reason == "incomplete"
+    assert [part.type for part in text_message.parts] == ["text"]
+    assert tool_message.finish_reason == "tool_call"
+    assert [part.type for part in tool_message.parts] == ["tool_call"]
+
+
+def test_extract_finish_reasons_maps_terminal_message_and_tool_items(
+    loaded_module,
+):
+    response = _make_response(
+        output=[
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [],
+            },
+            {
+                "id": "msg_2",
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [],
+            },
+            {
+                "id": "fc_1",
+                "type": "function_call",
+                "status": "incomplete",
+                "name": "tool",
+                "call_id": "call_1",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    assert loaded_module.extract_finish_reasons(response) == [
+        "stop",
+        "tool_calls",
+    ]
+
+
+def test_get_response_error_returns_error_for_failed_response(loaded_module):
+    response = _make_response(
+        status="failed",
+        error={"code": "server_error", "message": "boom"},
+    )
+
+    error = loaded_module.get_response_error(response)
+
+    assert error is not None
+    assert error.type == "server_error"
+    assert error.message == "boom"
+
+
+def test_get_response_error_parses_raw_response(loaded_module):
+    response = _make_response(
+        status="failed",
+        error={"code": "server_error", "message": "boom"},
+    )
+    raw_response = SimpleNamespace(parse=mock.Mock(return_value=response))
+
+    error = loaded_module.get_response_error(raw_response)
+
+    assert error is not None
+    assert error.type == "server_error"
+    raw_response.parse.assert_called_once_with()
+
+
+def test_get_response_error_keeps_streaming_raw_response_lazy(loaded_module):
+    raw_response = SimpleNamespace(parse=mock.Mock())
+
+    error = loaded_module.get_response_error(
+        raw_response,
+        {
+            "extra_headers": {
+                "X-Stainless-Raw-Response": "stream",
+            }
+        },
+    )
+
+    assert error is None
+    raw_response.parse.assert_not_called()
+
+
+def test_get_response_error_none_for_incomplete_response(loaded_module):
+    # Incomplete is a finish reason, not an error.
+    response = _make_response(
+        status="incomplete",
+        incomplete_details={"reason": "max_output_tokens"},
+    )
+
+    assert loaded_module.get_response_error(response) is None
+
+
+def test_get_response_error_none_for_successful_response(loaded_module):
+    assert loaded_module.get_response_error(_make_response()) is None
+
+
+def test_extract_output_type_handles_text_format_mapping(loaded_module):
+    assert (
+        loaded_module.extract_params(
+            text={"format": {"type": "json_schema"}}
+        ).output_type
+        == "json"
+    )
+    assert (
+        loaded_module.extract_params(
+            text={"format": {"type": "text"}}
+        ).output_type
+        == "text"
+    )
+    assert (
+        loaded_module.extract_params(
+            text=SimpleNamespace(format=SimpleNamespace(type="json_schema"))
+        ).output_type
+        == "json"
+    )
+    assert (
+        loaded_module.extract_params(
+            text=SimpleNamespace(format=SimpleNamespace(type="text"))
+        ).output_type
+        == "text"
+    )
+    assert (
+        loaded_module.extract_params(text={"format": "plain"}).output_type
+        is None
+    )
+    assert loaded_module.extract_params(text="plain").output_type is None
+
+
+def test_extract_conversation_id_handles_supported_shapes(loaded_module):
+    assert (
+        loaded_module.extract_params(conversation="conv_abc").conversation_id
+        == "conv_abc"
+    )
+    assert (
+        loaded_module.extract_params(
+            conversation={"id": "conv_abc"}
+        ).conversation_id
+        == "conv_abc"
+    )
+    assert (
+        loaded_module.extract_params(
+            conversation=SimpleNamespace(id="conv_abc")
+        ).conversation_id
+        == "conv_abc"
+    )
+
+
+# Sentinels a caller can pass explicitly instead of a conversation. A current
+# SDK defaults `conversation` to `omit`, which the oldest supported one lacks.
+_UNSET_SENTINELS = [openai.NOT_GIVEN]
+if hasattr(openai, "omit"):
+    _UNSET_SENTINELS.append(openai.omit)
+
+
+@pytest.mark.parametrize(
+    "conversation",
+    [
+        None,
+        *_UNSET_SENTINELS,
+        "",
+        {},
+        {"id": ""},
+        {"id": 42},
+        42,
+        SimpleNamespace(),
+    ],
+)
+def test_extract_conversation_id_ignores_unusable_values(
+    loaded_module, conversation
+):
+    assert (
+        loaded_module.extract_params(conversation=conversation).conversation_id
+        is None
+    )
+
+
+def test_creation_kwargs_carry_conversation_id(loaded_module):
+    # Passed at construction so the invocation attaches it to its context,
+    # where nested spans can pick it up.
+    kwargs = loaded_module.get_inference_creation_kwargs(
+        loaded_module.extract_params(conversation="conv_abc"), None
+    )
+    assert kwargs["conversation_id"] == "conv_abc"
+
+
+def test_creation_kwargs_omit_conversation_id_when_absent(loaded_module):
+    kwargs = loaded_module.get_inference_creation_kwargs(
+        loaded_module.extract_params(), None
+    )
+    assert "conversation_id" not in kwargs
+
+
+def test_extractors_handle_missing_genai_types_import(loaded_module):
+    with (
+        mock.patch.object(loaded_module, "TextPart", None),
+        mock.patch.object(loaded_module, "InputMessage", None),
+        mock.patch.object(loaded_module, "OutputMessage", None),
+    ):
+        assert loaded_module.get_system_instruction("hi") == []
+        assert loaded_module.get_input_messages("hi") == []
+        assert (
+            loaded_module.get_output_messages_from_response(
+                _make_response(
+                    output=[
+                        {
+                            "id": "msg_1",
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [],
+                        }
+                    ]
+                )
+            )
+            == []
+        )
+
+
+def test_set_invocation_response_attributes_populates_usage_and_metadata(
+    loaded_module,
+):
+    invocation = LLMInvocation(request_model="gpt-4o-mini")
+    result = _make_response(
+        service_tier="scale",
+        usage={
+            "input_tokens": 11,
+            "input_tokens_details": {
+                "cached_tokens": 3,
+                "cache_creation_input_tokens": 5,
+                "cache_write_tokens": 0,
+            },
+            "output_tokens": 7,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": 18,
+        },
+    )
+
+    loaded_module.set_invocation_response_attributes(
+        invocation, result, capture_content=False
+    )
+
+    assert invocation.response_model_name == "gpt-4.1"
+    assert invocation.response_id == "resp_123"
+    assert invocation.input_tokens == 11
+    assert invocation.output_tokens == 7
+    assert invocation.cache_read_input_tokens == 3
+    assert invocation.cache_write_input_tokens == 0
+    assert invocation.attributes == {
+        OpenAIAttributes.OPENAI_RESPONSE_SERVICE_TIER: "scale",
+    }
+
+
+def test_set_invocation_response_attributes_falls_back_to_cache_creation(
+    loaded_module,
+):
+    invocation = LLMInvocation(request_model="gpt-4o-mini")
+    usage = loaded_module.ResponseUsage.model_construct(
+        input_tokens=11,
+        output_tokens=7,
+        input_tokens_details=SimpleNamespace(cache_creation_input_tokens=5),
+        output_tokens_details=None,
+    )
+    result = loaded_module.Response.model_construct(
+        id="resp_123",
+        model="gpt-4.1",
+        usage=usage,
+        output=[],
+        service_tier=None,
+    )
+
+    loaded_module.set_invocation_response_attributes(
+        invocation, result, capture_content=False
+    )
+
+    assert invocation.cache_write_input_tokens == 5
+
+
+def test_set_invocation_response_attributes_prefers_raw_served_model_header(
+    loaded_module,
+):
+    invocation = LLMInvocation(request_model="gpt-4o-mini")
+    raw_response = _RawResponse(_make_response(model="body-gpt-4.1"))
+
+    loaded_module.set_invocation_response_attributes(
+        invocation, raw_response, capture_content=False
+    )
+
+    assert raw_response.parse_count == 1
+    assert invocation.response_model_name == "served-gpt-4.1"
+
+
+def test_set_invocation_response_attributes_falls_back_to_body_model_when_header_empty(
+    loaded_module,
+):
+    invocation = LLMInvocation(request_model="gpt-4o-mini")
+    raw_response = _RawResponseWithHeaders(
+        _make_response(model="deployment-gpt-4.1"),
+        headers={"x-ms-served-model": "  "},
+    )
+
+    loaded_module.set_invocation_response_attributes(
+        invocation, raw_response, capture_content=False
+    )
+
+    assert raw_response.parse_count == 1
+    assert invocation.response_model_name == "deployment-gpt-4.1"
+
+
+def test_set_invocation_response_attributes_falls_back_to_body_model_when_header_absent(
+    loaded_module,
+):
+    invocation = LLMInvocation(request_model="gpt-4o-mini")
+    raw_response = _RawResponseWithHeaders(
+        _make_response(model="deployment-gpt-4.1"),
+        headers={"content-type": "application/json"},
+    )
+
+    loaded_module.set_invocation_response_attributes(
+        invocation, raw_response, capture_content=False
+    )
+
+    assert raw_response.parse_count == 1
+    assert invocation.response_model_name == "deployment-gpt-4.1"
+
+
+def test_set_invocation_response_attributes_populates_output_messages(
+    loaded_module,
+):
+    invocation = LLMInvocation(request_model="gpt-4o-mini")
+    result = _make_response(
+        output=[
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "Done", "annotations": []}
+                ],
+            }
+        ]
+    )
+
+    loaded_module.set_invocation_response_attributes(
+        invocation, result, capture_content=True
+    )
+
+    assert invocation.finish_reasons == ["stop"]
+    assert [
+        (message.role, message.finish_reason)
+        for message in invocation.output_messages
+    ] == [("assistant", "stop")]
+    assert [
+        [part.content for part in message.parts]
+        for message in invocation.output_messages
+    ] == [["Done"]]
+
+
+def test_extractors_ignore_invalid_request_shapes_without_validation(
+    loaded_module,
+):
+    params = loaded_module.extract_params(
+        instructions=["not-a-string"], input=42, text={"format": {"type": 42}}
+    )
+    assert loaded_module.get_system_instruction(params.instructions) == []
+    assert loaded_module.get_input_messages(params.input) == []
+    assert params.output_type is None
+
+
+def test_response_extractors_ignore_invalid_shapes_without_validation(
+    loaded_module,
+):
+    invocation = LLMInvocation(request_model="gpt-4o-mini")
+    invalid_result = SimpleNamespace(output=42, usage=42)
+
+    assert (
+        loaded_module.get_output_messages_from_response(invalid_result) == []
+    )
+    assert loaded_module.extract_finish_reasons(invalid_result) == []
+
+    loaded_module.set_invocation_response_attributes(
+        invocation, invalid_result, capture_content=True
+    )
+
+    assert invocation.response_model_name is None
+    assert invocation.response_id is None
+    assert invocation.input_tokens is None
+    assert invocation.output_tokens is None
+    assert invocation.finish_reasons is None
+    assert not invocation.output_messages
+    assert not invocation.attributes
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"status": "completed"}, ["stop"]),
+        ({"status": "failed"}, ["error"]),
+        ({"status": "cancelled"}, ["error"]),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+            ["length"],
+        ),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+            },
+            ["content_filter"],
+        ),
+        ({"status": "incomplete"}, ["incomplete"]),
+        # Non-terminal and unknown statuses: generation is not known to have
+        # stopped, so there is no finish reason to report. gen_ai.response.status
+        # conveys the lifecycle state instead.
+        ({"status": "queued"}, []),
+        ({"status": "in_progress"}, []),
+        ({}, []),
+    ],
+)
+def test_extract_finish_reasons_maps_response_status(
+    loaded_module, overrides, expected
+):
+    response = _make_response(**overrides)
+
+    assert loaded_module.extract_finish_reasons(response) == expected
+
+
+def test_set_fetch_response_attributes_tolerates_missing_service_tier():
+    """`service_tier` is absent from the Response model on older SDKs.
+
+    Deleting the field from the instance makes attribute access raise
+    ``AttributeError``, exactly as it does on an SDK whose ``Response`` model
+    never declared it (for example openai 1.70).
+    """
+    response = _make_response(status="completed")
+    del response.__dict__["service_tier"]
+    with pytest.raises(AttributeError):
+        response.service_tier  # pylint: disable=pointless-statement
+
+    invocation = SimpleNamespace(
+        response_model_name=None,
+        response_status=None,
+        finish_reasons=None,
+        output_messages=[],
+        system_instruction=[],
+        attributes={},
+    )
+
+    response_extractors.set_fetch_response_attributes(
+        invocation, response, capture_content=False
+    )
+
+    assert invocation.response_status == "completed"
+    assert invocation.finish_reasons == ["stop"]
+    assert (
+        OpenAIAttributes.OPENAI_RESPONSE_SERVICE_TIER
+        not in invocation.attributes
+    )
+
+
+def test_get_tool_definitions_from_response_maps_flat_responses_tools(
+    loaded_module,
+):
+    """Responses API tools are flat, unlike the nested Chat Completions shape."""
+    response = _make_response(
+        tools=[
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+                "strict": True,
+            }
+        ]
+    )
+
+    definitions = loaded_module.get_tool_definitions_from_response(response)
+
+    (definition,) = definitions
+    assert isinstance(definition, FunctionToolDefinition)
+    assert definition.type == "function"
+    assert definition.name == "get_weather"
+    assert definition.description == "Get the weather"
+    assert definition.parameters == {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+    }
+
+
+def test_get_tool_definitions_from_response_maps_builtin_tools_by_type(
+    loaded_module,
+):
+    """Built-in tools carry no name, so their type identifies them."""
+    response = _make_response(
+        tools=[{"type": "web_search_preview"}],
+    )
+
+    definitions = loaded_module.get_tool_definitions_from_response(response)
+
+    (definition,) = definitions
+    assert isinstance(definition, GenericToolDefinition)
+    assert definition.type == "web_search_preview"
+    assert definition.name == "web_search_preview"
+
+
+def test_get_tool_definitions_from_response_returns_none_without_tools(
+    loaded_module,
+):
+    assert loaded_module.get_tool_definitions_from_response(None) is None
+    assert (
+        loaded_module.get_tool_definitions_from_response(_make_response())
+        is None
+    )
+
+
+def test_extract_params_captures_request_tools(loaded_module):
+    """`tools` on the create request is the source for gen_ai.tool.definitions."""
+    tools = [{"type": "function", "name": "get_weather"}]
+
+    assert loaded_module.extract_params(tools=tools).tools == tools
+    assert loaded_module.extract_params().tools is None
+    assert loaded_module.extract_params(tools=[]).tools is None
+    assert loaded_module.extract_params(tools=NOT_GIVEN).tools is None
+
+
+def test_extract_params_accepts_reusable_non_sequence_tool_iterables(
+    loaded_module,
+):
+    """The SDK takes any `Iterable[ToolParam]`, not just a list."""
+    tool = {"type": "function", "name": "get_weather"}
+
+    from_set = loaded_module.extract_params(
+        tools={"unhashable": tool}.values()
+    )
+    assert list(from_set.tools) == [tool]
+
+    from_tuple = loaded_module.extract_params(tools=(tool,))
+    assert list(from_tuple.tools) == [tool]
+
+
+def test_extract_params_does_not_drain_a_one_shot_tools_iterable(
+    loaded_module,
+):
+    """Consuming the caller's iterator would leave the SDK with no tools."""
+    tool = {"type": "function", "name": "get_weather"}
+    tools = iter([tool])
+
+    assert loaded_module.extract_params(tools=tools).tools is None
+    # The SDK still gets to read it.
+    assert list(tools) == [tool]
+
+
+def test_get_tool_definitions_maps_request_tools(loaded_module):
+    """Request tools use the same flat shape as the ones echoed on a response."""
+    definitions = loaded_module.get_tool_definitions(
+        [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+                "strict": True,
+            },
+            {"type": "web_search_preview"},
+            {"no": "type"},
+        ]
+    )
+
+    function_definition, builtin_definition = definitions
+    assert isinstance(function_definition, FunctionToolDefinition)
+    assert function_definition.type == "function"
+    assert function_definition.name == "get_weather"
+    assert function_definition.description == "Get the weather"
+    assert function_definition.parameters == {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+    }
+    assert isinstance(builtin_definition, GenericToolDefinition)
+    assert builtin_definition.type == "web_search_preview"
+    assert builtin_definition.name == "web_search_preview"
+
+
+def test_get_tool_definitions_returns_none_without_usable_tools(loaded_module):
+    assert loaded_module.get_tool_definitions(None) is None
+    assert loaded_module.get_tool_definitions([]) is None
+    assert loaded_module.get_tool_definitions([{"no": "type"}]) is None
+
+
+def _make_request_invocation():
+    return SimpleNamespace(
+        temperature=None,
+        top_p=None,
+        max_tokens=None,
+        system_instruction=[],
+        input_messages=[],
+        tool_definitions=None,
+        attributes={},
+    )
+
+
+def test_apply_request_attributes_captures_tool_definitions(loaded_module):
+    """Tool definitions are captured only when content capture is enabled."""
+    params = loaded_module.extract_params(
+        model="gpt-4.1",
+        input="What is the weather?",
+        tools=[
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": None,
+                "parameters": {"type": "object"},
+            }
+        ],
+    )
+
+    captured = _make_request_invocation()
+    loaded_module.apply_request_attributes(
+        captured, params, capture_content=True
+    )
+    (definition,) = captured.tool_definitions
+    assert isinstance(definition, FunctionToolDefinition)
+    assert definition.name == "get_weather"
+
+    not_captured = _make_request_invocation()
+    loaded_module.apply_request_attributes(
+        not_captured, params, capture_content=False
+    )
+    assert not_captured.tool_definitions is None
+
+
+def test_set_fetch_response_attributes_captures_tool_definitions(
+    loaded_module,
+):
+    """Tool definitions are captured only when content capture is enabled."""
+    response = _make_response(
+        status="completed",
+        tools=[
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": None,
+                "parameters": {"type": "object"},
+                "strict": True,
+            }
+        ],
+    )
+
+    def _make_invocation():
+        return SimpleNamespace(
+            response_model_name=None,
+            response_status=None,
+            finish_reasons=None,
+            output_messages=[],
+            system_instruction=[],
+            tool_definitions=None,
+            attributes={},
+        )
+
+    captured = _make_invocation()
+    loaded_module.set_fetch_response_attributes(
+        captured, response, capture_content=True
+    )
+    (definition,) = captured.tool_definitions
+    assert isinstance(definition, FunctionToolDefinition)
+    assert definition.name == "get_weather"
+
+    not_captured = _make_invocation()
+    loaded_module.set_fetch_response_attributes(
+        not_captured, response, capture_content=False
+    )
+    assert not_captured.tool_definitions is None
+
+
+def test_set_fetch_response_attributes_prefers_raw_served_model_header(
+    loaded_module,
+):
+    invocation = SimpleNamespace(
+        response_model_name=None,
+        response_status=None,
+        finish_reasons=None,
+        output_messages=[],
+        system_instruction=[],
+        attributes={},
+    )
+    raw_response = _RawResponse(_make_response(model="body-gpt-4.1"))
+
+    loaded_module.set_fetch_response_attributes(
+        invocation, raw_response, capture_content=False
+    )
+
+    assert raw_response.parse_count == 1
+    assert invocation.response_model_name == "served-gpt-4.1"
+
+
+def test_get_served_model_returns_value_when_present():
+    headers = {"x-ms-served-model": "gpt-4o-2024-08-06"}
+    assert get_served_model(headers) == "gpt-4o-2024-08-06"
+
+
+def test_get_served_model_case_insensitive_name():
+    headers = {"X-MS-Served-Model": "gpt-4o-2024-08-06"}
+    assert get_served_model(headers) == "gpt-4o-2024-08-06"
+
+
+def test_get_served_model_empty_value_returns_none():
+    # An empty header value must not overwrite a real model name.
+    headers = {"x-ms-served-model": " "}
+    assert get_served_model(headers) is None
+
+
+def test_get_served_model_missing_header_returns_none():
+    headers = {"content-type": "application/json"}
+    assert get_served_model(headers) is None
+
+
+def test_get_served_model_none_returns_none():
+    # Parsed models / streaming chunks carry no HTTP headers.
+    assert get_served_model(None) is None
+
+
+def test_get_served_model_non_mapping_returns_none():
+    assert get_served_model(object()) is None
+
+
+def test_get_served_model_picks_served_model_among_others():
+    headers = {
+        "content-type": "application/json",
+        "x-ms-served-model": "gpt-4o-2024-08-06",
+        "x-request-id": "abc123",
+    }
+    assert get_served_model(headers) == "gpt-4o-2024-08-06"
+
+
+def test_get_served_model_non_string_name_ignored():
+    headers = {123: "not-a-header", "x-ms-served-model": "gpt-4o"}
+    assert get_served_model(headers) == "gpt-4o"
+
+
+def test_get_served_model_empty_string():
+    headers = {123: "not-a-header", "x-ms-served-model": "  "}
+    assert get_served_model(headers) is None
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_get_served_model_falsy_values_return_none(value):
+    headers = {"x-ms-served-model": value}
+    assert get_served_model(headers) is None

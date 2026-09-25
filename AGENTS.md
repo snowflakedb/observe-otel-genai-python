@@ -21,7 +21,7 @@ below came from upstream and still applies, but four things differ:
   Prefer adding a `test_observe_*.py` file over editing an upstream test, and don't reformat or
   reorganise upstream code.
 - **Package names below may not exist here.** Upstream guidance references packages this fork
-  pruned (openai, langchain, anthropic, and others). Treat those as examples of the pattern, not as
+  pruned (anthropic, google-genai, crewai, and others). Treat those as examples of the pattern, not as
   paths you can open. README.md lists what is actually here.
 
 ## General Rules and Guidelines

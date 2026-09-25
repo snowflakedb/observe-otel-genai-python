@@ -18,7 +18,7 @@ Installation
 
 ::
 
-    pip uninstall opentelemetry-instrumentation-genai-claude-agent-sdk
+    pip uninstall opentelemetry-instrumentation-genai-claude-agent-sdk opentelemetry-util-genai
     pip install observe-instrumentation-genai-claude-agent-sdk
 
 If you don't have a Claude Agent SDK application yet, try our `examples <examples>`_

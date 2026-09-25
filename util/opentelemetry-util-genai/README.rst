@@ -2,9 +2,9 @@ Observe Util for GenAI
 ======================
 
 Downstream fork of ``opentelemetry-util-genai``. It is Observe's replacement for
-that package, not an addition to it: installing both is fine on disk, since the
-import paths differ, but each one carries its own handler and types, so a
-completion hook written for one must not be pointed at the other.
+that package, not an addition to it. The two install to the same paths, so an
+environment holding both gets a per-file mix of them and uninstalling either one
+breaks the other. Uninstall ``opentelemetry-util-genai`` first.
 
 The GenAI Utils package provides boilerplate and helpers to standardize instrumentation for Generative AI.
 It offers APIs to minimize the work needed to instrument GenAI libraries,

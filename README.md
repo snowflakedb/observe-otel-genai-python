@@ -18,12 +18,13 @@ requirement can't wait for upstream review, or when upstream won't take it.
 
 | Package | Import path | Instruments | Upstream counterpart |
 | --- | --- | --- | --- |
+| `observe-instrumentation-genai-bedrock` | `opentelemetry.instrumentation.genai.bedrock` | `boto3 >= 1.40.46, < 2` | [`opentelemetry-instrumentation-genai-bedrock`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-bedrock) |
 | `observe-instrumentation-genai-claude-agent-sdk` | `opentelemetry.instrumentation.genai.claude_agent_sdk` | `claude-agent-sdk >= 0.2.157, < 0.3` | [`opentelemetry-instrumentation-genai-claude-agent-sdk`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk) |
+| `observe-instrumentation-genai-langchain` | `opentelemetry.instrumentation.genai.langchain` | `langchain >= 0.3.21, < 2` | [`opentelemetry-instrumentation-genai-langchain`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-langchain) |
+| `observe-instrumentation-genai-openai` | `opentelemetry.instrumentation.genai.openai` | `openai >= 1.26.0, < 4` | [`opentelemetry-instrumentation-genai-openai`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai) |
+| `observe-instrumentation-genai-openai-agents` | `opentelemetry.instrumentation.genai.openai_agents` | `openai-agents >= 0.3.3, < 1` | [`opentelemetry-instrumentation-genai-openai-agents`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai-agents) |
 | `observe-util-genai` | `opentelemetry.util.genai` | — (shared span/metric/lifecycle layer) | [`opentelemetry-util-genai`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/util/opentelemetry-util-genai) |
 | `observe-test-util-genai` | `opentelemetry.test_util_genai` | — (test fixtures, not published) | [`opentelemetry-test-util-genai`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/util/opentelemetry-test-util-genai) |
-
-LangChain and OpenAI Agents SDK are not here yet. We have not decided whether to
-own them or stay on upstream's packages.
 
 ## Using it
 
@@ -53,7 +54,7 @@ Our distributions install to the same paths as the upstream ones they replace, s
 they are mutually exclusive. Remove upstream's first:
 
 ```shell
-pip uninstall opentelemetry-instrumentation-genai-claude-agent-sdk
+pip uninstall opentelemetry-instrumentation-genai-claude-agent-sdk opentelemetry-util-genai
 pip install observe-instrumentation-genai-claude-agent-sdk
 ```
 
@@ -66,11 +67,10 @@ happens, verified:
 - **Uninstalling either one breaks the other.** Both list the same paths in their
   `RECORD`, so removing one deletes files the other still needs.
 
-The case to watch is an app that needs our Claude Agent SDK instrumentation *and*
-an upstream instrumentation for another framework, since every upstream GenAI
-instrumentation depends on `opentelemetry-util-genai`. Today that combination is
-not supported. It stops being a problem once we ship our own packages for the
-other frameworks, because then nothing pulls upstream's util in.
+The case to watch is an app that needs one of our instrumentations *and* an
+upstream instrumentation for a framework this repo doesn't carry (anthropic,
+google-genai, ...), since every upstream GenAI instrumentation depends on
+`opentelemetry-util-genai`. That combination is not supported.
 
 `opentelemetry-bootstrap -a install` is the one path that can produce this
 silently: it installs instrumentation based on what it finds in the environment,
@@ -82,14 +82,18 @@ instrumentation and util. Pin your instrumentation explicitly instead.
 ```
 observe-otel-genai-python/
 ├── instrumentation/
-│   └── observe-instrumentation-genai-claude-agent-sdk/
-│       ├── src/opentelemetry/instrumentation/genai/claude_agent_sdk/
-│       ├── tests/
-│       └── examples/{manual,zero-code}/
+│   ├── opentelemetry-instrumentation-genai-bedrock/
+│   ├── opentelemetry-instrumentation-genai-claude-agent-sdk/
+│   │   ├── src/opentelemetry/instrumentation/genai/claude_agent_sdk/
+│   │   ├── tests/
+│   │   └── examples/{manual,zero-code}/
+│   ├── opentelemetry-instrumentation-genai-langchain/
+│   ├── opentelemetry-instrumentation-genai-openai/
+│   └── opentelemetry-instrumentation-genai-openai-agents/
 ├── util/
-│   ├── observe-util-genai/       # forked shared layer, our changes live here
-│   └── observe-test-util-genai/  # test fixtures, workspace-internal
-├── policies/                     # weaver live-check policies for conformance
+│   ├── opentelemetry-util-genai/       # observe-util-genai, the shared layer
+│   └── opentelemetry-test-util-genai/  # test fixtures, workspace-internal
+├── policies/                       # weaver live-check policies for conformance
 ├── scripts/
 │   └── sync_upstream.sh
 └── tox.ini
@@ -127,7 +131,8 @@ two kinds of conflict:
   the bulk of them and the sync script resolves them by keeping them deleted, so
   they need no review. Measured against one 27-commit upstream window: 71 files.
 - **Files we also changed.** Measured against the same window: 3 files, all of
-  them in `opentelemetry-util-genai`, which is where our patches live.
+  them in `opentelemetry-util-genai`. Each forked instrumentation also differs in
+  its `pyproject.toml`, README and examples, so upstream edits there conflict too.
 
 ### What differs from upstream
 
@@ -138,7 +143,7 @@ Only the distribution name and its metadata:
 | distribution | `opentelemetry-util-genai` | `observe-util-genai` |
 | directory | `util/opentelemetry-util-genai/` | same |
 | import path | `opentelemetry.util.genai` | same |
-| instrumentor class | `ClaudeAgentSDKInstrumentor` | same |
+| instrumentor classes | e.g. `ClaudeAgentSDKInstrumentor` | same |
 
 Everything a user writes — imports, class names, the `OTEL_*` environment
 variables, the `opentelemetry_instrumentor` and
@@ -159,9 +164,6 @@ the same files, so they cannot share an environment.
   was removed rather than half-ported. `scripts/build.sh` still builds dists
   locally. Publishing also needs OSS publication review (go/oss-publish) and
   product security review.
-- **Conformance tests.** The weaver tooling is here (`policies/`, `.weaver.toml`,
-  `versions.env`, `dev-requirements-conformance.txt`) but no package has a
-  `tests/test_conformance.py` yet. `tox.ini` shows how to wire one up.
 - **LLM Explorer contract tests.** See
   `instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk/tests/test_observe_contract.py`.
 
