@@ -1268,6 +1268,10 @@ class AgentRun:
             root.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = turn[
                 "cache_write"
             ]
+        if turn["reasoning"]:
+            root.attributes[GenAI.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = turn[
+                "reasoning"
+            ]
         if turn["cost_usd"]:
             root.attributes[ATTR_USAGE_COST_USD] = turn["cost_usd"]
 
@@ -1454,6 +1458,7 @@ def _zero_usage() -> UsageTotals:
         "output_tokens": 0,
         "cache_read": 0,
         "cache_write": 0,
+        "reasoning": 0,
         "cost_usd": 0.0,
     }
 
@@ -1480,6 +1485,7 @@ def _usage_delta(totals: UsageTotals, baseline: UsageTotals) -> UsageTotals:
         ),
         "cache_read": max(totals["cache_read"] - baseline["cache_read"], 0),
         "cache_write": max(totals["cache_write"] - baseline["cache_write"], 0),
+        "reasoning": max(totals["reasoning"] - baseline["reasoning"], 0),
         "cost_usd": max(totals["cost_usd"] - baseline["cost_usd"], 0.0),
     }
 
@@ -1499,6 +1505,8 @@ def _fold_model_usage(
         totals["cache_write"] += int(
             usage.get("cacheCreationInputTokens") or 0
         )
+        # Already counted in outputTokens.
+        totals["reasoning"] += int(usage.get("thinkingTokens") or 0)
         totals["cost_usd"] += float(usage.get("costUSD") or 0.0)
     # The convention wants input_tokens to include the cached counts.
     totals["input_tokens"] += totals["cache_read"] + totals["cache_write"]

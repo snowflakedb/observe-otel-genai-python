@@ -84,4 +84,5 @@ class UsageTotals(TypedDict):
     output_tokens: int
     cache_read: int
     cache_write: int
+    reasoning: int
     cost_usd: float

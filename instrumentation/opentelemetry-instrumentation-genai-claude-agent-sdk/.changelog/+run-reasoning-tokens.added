@@ -1,0 +1,1 @@
+Report the run's reasoning tokens (`gen_ai.usage.reasoning.output_tokens`) on the `invoke_agent` span, from the CLI's per-model `thinkingTokens`.

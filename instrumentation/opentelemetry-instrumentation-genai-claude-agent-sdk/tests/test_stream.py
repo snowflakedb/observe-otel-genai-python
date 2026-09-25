@@ -4127,3 +4127,46 @@ async def test_an_error_result_that_was_not_interrupted_still_fails(
     agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
     assert agent.status.status_code is trace.StatusCode.ERROR
     assert agent.attributes["error.type"] == "error_max_turns"
+
+
+# ─── thinking tokens ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_totals_sum_thinking_tokens_across_models(
+    handler, span_exporter
+):
+    """``thinkingTokens`` is a share of ``outputTokens``, not added to it."""
+    model_usage = {
+        "claude-sonnet-4-5": {
+            "inputTokens": 100,
+            "outputTokens": 80,
+            "thinkingTokens": 30,
+            "costUSD": 0.01,
+        },
+        "claude-haiku-4-5": {
+            "inputTokens": 50,
+            "outputTokens": 20,
+            "thinkingTokens": 5,
+            "costUSD": 0.001,
+        },
+    }
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result(model_usage=model_usage)],
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.attributes["gen_ai.usage.reasoning.output_tokens"] == 35
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_no_thinking_tokens_reported_when_the_cli_omits_them(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [init(), assistant(TextBlock("hi")), result(model_usage=MODEL_USAGE)],
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert "gen_ai.usage.reasoning.output_tokens" not in agent.attributes
