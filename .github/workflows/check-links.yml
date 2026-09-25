@@ -28,13 +28,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Stands in for upstream's tj-actions/changed-files, which is not on this
+      # org's action allowlist. Same two outputs.
       - name: Get changed markdown files
         id: changed-files
-        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
-        with:
-          files: |
-            **/*.md
-            **/*.rst
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          files=$(git diff --name-only --diff-filter=ACMR "${BASE_SHA}" HEAD -- '*.md' '*.rst' | tr '\n' ' ')
+          echo "all_changed_files=${files}" >> "$GITHUB_OUTPUT"
+          if [ -n "${files}" ]; then any=true; else any=false; fi
+          echo "any_changed=${any}" >> "$GITHUB_OUTPUT"
 
       - name: Install markdown-link-check
         if: steps.changed-files.outputs.any_changed == 'true'
