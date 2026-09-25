@@ -1,0 +1,1 @@
+A delegation or background command whose launch receipt arrives before `task_started` is now still held open until the task finishes.

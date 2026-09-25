@@ -3014,11 +3014,13 @@ async def test_a_delegation_tool_named_agent_names_its_subagent(
                 ),
                 message_id="msg_1",
             ),
+            task_started("call-agent"),
             assistant(
                 TextBlock("subagent working"),
                 parent="call-agent",
                 message_id="msg_sub",
             ),
+            task_notification("call-agent"),
             user(
                 ToolResultBlock(tool_use_id="call-agent", content="the report")
             ),
@@ -3079,6 +3081,8 @@ async def test_a_subagent_named_after_its_tool_span_closed_keeps_its_identity(
                 ),
                 message_id="msg_1",
             ),
+            task_started("cA"),
+            task_notification("cA"),
             user(ToolResultBlock(tool_use_id="cA", content="done")),
             # Only now does anything name the subagent.
             assistant(TextBlock("late"), parent="cA", message_id="msg_sub"),
@@ -4170,3 +4174,118 @@ async def test_no_thinking_tokens_reported_when_the_cli_omits_them(
     )
     agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
     assert "gen_ai.usage.reasoning.output_tokens" not in agent.attributes
+
+
+# ─── tasks known from the call ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_delegation_receipt_ahead_of_task_started_is_still_a_receipt(
+    capturing_handler, span_exporter
+):
+    """Closing the delegation on its receipt would drop every later message
+    from its subagent."""
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "helper"}
+    )
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            user(
+                ToolResultBlock(
+                    tool_use_id="call-task", content="Async agent launched"
+                )
+            ),
+            task_started("call-task"),
+            assistant(
+                TextBlock("working"), parent="call-task", message_id="s1"
+            ),
+            task_notification("call-task", summary="the subagent report"),
+            result(),
+        ],
+    )
+    spans = Spans(span_exporter)
+    tool = spans.one("execute_tool Agent")
+    subagent = spans.one("invoke_agent helper")
+    assert spans.parent_name(subagent) == tool.name
+    assert tool.attributes["gen_ai.tool.call.result"] == "the subagent report"
+    assert tool.status.status_code is trace.StatusCode.UNSET
+
+
+@pytest.mark.asyncio
+async def test_a_background_command_receipt_ahead_of_task_started_is_held(
+    capturing_handler, span_exporter
+):
+    call = ToolUseBlock(
+        id="b1",
+        name="Bash",
+        input={"command": "sleep 3", "run_in_background": True},
+    )
+    await drive(
+        capturing_handler,
+        [
+            init(),
+            assistant(call),
+            user(ToolResultBlock(tool_use_id="b1", content="running")),
+            task_started("b1", task_type="local_bash"),
+            task_notification("b1", summary="real command output"),
+            result(),
+        ],
+    )
+    tool = Spans(span_exporter).one("execute_tool Bash")
+    assert tool.attributes["gen_ai.tool.call.result"] == "real command output"
+
+
+@pytest.mark.asyncio
+async def test_a_delegation_that_fails_to_launch_closes_on_its_result(
+    handler, span_exporter
+):
+    """An error result launched nothing, so no notification will follow and
+    the turn must not wait for one."""
+    task = ToolUseBlock(
+        id="call-task", name="Agent", input={"subagent_type": "missing"}
+    )
+    ended = await roots_ended_at_each_result(
+        handler,
+        [
+            init(),
+            assistant(task, message_id="m1"),
+            user(
+                ToolResultBlock(
+                    tool_use_id="call-task",
+                    content="Agent type 'missing' not found",
+                    is_error=True,
+                )
+            ),
+            assistant(TextBlock("sorry"), message_id="m2"),
+            result(),
+        ],
+        span_exporter,
+    )
+    assert ended == [1]
+    tool = Spans(span_exporter).one("execute_tool Agent")
+    assert tool.status.status_code is trace.StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+async def test_other_tools_passing_run_in_background_close_on_their_result(
+    handler, span_exporter
+):
+    """Only Bash backgrounds on that argument; any other tool that takes one
+    returns its result directly, with no task behind it."""
+    call = ToolUseBlock(
+        id="c1", name="mcp__jobs__start", input={"run_in_background": True}
+    )
+    ended = await roots_ended_at_each_result(
+        handler,
+        [
+            init(),
+            assistant(call),
+            user(ToolResultBlock(tool_use_id="c1", content="job 7 queued")),
+            result(),
+        ],
+        span_exporter,
+    )
+    assert ended == [1]

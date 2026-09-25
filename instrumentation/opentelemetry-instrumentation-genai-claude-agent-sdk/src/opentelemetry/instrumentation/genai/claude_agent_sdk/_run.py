@@ -856,6 +856,13 @@ class AgentRun:
             context=parent_context,
         )
         invocation.tool_call_id = tool_call_id
+        # Known from the call itself, so a receipt that beats task_started is
+        # still held as one.
+        tool_input: dict[str, Any] = getattr(block, "input", None) or {}
+        if name in _DELEGATION_TOOLS or (
+            name == "Bash" and tool_input.get("run_in_background") is True
+        ):
+            call.task_running = True
         # ToolInvocation has no conversation_id field of its own, and a span
         # without one does not appear in the Conversations view at all.
         if self._conversation_id:
@@ -863,7 +870,7 @@ class AgentRun:
                 self._conversation_id
             )
         if invocation.should_capture_content:
-            invocation.arguments = getattr(block, "input", None)
+            invocation.arguments = tool_input
         call.invocation = invocation
 
     def _close_tool(
@@ -942,11 +949,8 @@ class AgentRun:
             ctx.history.clear()
 
     def _on_task_started(self, msg: Any) -> None:
-        """The CLI registered this call as a task.
-
-        Always ahead of that call's tool_result, whether it then runs in the
-        foreground or in the background.
-        """
+        """The CLI registered this call as a task, whether it then runs in the
+        foreground or in the background."""
         if msg.tool_use_id:
             self._call(msg.tool_use_id).task_running = True
             self._task_ids[msg.task_id] = msg.tool_use_id
@@ -1085,8 +1089,10 @@ class AgentRun:
             if not tool_use_id:
                 continue
             # A task waits for its notification; this may only be a receipt.
+            # A failed call launched nothing, so its result is final.
             call = self._calls.get(tool_use_id)
-            if call is not None and call.task_running:
+            is_error = bool(getattr(block, "is_error", None))
+            if call is not None and call.task_running and not is_error:
                 call.receipt_spent = True
                 continue
             subagent_chat = self._chats.get(tool_use_id)
@@ -1099,7 +1105,7 @@ class AgentRun:
             self._close_tool(
                 tool_use_id,
                 getattr(block, "content", None),
-                "tool error" if getattr(block, "is_error", None) else None,
+                "tool error" if is_error else None,
             )
 
         self._remember(ctx, input_messages(blocks))
