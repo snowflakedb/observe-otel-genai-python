@@ -30,7 +30,7 @@ def test_instrumentation_dependencies():
 
     assert dependencies is not None
     assert len(dependencies) > 0
-    assert "claude-agent-sdk >= 0.2.137, < 1" in dependencies
+    assert "claude-agent-sdk >= 0.2.157, < 0.3" in dependencies
 
 
 def test_instrument_uninstrument_cycle(

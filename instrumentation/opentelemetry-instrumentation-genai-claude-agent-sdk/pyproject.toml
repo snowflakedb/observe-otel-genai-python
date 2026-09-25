@@ -30,9 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 0.2.137 is the first release carrying every message type the stream
-# reader needs (TaskUpdatedMessage, ConversationResetMessage).
-instruments = ["claude-agent-sdk >= 0.2.137, < 1"]
+# 0.2.157 bundles CLI 2.1.277, the first whose resumed sessions carry the
+# earlier session's usage forward; the run totals are read on that basis.
+# Capped below the next minor: before 1.0 a minor release can change the
+# message stream.
+instruments = ["claude-agent-sdk >= 0.2.157, < 0.3"]
 
 [project.entry-points.opentelemetry_instrumentor]
 claude-agent-sdk = "opentelemetry.instrumentation.genai.claude_agent_sdk:ClaudeAgentSDKInstrumentor"

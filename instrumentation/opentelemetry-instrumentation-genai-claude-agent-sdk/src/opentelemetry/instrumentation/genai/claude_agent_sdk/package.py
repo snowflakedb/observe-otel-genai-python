@@ -1,4 +1,4 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-_instruments = ("claude-agent-sdk >= 0.2.137, < 1",)
+_instruments = ("claude-agent-sdk >= 0.2.157, < 0.3",)

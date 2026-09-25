@@ -18,7 +18,7 @@ requirement can't wait for upstream review, or when upstream won't take it.
 
 | Package | Import path | Instruments | Upstream counterpart |
 | --- | --- | --- | --- |
-| `observe-instrumentation-genai-claude-agent-sdk` | `opentelemetry.instrumentation.genai.claude_agent_sdk` | `claude-agent-sdk >= 0.2.137, < 1` | [`opentelemetry-instrumentation-genai-claude-agent-sdk`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk) |
+| `observe-instrumentation-genai-claude-agent-sdk` | `opentelemetry.instrumentation.genai.claude_agent_sdk` | `claude-agent-sdk >= 0.2.157, < 0.3` | [`opentelemetry-instrumentation-genai-claude-agent-sdk`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk) |
 | `observe-util-genai` | `opentelemetry.util.genai` | — (shared span/metric/lifecycle layer) | [`opentelemetry-util-genai`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/util/opentelemetry-util-genai) |
 | `observe-test-util-genai` | `opentelemetry.test_util_genai` | — (test fixtures, not published) | [`opentelemetry-test-util-genai`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/util/opentelemetry-test-util-genai) |
 
