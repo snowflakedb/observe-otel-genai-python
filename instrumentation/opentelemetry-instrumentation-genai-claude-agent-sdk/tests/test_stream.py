@@ -211,6 +211,7 @@ def result(
     errors: list[str] | None = None,
     origin: dict[str, Any] | None = None,
     api_error_status: int | None = None,
+    terminal_reason: str | None = None,
 ) -> ResultMessage:
     return ResultMessage(
         subtype=subtype,
@@ -224,6 +225,7 @@ def result(
         errors=errors,
         origin=origin,
         api_error_status=api_error_status,
+        terminal_reason=terminal_reason,
         stop_reason="end_turn",
     )
 
@@ -4074,3 +4076,54 @@ async def test_a_reset_after_resuming_starts_the_totals_fresh(
     )
     agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
     assert agent.attributes["gen_ai.usage.input_tokens"] == 120
+
+
+# ─── interrupts ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["aborted_streaming", "aborted_tools"])
+async def test_an_interrupted_turn_is_not_a_failure(
+    handler, span_exporter, reason
+):
+    """The result CLI 2.1.229 and 2.1.277 send after ``interrupt()``."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("1\n2\n3")),
+            result(
+                subtype="error_during_execution",
+                is_error=True,
+                text=None,
+                terminal_reason=reason,
+            ),
+        ],
+        multi_turn=True,
+    )
+    spans = Spans(span_exporter)
+    for span in spans.all:
+        assert span.status.status_code is trace.StatusCode.UNSET
+        assert "error.type" not in span.attributes
+
+
+@pytest.mark.asyncio
+async def test_an_error_result_that_was_not_interrupted_still_fails(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(TextBlock("...")),
+            result(
+                subtype="error_max_turns",
+                is_error=True,
+                text=None,
+                terminal_reason="max_turns",
+            ),
+        ],
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.status.status_code is trace.StatusCode.ERROR
+    assert agent.attributes["error.type"] == "error_max_turns"

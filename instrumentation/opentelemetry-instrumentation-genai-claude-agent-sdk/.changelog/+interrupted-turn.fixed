@@ -1,0 +1,1 @@
+A turn stopped with `ClaudeSDKClient.interrupt()` is no longer marked as failed.

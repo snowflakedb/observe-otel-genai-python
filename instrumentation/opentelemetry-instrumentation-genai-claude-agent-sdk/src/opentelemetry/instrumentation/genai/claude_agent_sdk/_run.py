@@ -156,6 +156,10 @@ _TERMINAL_TASK_STATUSES = frozenset(
 # session uses "Agent".
 _DELEGATION_TOOLS = frozenset({"Agent", "Task"})
 
+# Terminal reasons of a turn the caller stopped with interrupt(). Its result is
+# an error, but the run did not fail.
+_INTERRUPTED = frozenset({"aborted_streaming", "aborted_tools"})
+
 # How many messages of conversation a chat span replays as its input. Bounded so
 # one span's attributes stay small enough for an exporter to accept.
 _MAX_HISTORY_MESSAGES = 40
@@ -1516,7 +1520,7 @@ def _result_error(msg: ResultMessage, capture_content: bool) -> Error | None:
     own docstring for ``api_error_status`` calls the status code safe to log —
     which is what tells a rate limit apart from a bad request.
     """
-    if not msg.is_error:
+    if not msg.is_error or msg.terminal_reason in _INTERRUPTED:
         return None
     if not capture_content:
         text = ""
