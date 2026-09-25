@@ -11,7 +11,11 @@ dependencies = [
   "opentelemetry-test-utils",
   "observe-test-util-genai",
   "observe-util-genai",
+  "observe-instrumentation-genai-bedrock[instruments]",
   "observe-instrumentation-genai-claude-agent-sdk[instruments]",
+  "observe-instrumentation-genai-langchain[instruments]",
+  "observe-instrumentation-genai-openai[instruments]",
+  "observe-instrumentation-genai-openai-agents[instruments]",
 ]
 
 
@@ -24,7 +28,11 @@ required-version = ">=0.6.0"
 [tool.uv.sources]
 observe-test-util-genai = { workspace = true }
 observe-util-genai = { workspace = true }
+observe-instrumentation-genai-bedrock = { workspace = true }
 observe-instrumentation-genai-claude-agent-sdk = { workspace = true }
+observe-instrumentation-genai-langchain = { workspace = true }
+observe-instrumentation-genai-openai = { workspace = true }
+observe-instrumentation-genai-openai-agents = { workspace = true }
 
 
 # https://docs.astral.sh/uv/reference/settings/#workspace
@@ -80,7 +88,10 @@ pythonVersion = "3.10"
 reportPrivateUsage = false  # Ignore private attributes added by instrumentation packages.
 reportDeprecated = false  # Ignore deprecation on GenAI enums in opentelemetry.semconv 0.64b0 until semconv-genai python package is published.
 include = [
+  "instrumentation/opentelemetry-instrumentation-genai-bedrock",
   "instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk",
+  "instrumentation/opentelemetry-instrumentation-genai-langchain",
+  "instrumentation/opentelemetry-instrumentation-genai-openai-agents",
   "util/opentelemetry-util-genai",
 ]
 # We should also add type hints to the test suite - It helps on finding bugs.
@@ -88,8 +99,14 @@ include = [
 exclude = [
   "**/dev/**",
   "**/.venv/**",
+  "instrumentation/opentelemetry-instrumentation-genai-bedrock/tests/**/*.py",
+  "instrumentation/opentelemetry-instrumentation-genai-bedrock/examples/**/*.py",
   "instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk/tests/**/*.py",
   "instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk/examples/**/*.py",
+  "instrumentation/opentelemetry-instrumentation-genai-langchain/tests/**/*.py",
+  "instrumentation/opentelemetry-instrumentation-genai-langchain/examples/**/*.py",
+  "instrumentation/opentelemetry-instrumentation-genai-openai-agents/tests/**/*.py",
+  "instrumentation/opentelemetry-instrumentation-genai-openai-agents/examples/**",
   "util/opentelemetry-util-genai/tests/**/*.py",
 ]
 

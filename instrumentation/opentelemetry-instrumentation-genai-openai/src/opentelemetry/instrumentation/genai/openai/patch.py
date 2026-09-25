@@ -1,0 +1,265 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+
+import logging
+
+from openai.types import CreateEmbeddingResponse
+
+from opentelemetry.semconv._incubating.attributes import (
+    gen_ai_attributes as GenAIAttributes,
+)
+from opentelemetry.semconv._incubating.attributes import (
+    openai_attributes as OpenAIAttributes,
+)
+from opentelemetry.util.genai.handler import TelemetryHandler
+from opentelemetry.util.genai.invocation import (
+    EmbeddingInvocation,
+    InferenceInvocation,
+)
+
+from ._raw_response import ParsableResponse, wrap_stream_result
+from .chat_wrappers import AsyncChatStreamWrapper, ChatStreamWrapper
+from .utils import (
+    _prepare_output_messages,
+    create_chat_invocation,
+    get_property_value,
+    get_server_address_and_port,
+    get_value,
+    is_streaming,
+)
+
+_logger = logging.getLogger(__name__)
+
+
+def _create_embedding_invocation(
+    handler: TelemetryHandler,
+    kwargs,
+    client_instance,
+) -> EmbeddingInvocation:
+    address, port = get_server_address_and_port(client_instance)
+    invocation = handler.embedding(
+        GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
+        request_model=get_value(kwargs.get("model")),
+        server_address=address if address else None,
+        server_port=port if port else None,
+    )
+
+    if (dimensions := get_value(kwargs.get("dimensions"))) is not None:
+        invocation.dimension_count = dimensions
+
+    if (
+        encoding_format := get_value(kwargs.get("encoding_format"))
+    ) is not None:
+        invocation.encoding_formats = [encoding_format]
+
+    return invocation
+
+
+def chat_completions_create_v_new(
+    handler: TelemetryHandler,
+):
+    """Wrap the `create` method of the `ChatCompletion` class to trace it."""
+    capture_content = handler.should_capture_content()
+
+    def traced_method(wrapped, instance, args, kwargs):
+        chat_invocation = create_chat_invocation(
+            handler, kwargs, instance, capture_content=capture_content
+        )
+
+        try:
+            result = wrapped(*args, **kwargs)
+            if is_streaming(kwargs):
+                return wrap_stream_result(
+                    ChatStreamWrapper,
+                    result,
+                    chat_invocation,
+                    capture_content,
+                )
+
+            _set_response_properties(chat_invocation, result, capture_content)
+            chat_invocation.stop()
+            return result
+        except BaseException as error:
+            chat_invocation.fail(error)
+            raise
+
+    return traced_method
+
+
+def async_chat_completions_create_v_new(
+    handler: TelemetryHandler,
+):
+    """Wrap the `create` method of the `AsyncChatCompletion` class to trace it."""
+    capture_content = handler.should_capture_content()
+
+    async def traced_method(wrapped, instance, args, kwargs):
+        chat_invocation = create_chat_invocation(
+            handler, kwargs, instance, capture_content=capture_content
+        )
+
+        try:
+            result = await wrapped(*args, **kwargs)
+            if is_streaming(kwargs):
+                return wrap_stream_result(
+                    AsyncChatStreamWrapper,
+                    result,
+                    chat_invocation,
+                    capture_content,
+                )
+
+            _set_response_properties(chat_invocation, result, capture_content)
+            chat_invocation.stop()
+            return result
+
+        except BaseException as error:
+            chat_invocation.fail(error)
+            raise
+
+    return traced_method
+
+
+def embeddings_create(handler: TelemetryHandler):
+    """Wrap the `create` method of the `Embeddings` class to trace it."""
+
+    def traced_method(wrapped, instance, args, kwargs):
+        invocation = _create_embedding_invocation(handler, kwargs, instance)
+
+        try:
+            result = wrapped(*args, **kwargs)
+        except BaseException as error:
+            invocation.fail(error)
+            raise
+
+        _safe_set_embeddings_response_properties(invocation, result)
+        invocation.stop()
+        return result
+
+    return traced_method
+
+
+def async_embeddings_create(handler: TelemetryHandler):
+    """Wrap the `create` method of the `AsyncEmbeddings` class to trace it."""
+
+    async def traced_method(wrapped, instance, args, kwargs):
+        invocation = _create_embedding_invocation(handler, kwargs, instance)
+
+        try:
+            result = await wrapped(*args, **kwargs)
+        except BaseException as error:
+            invocation.fail(error)
+            raise
+
+        _safe_set_embeddings_response_properties(invocation, result)
+        invocation.stop()
+        return result
+
+    return traced_method
+
+
+def _set_response_properties(
+    chat_invocation: InferenceInvocation, result, capture_content: bool
+) -> InferenceInvocation:
+    if isinstance(result, ParsableResponse):
+        # with_raw_response: safe to parse() here since this is the
+        # non-streaming path, so it has no side effects on the caller's stream.
+        result = result.parse()
+
+    if getattr(result, "model", None):
+        chat_invocation.response_model_name = result.model
+
+    if getattr(result, "choices", None):
+        finish_reasons = []
+        for choice in result.choices:
+            finish_reasons.append(choice.finish_reason or "error")
+
+        chat_invocation.finish_reasons = finish_reasons
+
+        if capture_content:  # optimization
+            chat_invocation.output_messages = _prepare_output_messages(
+                result.choices
+            )
+
+    if getattr(result, "id", None):
+        chat_invocation.response_id = result.id
+
+    if getattr(result, "service_tier", None):
+        chat_invocation.attributes.update(
+            {
+                OpenAIAttributes.OPENAI_RESPONSE_SERVICE_TIER: result.service_tier
+            },
+        )
+        chat_invocation.metric_attributes.update(
+            {
+                OpenAIAttributes.OPENAI_RESPONSE_SERVICE_TIER: result.service_tier
+            },
+        )
+
+    if getattr(result, "usage", None):
+        chat_invocation.input_tokens = result.usage.prompt_tokens
+        chat_invocation.output_tokens = result.usage.completion_tokens
+        prompt_tokens_details = getattr(
+            result.usage, "prompt_tokens_details", None
+        )
+        if prompt_tokens_details is not None:
+            chat_invocation.cache_read_input_tokens = get_property_value(
+                prompt_tokens_details, "cached_tokens"
+            )
+        completion_tokens_details = getattr(
+            result.usage, "completion_tokens_details", None
+        )
+        if completion_tokens_details is not None:
+            chat_invocation.thinking_tokens = get_property_value(
+                completion_tokens_details, "reasoning_tokens"
+            )
+
+    if getattr(result, "system_fingerprint", None):
+        chat_invocation.attributes.update(
+            {
+                OpenAIAttributes.OPENAI_RESPONSE_SYSTEM_FINGERPRINT: result.system_fingerprint
+            },
+        )
+        chat_invocation.metric_attributes.update(
+            {
+                OpenAIAttributes.OPENAI_RESPONSE_SYSTEM_FINGERPRINT: result.system_fingerprint
+            },
+        )
+
+    return chat_invocation
+
+
+def _set_embeddings_response_properties(
+    invocation: EmbeddingInvocation,
+    result: CreateEmbeddingResponse,
+) -> None:
+    if getattr(result, "model", None):
+        invocation.response_model_name = result.model
+
+    # Set embeddings dimensions if we can determine it from the response
+    if getattr(result, "data", None) and len(result.data) > 0:
+        first_embedding = result.data[0]
+        if getattr(first_embedding, "embedding", None):
+            invocation.dimension_count = len(first_embedding.embedding)
+
+    # Embeddings only have input tokens; output tokens are not applicable.
+    if getattr(result, "usage", None):
+        invocation.input_tokens = result.usage.prompt_tokens
+
+
+def _safe_set_embeddings_response_properties(
+    invocation: EmbeddingInvocation,
+    result: CreateEmbeddingResponse,
+) -> None:
+    """Best-effort wrapper around ``_set_embeddings_response_properties``.
+
+    Instrumentation must never break the wrapped library call, so extraction
+    errors (e.g., from an unexpected SDK response shape) are caught and logged
+    rather than propagated.
+    """
+    try:
+        _set_embeddings_response_properties(invocation, result)
+    except Exception:  # pylint: disable=broad-except
+        _logger.debug(
+            "Failed to extract embeddings response properties",
+            exc_info=True,
+        )

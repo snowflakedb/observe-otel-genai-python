@@ -1,0 +1,71 @@
+Observe Amazon Bedrock Instrumentation
+======================================
+
+This package provides OpenTelemetry instrumentation for Amazon Bedrock (via the AWS SDK for Python: ``boto3``, ``botocore``, ``aioboto3``, and ``aiobotocore``),
+implementing the OpenTelemetry Generative AI semantic conventions.
+
+Supported Operations
+--------------------
+
+* Synchronous and asynchronous chat via the Converse API (``client.converse``)
+* Synchronous and asynchronous streaming chat via the ConverseStream API (``client.converse_stream``)
+* Synchronous and asynchronous model invocation via the InvokeModel API (``client.invoke_model``)
+* Synchronous and asynchronous streaming model invocation via the InvokeModelWithResponseStream API (``client.invoke_model_with_response_stream``)
+
+This package is Observe's replacement for upstream's
+``opentelemetry-instrumentation-genai-bedrock``, not an addition to it. The two
+distributions install to the same paths, so an environment holding both gets a
+per-file mix of them and uninstalling either one breaks the other. This package
+depends on ``observe-util-genai``, which replaces upstream's
+``opentelemetry-util-genai`` in the same way. Uninstall both upstream packages
+first; an upstream instrumentation that still needs ``opentelemetry-util-genai``
+cannot share an environment with this one.
+
+Installation
+------------
+
+::
+
+    pip uninstall opentelemetry-instrumentation-genai-bedrock opentelemetry-util-genai
+    pip install observe-instrumentation-genai-bedrock
+
+Usage
+-----
+
+.. code-block:: python
+
+    import boto3
+    from opentelemetry.instrumentation.genai.bedrock import BedrockInstrumentor
+
+    # Enable instrumentation
+    BedrockInstrumentor().instrument()
+
+    # Use Bedrock runtime client normally
+    client = boto3.client("bedrock-runtime", region_name="us-east-1")
+    response = client.converse(
+        modelId="amazon.nova-micro-v1:0",
+        messages=[{"role": "user", "content": [{"text": "Hello, Bedrock!"}]}],
+    )
+
+Configuration
+-------------
+
+By default, prompts and completions are not captured. To capture message content, set the
+environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to one of
+``NO_CONTENT``, ``SPAN_ONLY``, ``EVENT_ONLY``, or ``SPAN_AND_EVENT``:
+
+::
+
+    export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_ONLY
+
+Prompts and completions can also be redirected via a completion hook by
+setting ``OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK`` or by passing
+``instrument(completion_hook=...)``.
+
+References
+----------
+
+* `OpenTelemetry Project <https://opentelemetry.io/>`_
+* `OpenTelemetry GenAI semantic conventions <https://opentelemetry.io/docs/specs/semconv/gen-ai/>`_
+* `Amazon Bedrock Documentation <https://docs.aws.amazon.com/bedrock/>`_
+* `Boto3 Documentation <https://boto3.amazonaws.com/v1/documentation/api/latest/index.html>`_
