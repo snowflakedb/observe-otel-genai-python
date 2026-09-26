@@ -61,6 +61,7 @@ class RetrievalInvocation(GenAIInvocation):
         content_capturing_mode: ContentCapturingMode | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        agent_name: str | None = None,
     ) -> None:
         """Use handler.retrieval() instead of calling this directly."""
         _operation_name = GenAI.GenAiOperationNameValues.RETRIEVAL.value
@@ -89,6 +90,7 @@ class RetrievalInvocation(GenAIInvocation):
             content_capturing_mode=content_capturing_mode,
             context=context,
             _attach_to_context=_attach_to_context,
+            agent_name=agent_name,
         )
         self._data_source_id: str | None = data_source_id
         self._provider: str | None = provider
@@ -113,6 +115,7 @@ class RetrievalInvocation(GenAIInvocation):
             (GenAI.GEN_AI_REQUEST_MODEL, self._request_model),
             (server_attributes.SERVER_ADDRESS, self._server_address),
             (server_attributes.SERVER_PORT, self._server_port),
+            (GenAI.GEN_AI_AGENT_NAME, self._agent_name),
         )
         attrs: dict[str, AttributeValue] = {
             GenAI.GEN_AI_OPERATION_NAME: self._operation_name,
@@ -144,6 +147,8 @@ class RetrievalInvocation(GenAIInvocation):
         attributes: dict[str, AttributeValue] = {}
         if self.top_k is not None:
             attributes[_GEN_AI_RETRIEVAL_TOP_K] = int(self.top_k)
+        if self._agent_name is not None:
+            attributes[GenAI.GEN_AI_AGENT_NAME] = self._agent_name
         attributes.update(self._get_content_attributes_for_span())
         attributes.update(self.attributes)
         self.span.set_attributes(attributes)

@@ -264,11 +264,15 @@ class TelemetryHandler:
         server_port: int | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        agent_name: str | None = None,
     ) -> RetrievalInvocation:
         """Returns a Retrieval invocation. Starts span when called.
 
         Args:
             context: An optional OpenTelemetry Context to parent the span.
+            agent_name: The agent this runs under, also passed to the
+                operations under it. Defaults to the enclosing agent's, taken
+                from the context.
 
         Returned object can be used as a ContextManager which automatically calls `stop` or `fail`
         to finalize the span upon exiting. If not used as a ContextManager, the caller is
@@ -289,6 +293,7 @@ class TelemetryHandler:
             content_capturing_mode=self._content_capturing_mode,
             context=context,
             _attach_to_context=_attach_to_context,
+            agent_name=agent_name,
         )
 
     def start_tool(
@@ -394,12 +399,16 @@ class TelemetryHandler:
         error_type_resolver: ErrorTypeResolver | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        agent_name: str | None = None,
         conversation_id: str | None = None,
     ) -> InferenceInvocation:
         """Returns an Inference invocation. Starts span when called.
 
         Args:
             context: An optional OpenTelemetry Context to parent the span.
+            agent_name: The agent this runs under, also passed to the
+                operations under it. Defaults to the enclosing agent's, taken
+                from the context.
 
         Returned object can be used as a ContextManager which automatically calls `stop` or `fail`
         to finalize the span upon exiting. If not used as a ContextManager, the caller is
@@ -425,6 +434,7 @@ class TelemetryHandler:
             context=context,
             _attach_to_context=_attach_to_context,
             conversation_id=conversation_id,
+            agent_name=agent_name,
         )
 
     def embedding(
@@ -436,11 +446,15 @@ class TelemetryHandler:
         server_port: int | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        agent_name: str | None = None,
     ) -> EmbeddingInvocation:
         """Returns an Embedding invocation. Starts span when called.
 
         Args:
             context: An optional OpenTelemetry Context to parent the span.
+            agent_name: The agent this runs under, also passed to the
+                operations under it. Defaults to the enclosing agent's, taken
+                from the context.
 
         Returned object can be used as a ContextManager which automatically calls `stop` or `fail`
         to finalize the span upon exiting. If not used as a ContextManager, the caller is
@@ -460,6 +474,7 @@ class TelemetryHandler:
             content_capturing_mode=self._content_capturing_mode,
             context=context,
             _attach_to_context=_attach_to_context,
+            agent_name=agent_name,
         )
 
     def fetch_response(
@@ -473,6 +488,7 @@ class TelemetryHandler:
         error_type_resolver: ErrorTypeResolver | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        agent_name: str | None = None,
     ) -> FetchResponseInvocation:
         """Returns a Fetch Response invocation. Starts span when called.
 
@@ -482,6 +498,9 @@ class TelemetryHandler:
 
         Args:
             context: An optional OpenTelemetry Context to parent the span.
+            agent_name: The agent this runs under, also passed to the
+                operations under it. Defaults to the enclosing agent's, taken
+                from the context.
 
         Returned object can be used as a ContextManager which automatically calls `stop` or `fail`
         to finalize the span upon exiting. If not used as a ContextManager, the caller is
@@ -503,6 +522,7 @@ class TelemetryHandler:
             content_capturing_mode=self._content_capturing_mode,
             context=context,
             _attach_to_context=_attach_to_context,
+            agent_name=agent_name,
         )
 
     def tool(
@@ -525,6 +545,9 @@ class TelemetryHandler:
 
         Args:
             context: An optional OpenTelemetry Context to parent the span.
+            agent_name: The agent this runs under, also passed to the
+                operations under it. Defaults to the enclosing agent's, taken
+                from the context.
 
         Returned object can be used as a ContextManager which automatically calls `stop` or `fail`
         to finalize the span upon exiting. If not used as a ContextManager, the caller is

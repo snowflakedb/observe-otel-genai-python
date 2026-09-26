@@ -98,6 +98,7 @@ class ToolInvocation(GenAIInvocation):
             start_attributes=start_attributes,
             context=context,
             _attach_to_context=_attach_to_context,
+            agent_name=agent_name,
             content_capturing_mode=content_capturing_mode,
         )
         self._name: str = name
@@ -110,7 +111,6 @@ class ToolInvocation(GenAIInvocation):
         self.tool_call_id: str | None = tool_call_id
         self.tool_description: str | None = tool_description
         self._tool_type: str | None = tool_type
-        self._agent_name: str | None = agent_name
 
     @property
     def should_capture_content_on_span(self) -> bool:

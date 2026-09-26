@@ -20,6 +20,7 @@ from opentelemetry.util.genai._invocation import (
     GenAIInvocation,
     get_content_attributes,
 )
+from opentelemetry.util.genai._observe_agent_context import with_agent_name
 from opentelemetry.util.genai.completion_hook import CompletionHook
 from opentelemetry.util.genai.types import (
     InputMessage,
@@ -76,6 +77,8 @@ class AgentInvocation(GenAIInvocation, ABC):
                 )
                 if v is not None
             }
+        # Even when unnamed, so an outer agent's name stops here.
+        context = with_agent_name(agent_name, context)
         super().__init__(
             tracer,
             instruments,
@@ -89,6 +92,7 @@ class AgentInvocation(GenAIInvocation, ABC):
             start_attributes=start_attributes,
             context=context,
             conversation_id=conversation_id,
+            agent_name=agent_name,
             content_capturing_mode=content_capturing_mode,
             _attach_to_context=_attach_to_context,
         )

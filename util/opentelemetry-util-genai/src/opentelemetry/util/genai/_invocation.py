@@ -27,6 +27,10 @@ from opentelemetry.util.genai._conversation_context import (
     with_conversation_id,
 )
 from opentelemetry.util.genai._instruments import _Instruments
+from opentelemetry.util.genai._observe_agent_context import (
+    get_ambient_agent_name,
+    with_agent_name,
+)
 from opentelemetry.util.genai.completion_hook import (
     CompletionHook,
     _NoOpCompletionHook,
@@ -81,6 +85,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         context: Context | None = None,
         _attach_to_context: bool = True,
         conversation_id: str | None = None,
+        agent_name: str | None = None,
         content_capturing_mode: ContentCapturingMode | None = None,
     ) -> None:
         self._tracer = tracer
@@ -113,6 +118,13 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             context = with_conversation_id(
                 self.conversation_id, context=context
             )
+        self._agent_name: str | None = (
+            agent_name
+            if agent_name is not None
+            else get_ambient_agent_name(context)
+        )
+        if agent_name:
+            context = with_agent_name(agent_name, context)
         self._start_attributes: dict[str, AttributeValue] = {
             GenAI.GEN_AI_OPERATION_NAME: operation_name,
             **(start_attributes or {}),

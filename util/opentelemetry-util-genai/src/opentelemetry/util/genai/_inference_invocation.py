@@ -101,6 +101,7 @@ class InferenceInvocation(GenAIInvocation):
         context: Context | None = None,
         _attach_to_context: bool = True,
         conversation_id: str | None = None,
+        agent_name: str | None = None,
     ) -> None:
         operation_name = (
             operation_name or GenAI.GenAiOperationNameValues.CHAT.value
@@ -129,6 +130,7 @@ class InferenceInvocation(GenAIInvocation):
             start_attributes=start_attributes,
             context=context,
             conversation_id=conversation_id,
+            agent_name=agent_name,
             content_capturing_mode=content_capturing_mode,
             _attach_to_context=_attach_to_context,
         )
@@ -290,6 +292,7 @@ class InferenceInvocation(GenAIInvocation):
         attrs: dict[str, AttributeValue] = {}
         optional_attrs = (
             (GenAI.GEN_AI_CONVERSATION_ID, self.conversation_id),
+            (GenAI.GEN_AI_AGENT_NAME, self._agent_name),
             (GenAI.GEN_AI_REQUEST_STREAM, self._request_stream),
             (GenAI.GEN_AI_REQUEST_TEMPERATURE, self.temperature),
             (GenAI.GEN_AI_REQUEST_TOP_P, self.top_p),
@@ -397,6 +400,8 @@ class InferenceInvocation(GenAIInvocation):
             attrs = dict(self._start_attributes)
             if self._response_model_name is not None:
                 attrs[GenAI.GEN_AI_RESPONSE_MODEL] = self._response_model_name
+            if self._agent_name is not None:
+                attrs[GenAI.GEN_AI_AGENT_NAME] = self._agent_name
             attrs.update(self.metric_attributes)
             self._cached_metric_attributes = attrs
         return self._cached_metric_attributes

@@ -93,6 +93,7 @@ class FetchResponseInvocation(GenAIInvocation):
         content_capturing_mode: ContentCapturingMode | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        agent_name: str | None = None,
     ) -> None:
         """Use handler.fetch_response() rather than calling this directly."""
         start_attributes: dict[str, AttributeValue] = {
@@ -121,6 +122,7 @@ class FetchResponseInvocation(GenAIInvocation):
             content_capturing_mode=content_capturing_mode,
             context=context,
             _attach_to_context=_attach_to_context,
+            agent_name=agent_name,
         )
         self._provider: str = provider
         self._response_id: str = response_id
@@ -149,6 +151,7 @@ class FetchResponseInvocation(GenAIInvocation):
             (GenAI.GEN_AI_RESPONSE_MODEL, self.response_model_name),
             (server_attributes.SERVER_ADDRESS, self._server_address),
             (server_attributes.SERVER_PORT, self._server_port),
+            (GenAI.GEN_AI_AGENT_NAME, self._agent_name),
         )
         attrs: dict[str, AttributeValue] = {
             GenAI.GEN_AI_OPERATION_NAME: self._operation_name,
@@ -167,6 +170,7 @@ class FetchResponseInvocation(GenAIInvocation):
             ),
             (GenAI.GEN_AI_RESPONSE_MODEL, self.response_model_name),
             (_GEN_AI_RESPONSE_STATUS, self.response_status),
+            (GenAI.GEN_AI_AGENT_NAME, self._agent_name),
         )
         return {k: v for k, v in optional_attrs if v is not None}
 
