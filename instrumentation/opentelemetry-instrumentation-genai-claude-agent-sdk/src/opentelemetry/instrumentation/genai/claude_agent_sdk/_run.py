@@ -587,8 +587,8 @@ class AgentRun:
             request_model=getattr(self._sdk_options, "model", None)
             or self._model,
             context=context,
+            conversation_id=self._conversation_id,
         )
-        root.conversation_id = self._conversation_id
         # LocalAgentInvocation is INTERNAL and carries no provider of its own,
         # but the Explorer reads the provider off every row.
         root.attributes[GenAI.GEN_AI_PROVIDER_NAME] = self._provider
@@ -776,8 +776,8 @@ class AgentRun:
             agent_name=str(name),
             request_model=tool_input.get("model") or self._model,
             context=parent_context,
+            conversation_id=self._conversation_id,
         )
-        invocation.conversation_id = self._conversation_id
         invocation.attributes[GenAI.GEN_AI_PROVIDER_NAME] = self._provider
         if self._handler.should_capture_content():
             # The description is the model's own one-line summary of the user's
@@ -863,12 +863,7 @@ class AgentRun:
             name == "Bash" and tool_input.get("run_in_background") is True
         ):
             call.task_running = True
-        # ToolInvocation has no conversation_id field of its own, and a span
-        # without one does not appear in the Conversations view at all.
-        if self._conversation_id:
-            invocation.attributes[GenAI.GEN_AI_CONVERSATION_ID] = (
-                self._conversation_id
-            )
+        invocation.conversation_id = self._conversation_id
         if invocation.should_capture_content:
             invocation.arguments = tool_input
         call.invocation = invocation

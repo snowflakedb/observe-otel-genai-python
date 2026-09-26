@@ -9,8 +9,8 @@ key in its own ``metadata``. These tests build real multi-span trees the way
 LangChain delivers them and assert the resulting span attributes.
 
 semconv defines ``gen_ai.conversation.id`` on chat, invoke_agent, and
-invoke_workflow spans only, so execute_tool and retrieval spans must not carry
-it even when their own metadata does.
+invoke_workflow spans only. This fork's util-genai sets it on execute_tool and
+retrieval spans too, from the agent or workflow they run under.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ class TestAgentTree:
         assert spans["invoke_agent"].attributes[_CONVERSATION_ID] == "t1"
         assert spans["chat"].attributes[_CONVERSATION_ID] == "t1"
 
-    def test_tool_omits_id_while_its_nested_chat_carries_it(self):
+    def test_tool_and_its_nested_chat_both_carry_id(self):
         handler, span_exporter = _make_handler()
         agent_run_id, tool_run_id, chat_run_id = uuid4(), uuid4(), uuid4()
 
@@ -180,10 +180,11 @@ class TestAgentTree:
         handler.on_chain_end(outputs={}, run_id=agent_run_id)
 
         spans = _spans_by_operation(span_exporter)
-        assert _CONVERSATION_ID not in spans["execute_tool"].attributes
+        # This fork sets it on every span, not only where semconv does.
+        assert spans["execute_tool"].attributes[_CONVERSATION_ID] == "t1"
         assert spans["chat"].attributes[_CONVERSATION_ID] == "t1"
 
-    def test_retrieval_omits_id_while_its_nested_chat_carries_it(self):
+    def test_retrieval_and_its_nested_chat_both_carry_id(self):
         handler, span_exporter = _make_handler()
         agent_run_id, retriever_run_id, chat_run_id = (
             uuid4(),
@@ -219,7 +220,8 @@ class TestAgentTree:
         handler.on_chain_end(outputs={}, run_id=agent_run_id)
 
         spans = _spans_by_operation(span_exporter)
-        assert _CONVERSATION_ID not in spans["retrieval"].attributes
+        # This fork sets it on every span, not only where semconv does.
+        assert spans["retrieval"].attributes[_CONVERSATION_ID] == "t1"
         assert spans["chat"].attributes[_CONVERSATION_ID] == "t1"
 
     def test_chat_under_an_unclassified_chain_carries_id(self):
