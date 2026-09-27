@@ -14,6 +14,9 @@ from opentelemetry.semconv._incubating.attributes import (
     server_attributes as ServerAttributes,
 )
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
+from opentelemetry.test_util_genai._observe_token_metrics import (
+    without_inference_token_metrics,
+)
 from opentelemetry.util.genai.utils import is_experimental_mode
 
 _DURATION_BUCKETS = (
@@ -119,7 +122,9 @@ def test_chat_completion_metrics(
     metrics = metric_reader.get_metrics_data().resource_metrics
     assert len(metrics) == 1
 
-    metric_data = metrics[0].scope_metrics[0].metrics
+    metric_data = without_inference_token_metrics(
+        metrics[0].scope_metrics[0].metrics
+    )
     assert len(metric_data) == 2
 
     duration_metric = next(
@@ -196,7 +201,9 @@ async def test_async_chat_completion_metrics(
     metrics = metric_reader.get_metrics_data().resource_metrics
     assert len(metrics) == 1
 
-    metric_data = metrics[0].scope_metrics[0].metrics
+    metric_data = without_inference_token_metrics(
+        metrics[0].scope_metrics[0].metrics
+    )
     assert len(metric_data) == 2
 
     duration_metric = next(

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from opentelemetry._logs import Logger
 from opentelemetry.context import Context
 from opentelemetry.semconv._incubating.attributes import (
@@ -99,6 +101,20 @@ class EmbeddingInvocation(GenAIInvocation):
         if self.input_tokens is not None:
             return {GenAI.GenAiTokenTypeValues.INPUT.value: self.input_tokens}
         return {}
+
+    def _record_token_metrics(
+        self, attributes: Mapping[str, AttributeValue]
+    ) -> None:
+        self._record_usage_tokens(
+            self._instruments.inference_usage_input_tokens,
+            self.input_tokens,
+            attributes,
+        )
+        self._record_operation_tokens(
+            self._instruments.inference_operation_input_tokens,
+            self.input_tokens,
+            attributes,
+        )
 
     def _apply_finish(self, error: Error | None = None) -> None:
         optional_attrs = (

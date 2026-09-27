@@ -421,6 +421,57 @@ class InferenceInvocation(GenAIInvocation):
             )
         return counts
 
+    def _record_token_metrics(
+        self, attributes: Mapping[str, AttributeValue]
+    ) -> None:
+        instruments = self._instruments
+        self._record_usage_tokens(
+            instruments.inference_usage_input_tokens,
+            self.input_tokens,
+            attributes,
+            self._modality_counts(_INPUT_MODALITY_FIELDS),
+        )
+        self._record_usage_tokens(
+            instruments.inference_usage_output_tokens,
+            self.output_tokens,
+            attributes,
+            self._modality_counts(_OUTPUT_MODALITY_FIELDS),
+        )
+        self._record_usage_tokens(
+            instruments.inference_usage_cache_read_input_tokens,
+            self.cache_read_input_tokens,
+            attributes,
+            self._modality_counts(_CACHE_READ_MODALITY_FIELDS),
+        )
+        self._record_usage_tokens(
+            instruments.inference_usage_cache_write_input_tokens,
+            self.cache_write_input_tokens,
+            attributes,
+        )
+        self._record_usage_tokens(
+            instruments.inference_usage_reasoning_output_tokens,
+            self.thinking_tokens,
+            attributes,
+        )
+        self._record_operation_tokens(
+            instruments.inference_operation_input_tokens,
+            self.input_tokens,
+            attributes,
+        )
+        self._record_operation_tokens(
+            instruments.inference_operation_output_tokens,
+            self.output_tokens,
+            attributes,
+        )
+
+    def _modality_counts(
+        self, fields: Mapping[str, str]
+    ) -> dict[str, int | None]:
+        return {
+            Modality(modality).value: getattr(self, name)
+            for modality, name in fields.items()
+        }
+
     def _apply_finish(self, error: Error | None = None) -> None:
         if error is not None:
             self._apply_error_attributes(error)

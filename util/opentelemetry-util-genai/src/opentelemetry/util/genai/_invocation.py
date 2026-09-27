@@ -10,12 +10,13 @@ from contextlib import AbstractContextManager, contextmanager
 from contextvars import Token
 from dataclasses import asdict
 from types import TracebackType
-from typing import Any, TypeAlias, cast
+from typing import Any, Final, TypeAlias, cast
 
 from typing_extensions import Self
 
 from opentelemetry._logs import Logger, LogRecord
 from opentelemetry.context import Context, attach, detach, get_current
+from opentelemetry.metrics import Counter, Histogram
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
@@ -52,6 +53,8 @@ from opentelemetry.util.genai.utils import (
 from opentelemetry.util.types import AttributeValue
 
 _GEN_AI_PROMPT_VARIABLE_PREFIX: str = "gen_ai.prompt.variable."
+_GEN_AI_TOKEN_MODALITY: Final = "gen_ai.token.modality"
+_UNKNOWN_TOKEN_MODALITY: Final = "unknown"
 
 
 ContextToken: TypeAlias = Token[Context]
@@ -230,6 +233,11 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         """Return {token_type: count} for token histogram recording."""
         return {}
 
+    def _record_token_metrics(
+        self, attributes: Mapping[str, AttributeValue]
+    ) -> None:
+        """Record the ``gen_ai.client.inference.*`` token metrics."""
+
     def record_stream_chunk(self) -> None:
         """Mark the request as streamed and record one output chunk arriving."""
         if self._finished:
@@ -269,7 +277,8 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             )
 
     def _record_client_metrics(self) -> None:
-        """Record gen_ai.client.operation.duration and gen_ai.client.token.usage."""
+        """Record gen_ai.client.operation.duration, gen_ai.client.token.usage
+        and the gen_ai.client.inference.* token metrics."""
         attributes = self._get_metric_attributes()
         duration_seconds = max(
             timeit.default_timer() - self._monotonic_start_s,
@@ -290,6 +299,47 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
                     | {GenAI.GEN_AI_TOKEN_TYPE: token_type},
                     context=self._span_context,
                 )
+        self._record_token_metrics(attributes)
+
+    def _record_usage_tokens(
+        self,
+        counter: Counter,
+        count: int | None,
+        attributes: Mapping[str, AttributeValue],
+        modality_counts: Mapping[str, int | None] | None = None,
+    ) -> None:
+        """Add ``count`` to a ``gen_ai.client.inference.usage.*`` counter.
+
+        It is split by ``gen_ai.token.modality`` so the parts sum to it: the
+        modalities the provider broke it down into, and ``unknown`` for the rest.
+        """
+        if count is None:
+            return
+        parts = {m: c for m, c in (modality_counts or {}).items() if c}
+        remainder = count - sum(parts.values())
+        if remainder < 0:
+            # A breakdown larger than the total can't be trusted.
+            parts, remainder = {}, count
+        if remainder:
+            parts[_UNKNOWN_TOKEN_MODALITY] = remainder
+        for modality, part in parts.items():
+            counter.add(
+                part,
+                attributes={**attributes, _GEN_AI_TOKEN_MODALITY: modality},
+                context=self._span_context,
+            )
+
+    def _record_operation_tokens(
+        self,
+        histogram: Histogram,
+        count: int | None,
+        attributes: Mapping[str, AttributeValue],
+    ) -> None:
+        """Record a ``gen_ai.client.inference.operation.*`` histogram."""
+        if count is not None:
+            histogram.record(
+                count, attributes=attributes, context=self._span_context
+            )
 
     def _apply_error_attributes(self, error: Error) -> None:
         """Apply error status and error.type attribute to the span, events, and metrics."""

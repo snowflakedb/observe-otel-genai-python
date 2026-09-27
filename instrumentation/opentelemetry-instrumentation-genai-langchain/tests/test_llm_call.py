@@ -37,6 +37,9 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from opentelemetry.semconv.attributes import error_attributes
+from opentelemetry.test_util_genai._observe_token_metrics import (
+    without_inference_token_metrics,
+)
 from opentelemetry.test_util_genai.instrumentor import instrument
 from opentelemetry.util.genai.types import TextPart
 
@@ -138,7 +141,9 @@ def test_chat_openai_gpt_3_5_turbo_model_llm_call(
     assert resource_metrics is not None
     assert len(resource_metrics) == 1
 
-    metrics = resource_metrics[0].scope_metrics[0].metrics
+    metrics = without_inference_token_metrics(
+        resource_metrics[0].scope_metrics[0].metrics
+    )
     assert len(metrics) == 2
     for metric in metrics:
         if metric.name == gen_ai_metrics.GEN_AI_CLIENT_OPERATION_DURATION:
