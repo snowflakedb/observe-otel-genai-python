@@ -62,6 +62,7 @@ class RetrievalInvocation(GenAIInvocation):
         context: Context | None = None,
         _attach_to_context: bool = True,
         agent_name: str | None = None,
+        conversation_id: str | None = None,
     ) -> None:
         """Use handler.retrieval() instead of calling this directly."""
         _operation_name = GenAI.GenAiOperationNameValues.RETRIEVAL.value
@@ -91,6 +92,7 @@ class RetrievalInvocation(GenAIInvocation):
             context=context,
             _attach_to_context=_attach_to_context,
             agent_name=agent_name,
+            conversation_id=conversation_id,
         )
         self._data_source_id: str | None = data_source_id
         self._provider: str | None = provider

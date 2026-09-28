@@ -70,6 +70,7 @@ class ToolInvocation(GenAIInvocation):
         content_capturing_mode: ContentCapturingMode | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        conversation_id: str | None = None,
     ) -> None:
         """Use handler.tool(name) instead of calling this directly.
 
@@ -98,6 +99,7 @@ class ToolInvocation(GenAIInvocation):
             start_attributes=start_attributes,
             context=context,
             _attach_to_context=_attach_to_context,
+            conversation_id=conversation_id,
             agent_name=agent_name,
             content_capturing_mode=content_capturing_mode,
         )

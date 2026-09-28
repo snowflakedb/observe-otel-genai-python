@@ -265,6 +265,7 @@ class TelemetryHandler:
         context: Context | None = None,
         _attach_to_context: bool = True,
         agent_name: str | None = None,
+        conversation_id: str | None = None,
     ) -> RetrievalInvocation:
         """Returns a Retrieval invocation. Starts span when called.
 
@@ -277,6 +278,9 @@ class TelemetryHandler:
         Returned object can be used as a ContextManager which automatically calls `stop` or `fail`
         to finalize the span upon exiting. If not used as a ContextManager, the caller is
         responsible for calling `stop` or `fail` to finalize the span.
+
+        ``context`` parents the span and becomes the base of the invocation's
+        own context. ``conversation_id`` overrides the one inherited from it.
 
         Only set data attributes on the invocation object, do not modify the span or context.
         """
@@ -294,6 +298,7 @@ class TelemetryHandler:
             context=context,
             _attach_to_context=_attach_to_context,
             agent_name=agent_name,
+            conversation_id=conversation_id,
         )
 
     def start_tool(
@@ -535,6 +540,7 @@ class TelemetryHandler:
         tool_description: str | None = None,
         context: Context | None = None,
         _attach_to_context: bool = True,
+        conversation_id: str | None = None,
     ) -> ToolInvocation:
         """Returns a Tool invocation. Starts span when called.
 
@@ -553,6 +559,9 @@ class TelemetryHandler:
         to finalize the span upon exiting. If not used as a ContextManager, the caller is
         responsible for calling `stop` or `fail` to finalize the span.
 
+        ``context`` parents the span and becomes the base of the invocation's
+        own context. ``conversation_id`` overrides the one inherited from it.
+
         Only set data attributes on the invocation object, do not modify the span or context.
         Recommended to set ``invocation.arguments`` and ``invocation.tool_result`` on the
         invocation object but only if `invocation.should_capture_content` is True.
@@ -570,6 +579,7 @@ class TelemetryHandler:
             content_capturing_mode=self._content_capturing_mode,
             context=context,
             _attach_to_context=_attach_to_context,
+            conversation_id=conversation_id,
         )
 
     def start_invoke_local_agent(
