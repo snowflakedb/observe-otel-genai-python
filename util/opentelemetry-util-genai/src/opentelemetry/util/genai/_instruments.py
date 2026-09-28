@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from opentelemetry.metrics import Histogram, Meter
+from opentelemetry.metrics import Counter, Histogram, Meter
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 
 _GEN_AI_CLIENT_OPERATION_DURATION_BUCKETS: Final = [
@@ -63,6 +63,30 @@ _GEN_AI_INVOKE_WORKFLOW_DURATION_BUCKETS: Final = [
 _GEN_AI_EXECUTE_TOOL_DURATION: Final = "gen_ai.execute_tool.duration"
 _GEN_AI_INVOKE_WORKFLOW_DURATION: Final = "gen_ai.invoke_workflow.duration"
 _GEN_AI_INVOKE_AGENT_DURATION: Final = "gen_ai.invoke_agent.duration"
+_GEN_AI_CLIENT_INFERENCE_USAGE_INPUT_TOKENS: Final = (
+    "gen_ai.client.inference.usage.input_tokens"
+)
+_GEN_AI_CLIENT_INFERENCE_USAGE_OUTPUT_TOKENS: Final = (
+    "gen_ai.client.inference.usage.output_tokens"
+)
+_GEN_AI_CLIENT_INFERENCE_USAGE_CACHE_READ_INPUT_TOKENS: Final = (
+    "gen_ai.client.inference.usage.cache_read.input_tokens"
+)
+_GEN_AI_CLIENT_INFERENCE_USAGE_CACHE_WRITE_INPUT_TOKENS: Final = (
+    "gen_ai.client.inference.usage.cache_write.input_tokens"
+)
+_GEN_AI_CLIENT_INFERENCE_USAGE_REASONING_OUTPUT_TOKENS: Final = (
+    "gen_ai.client.inference.usage.reasoning.output_tokens"
+)
+_GEN_AI_CLIENT_INFERENCE_OPERATION_INPUT_TOKENS: Final = (
+    "gen_ai.client.inference.operation.input_tokens"
+)
+_GEN_AI_CLIENT_INFERENCE_OPERATION_OUTPUT_TOKENS: Final = (
+    "gen_ai.client.inference.operation.output_tokens"
+)
+_GEN_AI_CLIENT_INFERENCE_OPERATION_TOKENS_BUCKETS: Final = (
+    _GEN_AI_CLIENT_TOKEN_USAGE_BUCKETS
+)
 _GEN_AI_INVOKE_AGENT_DURATION_BUCKETS: Final = [
     0.1,
     0.2,
@@ -125,6 +149,43 @@ class _Instruments:
             description="Measures the duration of an in-process agent invocation.",
             unit="s",
             explicit_bucket_boundaries_advisory=_GEN_AI_INVOKE_AGENT_DURATION_BUCKETS,
+        )
+        self.inference_usage_input_tokens: Counter = meter.create_counter(
+            name=_GEN_AI_CLIENT_INFERENCE_USAGE_INPUT_TOKENS,
+            description="The number of input (prompt) tokens used, including cached tokens.",
+            unit="{token}",
+        )
+        self.inference_usage_output_tokens: Counter = meter.create_counter(
+            name=_GEN_AI_CLIENT_INFERENCE_USAGE_OUTPUT_TOKENS,
+            description="The number of output (completion) tokens used, including reasoning tokens.",
+            unit="{token}",
+        )
+        self.inference_usage_cache_read_input_tokens: Counter = meter.create_counter(
+            name=_GEN_AI_CLIENT_INFERENCE_USAGE_CACHE_READ_INPUT_TOKENS,
+            description="The number of input tokens served from a provider-managed cache.",
+            unit="{token}",
+        )
+        self.inference_usage_cache_write_input_tokens: Counter = meter.create_counter(
+            name=_GEN_AI_CLIENT_INFERENCE_USAGE_CACHE_WRITE_INPUT_TOKENS,
+            description="The number of input tokens written to a provider-managed cache.",
+            unit="{token}",
+        )
+        self.inference_usage_reasoning_output_tokens: Counter = meter.create_counter(
+            name=_GEN_AI_CLIENT_INFERENCE_USAGE_REASONING_OUTPUT_TOKENS,
+            description="The number of output tokens used for reasoning (e.g. chain-of-thought, extended thinking).",
+            unit="{token}",
+        )
+        self.inference_operation_input_tokens: Histogram = meter.create_histogram(
+            name=_GEN_AI_CLIENT_INFERENCE_OPERATION_INPUT_TOKENS,
+            description="The number of input (prompt) tokens used per inference operation.",
+            unit="{token}",
+            explicit_bucket_boundaries_advisory=_GEN_AI_CLIENT_INFERENCE_OPERATION_TOKENS_BUCKETS,
+        )
+        self.inference_operation_output_tokens: Histogram = meter.create_histogram(
+            name=_GEN_AI_CLIENT_INFERENCE_OPERATION_OUTPUT_TOKENS,
+            description="The number of output (completion) tokens used per inference operation.",
+            unit="{token}",
+            explicit_bucket_boundaries_advisory=_GEN_AI_CLIENT_INFERENCE_OPERATION_TOKENS_BUCKETS,
         )
 
 

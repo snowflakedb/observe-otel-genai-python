@@ -55,6 +55,9 @@ from opentelemetry.test.weaver_live_check import (
     LiveCheckReport,
     WeaverLiveCheck,
 )
+from opentelemetry.test_util_genai._observe_token_metrics import (
+    is_ahead_of_pinned_semconv,
+)
 
 
 @dataclass(frozen=True)
@@ -225,7 +228,9 @@ def run_conformance(
 
 def _check_violations(scenario: Scenario, report: LiveCheckReport) -> None:
     """Reconcile weaver violations against ``scenario.expected_violations``."""
-    violations = report.violations
+    violations = [
+        v for v in report.violations if not is_ahead_of_pinned_semconv(v)
+    ]
     expected = scenario.expected_violations
 
     unexpected = [

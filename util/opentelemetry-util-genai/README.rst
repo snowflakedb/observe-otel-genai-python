@@ -65,6 +65,24 @@ hides an outer agent's. A value an instrumentation sets itself, on ``attributes`
 ``metric_attributes``, takes precedence.
 
 
+Inference Token Metrics
+-----------------------
+
+This fork also records the token metrics semconv introduced in
+`semantic-conventions-genai#374 <https://github.com/open-telemetry/semantic-conventions-genai/pull/374>`_,
+on inference and embeddings operations. ``gen_ai.client.token.usage`` is still recorded alongside them.
+
+- ``gen_ai.client.inference.usage.input_tokens``, ``.output_tokens``, ``.cache_read.input_tokens``,
+  ``.cache_write.input_tokens`` and ``.reasoning.output_tokens``: counters, for totals and cost. Each
+  carries ``gen_ai.token.modality``, taken from the invocation's per-modality token counts; the part
+  no modality accounts for is ``unknown``.
+- ``gen_ai.client.inference.operation.input_tokens`` and ``.output_tokens``: histograms, one
+  measurement per operation.
+
+Cache and reasoning tokens are already included in the input and output totals, so don't add those
+counters to the input or output ones.
+
+
 Modalities
 ----------
 
