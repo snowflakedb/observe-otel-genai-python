@@ -103,32 +103,40 @@ calls nested underneath.
         }
     )
 
-Using with the OpenAI instrumentation
--------------------------------------
+Using with model-provider instrumentations
+------------------------------------------
 
-If ``observe-instrumentation-genai-openai`` is also enabled, each ``ChatOpenAI``
-call is recorded twice: a ``chat`` span from this package, and a second
-``chat`` span from the OpenAI instrumentation nested under it. Token usage and
-duration metrics count the call twice too. ``opentelemetry-instrument`` enables
-every installed instrumentation, so having both packages installed is enough
-to cause this.
+This package records a ``chat`` span for each LangChain chat model call. If
+the provider SDK underneath is instrumented too, each call is recorded twice:
+once here, and again by the SDK's instrumentation, nested under it. Token usage
+and duration metrics count the call twice as well. Known cases:
 
-If you run with ``opentelemetry-instrument``, turn the OpenAI instrumentation
-off::
+- ``observe-instrumentation-genai-openai``, under ``ChatOpenAI``
+- ``opentelemetry-instrumentation-botocore``, under ``ChatBedrock`` and
+  ``ChatBedrockConverse``. ``opentelemetry-bootstrap -a install`` installs it
+  whenever ``boto3`` is present.
+- other tools that instrument the provider SDK, such as OpenInference or
+  OpenLLMetry
 
-    export OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=openai
+``opentelemetry-instrument`` enables every installed instrumentation, so having
+both installed is enough. Turn off the provider's instrumentation, for
+example::
 
-or uninstall it::
+    export OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=openai,botocore
 
-    pip uninstall observe-instrumentation-genai-openai
+or uninstall it. Disabling ``botocore`` removes spans for every AWS call (S3,
+DynamoDB, and so on), not just Bedrock. If you set up instrumentation in code,
+don't call ``instrument()`` on the provider's instrumentor.
 
-If you set up instrumentation in code, don't call
-``OpenAIInstrumentor().instrument()``.
+Keep the provider's instrumentation if the same process also needs it:
 
-Keep the OpenAI instrumentation if you need spans for OpenAI embeddings (for
-example ``OpenAIEmbeddings``), or if the same process also calls the OpenAI SDK
-directly or uses ``openai-agents``. Those calls are traced only by the OpenAI
-instrumentation.
+- calls to the SDK outside LangChain
+- LangChain features this package doesn't trace, such as embeddings (for
+  example ``OpenAIEmbeddings``)
+- ``openai-agents``, whose model spans come only from the OpenAI
+  instrumentation
+
+LangChain chat calls are then still counted twice.
 
 Retrieval Spans and Document Scores
 -----------------------------------
