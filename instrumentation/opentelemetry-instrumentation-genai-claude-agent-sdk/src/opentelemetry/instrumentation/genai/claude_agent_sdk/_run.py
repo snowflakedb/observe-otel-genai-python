@@ -1012,8 +1012,12 @@ class AgentRun:
     def _on_assistant(self, msg: Any) -> None:
         parent = msg.parent_tool_use_id
         blocks = blocks_of(msg.content)
-        if msg.model:
-            self._model = msg.model
+        # When an API call fails, the CLI writes an assistant message itself to
+        # carry the error, with "<synthetic>" as its model. No model produced
+        # it, so ignore that value and fall back to the requested model.
+        model = None if msg.model == "<synthetic>" else msg.model
+        if model:
+            self._model = model
 
         # Tool spans open from the stream, not from a tool result: only the
         # stream carries parent_tool_use_id, which is what puts the span in the
@@ -1031,11 +1035,11 @@ class AgentRun:
             msg.message_id and msg.message_id != ctx.message_id
         ):
             self._close_chat(ctx)
-            self._open_chat(ctx, msg.message_id, msg.model)
+            self._open_chat(ctx, msg.message_id, model)
 
         ctx.blocks.extend(blocks)
-        if msg.model:
-            ctx.response_model = msg.model
+        if model:
+            ctx.response_model = model
         if msg.usage:
             ctx.usage = msg.usage
         if msg.stop_reason:
