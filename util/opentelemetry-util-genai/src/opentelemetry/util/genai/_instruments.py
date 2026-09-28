@@ -7,6 +7,9 @@ from typing import Final
 
 from opentelemetry.metrics import Counter, Histogram, Meter
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
+from opentelemetry.util.genai._observe_metric_conversation_id import (
+    metrics_include_conversation_id,
+)
 
 _GEN_AI_CLIENT_OPERATION_DURATION_BUCKETS: Final = [
     0.01,
@@ -187,6 +190,7 @@ class _Instruments:
             unit="{token}",
             explicit_bucket_boundaries_advisory=_GEN_AI_CLIENT_INFERENCE_OPERATION_TOKENS_BUCKETS,
         )
+        self.include_conversation_id: bool = metrics_include_conversation_id()
 
 
 __all__ = ["_Instruments"]

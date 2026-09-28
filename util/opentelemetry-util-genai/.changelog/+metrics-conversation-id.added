@@ -1,0 +1,1 @@
+Add `OBSERVE_GENAI_METRICS_INCLUDE_CONVERSATION_ID`, which puts `gen_ai.conversation.id` on every metric when set to `true`.

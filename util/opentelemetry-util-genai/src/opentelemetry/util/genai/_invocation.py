@@ -119,6 +119,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             context = with_conversation_id(
                 self.conversation_id, context=context
             )
+        self._put_conversation_id_on_metrics()
         self._agent_name: str | None = (
             agent_name
             if agent_name is not None
@@ -171,6 +172,9 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         """Emitted as ``gen_ai.conversation.id`` on every span; semconv defines it
         only on inference, invoke_agent and invoke_workflow.
 
+        With ``OBSERVE_GENAI_METRICS_INCLUDE_CONVERSATION_ID=true``, also on
+        every metric.
+
         Setting it also reaches operations started under this one later. Set it
         in the thread or task that created the invocation and outside
         ``activate()``. Clearing it affects only this invocation's own span.
@@ -180,6 +184,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
     @conversation_id.setter
     def conversation_id(self, value: str | None) -> None:
         self._conversation_id = value
+        self._put_conversation_id_on_metrics()
         if not value or value == get_ambient_conversation_id(
             self._span_context
         ):
@@ -228,6 +233,20 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
     def _get_metric_attributes(self) -> dict[str, AttributeValue]:
         """Return low-cardinality attributes for metric recording."""
         return self.metric_attributes
+
+    def _invalidate_metric_attributes(self) -> None:
+        """Drop any cached result of ``_get_metric_attributes``."""
+
+    def _put_conversation_id_on_metrics(self) -> None:
+        if not self._instruments.include_conversation_id:
+            return
+        if self._conversation_id:
+            self.metric_attributes[GenAI.GEN_AI_CONVERSATION_ID] = (
+                self._conversation_id
+            )
+        else:
+            self.metric_attributes.pop(GenAI.GEN_AI_CONVERSATION_ID, None)
+        self._invalidate_metric_attributes()
 
     def _get_metric_token_counts(self) -> dict[str, int]:  # pylint: disable=no-self-use
         """Return {token_type: count} for token histogram recording."""
@@ -393,6 +412,8 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
                 self.span.set_attribute(
                     GenAI.GEN_AI_CONVERSATION_ID, self.conversation_id
                 )
+            # Again, in case metric_attributes was replaced since.
+            self._put_conversation_id_on_metrics()
             self._apply_finish(error)
         finally:
             self.suspend()

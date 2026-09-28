@@ -158,6 +158,14 @@ message content (as dictionaries instead of JSON strings). Note that when using 
 or ``SPAN_AND_EVENT``, the ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT`` environment variable defaults
 to ``true``, so events will be emitted automatically unless explicitly set to ``false``.
 
+Conversation ID on Metrics
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set ``OBSERVE_GENAI_METRICS_INCLUDE_CONVERSATION_ID`` to ``true`` (case-insensitive) to add
+``gen_ai.conversation.id`` to every metric this package records, so a backend can break metrics
+down by conversation. It is off by default: semconv keeps the conversation id off metrics because
+each conversation adds new time series. Specific to this fork.
+
 Completion Hook / Upload
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
