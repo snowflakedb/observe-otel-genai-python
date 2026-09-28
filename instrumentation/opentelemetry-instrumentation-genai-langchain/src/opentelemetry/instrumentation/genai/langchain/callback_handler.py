@@ -83,6 +83,17 @@ def _conversation_id(metadata: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _set_conversation_id(
+    invocation: ToolInvocation | RetrievalInvocation,
+    metadata: dict[str, Any] | None,
+) -> None:
+    # Only when the run's metadata has one: assigning None would drop the id
+    # inherited from an enclosing agent or workflow.
+    conversation_id = _conversation_id(metadata)
+    if conversation_id:
+        invocation.conversation_id = conversation_id
+
+
 def _extract_document_score(doc: Any) -> float | int | None:
     """Extract relevance score polymorphically from a Document or Mapping.
 
@@ -753,6 +764,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             context=parent_context,
             _attach_to_context=self._attach_to_context,
         )
+        _set_conversation_id(tool_invocation, metadata)
         tool_invocation.tool_description = description
         tool_invocation.arguments = arguments
         tool_call_id = kwargs.get("tool_call_id")
@@ -817,6 +829,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             context=parent_context,
             _attach_to_context=self._attach_to_context,
         )
+        _set_conversation_id(retrieval, metadata)
         retrieval.query_text = query
         self._invocation_manager.add_invocation_state(
             run_id, parent_run_id, retrieval

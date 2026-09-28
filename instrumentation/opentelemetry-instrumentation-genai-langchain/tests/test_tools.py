@@ -481,8 +481,8 @@ def test_on_tool_start_parents_to_parent_run_context():
     assert tool_span.context.trace_id == workflow_span.context.trace_id
 
 
-def test_on_tool_start_omits_conversation_id():
-    """semconv does not define gen_ai.conversation.id for execute_tool."""
+def test_on_tool_start_carries_conversation_id():
+    """This fork sets gen_ai.conversation.id on every span."""
     tracer_provider, span_exporter, logger_provider, meter_provider = (
         _make_providers()
     )
@@ -506,7 +506,9 @@ def test_on_tool_start_omits_conversation_id():
 
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
-    assert gen_ai_attributes.GEN_AI_CONVERSATION_ID not in spans[0].attributes
+    assert (
+        spans[0].attributes[gen_ai_attributes.GEN_AI_CONVERSATION_ID] == "t1"
+    )
 
 
 def test_on_tool_start_with_string_input(monkeypatch):
