@@ -1,3 +1,9 @@
 This project is inspired by and portions of it are derived from Traceloop OpenLLMetry
 (https://github.com/traceloop/openllmetry).
 Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+
+Copyright 2026 Snowflake Inc.
+
+This product includes software developed by The OpenTelemetry Authors
+(https://github.com/open-telemetry/opentelemetry-python-genai), licensed under
+the Apache License, Version 2.0. Snowflake Inc. has modified some of those files.

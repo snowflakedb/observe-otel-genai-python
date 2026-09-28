@@ -11,7 +11,11 @@
 #      here.
 #   3. Upstream changed a file we also changed. Left for you.
 #
-# The merge is never committed: review it, run the tests, then commit yourself.
+# Upstream is the source of truth: keep our patch set small, and drop a local
+# change once its upstream equivalent ships.
+#
+# The merge is never committed: review it, run the tests
+# (uvx --with tox-uv tox), then commit yourself.
 #
 # Usage: scripts/sync_upstream.sh [upstream-ref]     (default: main)
 
