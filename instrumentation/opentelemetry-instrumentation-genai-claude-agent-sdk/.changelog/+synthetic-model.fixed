@@ -1,0 +1,1 @@
+Report the requested model on the `chat` span for a call the API rejected, instead of `<synthetic>`, the placeholder the CLI puts on the error message it writes itself. `gen_ai.response.model` is left unset, since no model answered.
