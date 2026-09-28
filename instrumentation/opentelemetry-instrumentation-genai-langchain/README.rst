@@ -103,6 +103,33 @@ calls nested underneath.
         }
     )
 
+Using with the OpenAI instrumentation
+-------------------------------------
+
+If ``observe-instrumentation-genai-openai`` is also enabled, each ``ChatOpenAI``
+call is recorded twice: a ``chat`` span from this package, and a second
+``chat`` span from the OpenAI instrumentation nested under it. Token usage and
+duration metrics count the call twice too. ``opentelemetry-instrument`` enables
+every installed instrumentation, so having both packages installed is enough
+to cause this.
+
+If you run with ``opentelemetry-instrument``, turn the OpenAI instrumentation
+off::
+
+    export OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=openai
+
+or uninstall it::
+
+    pip uninstall observe-instrumentation-genai-openai
+
+If you set up instrumentation in code, don't call
+``OpenAIInstrumentor().instrument()``.
+
+Keep the OpenAI instrumentation if you need spans for OpenAI embeddings (for
+example ``OpenAIEmbeddings``), or if the same process also calls the OpenAI SDK
+directly or uses ``openai-agents``. Those calls are traced only by the OpenAI
+instrumentation.
+
 Retrieval Spans and Document Scores
 -----------------------------------
 
