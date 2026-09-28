@@ -103,6 +103,41 @@ calls nested underneath.
         }
     )
 
+Using with model-provider instrumentations
+------------------------------------------
+
+This package records a ``chat`` span for each LangChain chat model call. If
+the provider SDK underneath is instrumented too, each call is recorded twice:
+once here, and again by the SDK's instrumentation, nested under it. Token usage
+and duration metrics count the call twice as well. Known cases:
+
+- ``observe-instrumentation-genai-openai``, under ``ChatOpenAI``
+- ``opentelemetry-instrumentation-botocore``, under ``ChatBedrock`` and
+  ``ChatBedrockConverse``. ``opentelemetry-bootstrap -a install`` installs it
+  whenever ``boto3`` is present.
+- other tools that instrument the provider SDK, such as OpenInference or
+  OpenLLMetry
+
+``opentelemetry-instrument`` enables every installed instrumentation, so having
+both installed is enough. Turn off the provider's instrumentation, for
+example::
+
+    export OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=openai,botocore
+
+or uninstall it. Disabling ``botocore`` removes spans for every AWS call (S3,
+DynamoDB, and so on), not just Bedrock. If you set up instrumentation in code,
+don't call ``instrument()`` on the provider's instrumentor.
+
+Keep the provider's instrumentation if the same process also needs it:
+
+- calls to the SDK outside LangChain
+- LangChain features this package doesn't trace, such as embeddings (for
+  example ``OpenAIEmbeddings``)
+- ``openai-agents``, whose model spans come only from the OpenAI
+  instrumentation
+
+LangChain chat calls are then still counted twice.
+
 Retrieval Spans and Document Scores
 -----------------------------------
 
