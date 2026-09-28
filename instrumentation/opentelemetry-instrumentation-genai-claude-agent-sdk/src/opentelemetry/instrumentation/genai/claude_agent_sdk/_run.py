@@ -1012,8 +1012,9 @@ class AgentRun:
     def _on_assistant(self, msg: Any) -> None:
         parent = msg.parent_tool_use_id
         blocks = blocks_of(msg.content)
-        # The CLI relays an API error as an assistant message it writes itself,
-        # under this placeholder model; no model answered it.
+        # When an API call fails, the CLI writes an assistant message itself to
+        # carry the error, with "<synthetic>" as its model. No model produced
+        # it, so ignore that value and fall back to the requested model.
         model = None if msg.model == "<synthetic>" else msg.model
         if model:
             self._model = model
