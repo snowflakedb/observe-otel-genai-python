@@ -305,6 +305,11 @@ class _ChatContext:
     response_model: str | None = None
     # Running conversation, replayed as each chat span's input.
     history: list[InputMessage] = field(default_factory=list[InputMessage])
+    # The prompt a subagent was launched with. The CLI forwards it as a user
+    # message for a foreground subagent but not for a background one.
+    launch_prompt: list[InputMessage] = field(
+        default_factory=list[InputMessage]
+    )
 
     def set_final_usage(self, usage: Usage) -> None:
         self.final_usage = usage
@@ -619,6 +624,7 @@ class AgentRun:
         if existing is not None:
             return existing
 
+        launch_prompt: list[InputMessage] = []
         if parent_tool_use_id:
             subagent = self._live_subagent(parent_tool_use_id)
             parent_context = (
@@ -627,12 +633,17 @@ class AgentRun:
                 else self._root_ctx()
             )
             history: list[InputMessage] = []
+            if subagent is not None:
+                launch_prompt = list(subagent.invocation.input_messages)
         else:
             parent_context = self._root_ctx()
             history = list(prompt_to_messages(self._prompt))
 
         ctx = _ChatContext(
-            key=key, parent_context=parent_context, history=history
+            key=key,
+            parent_context=parent_context,
+            history=history,
+            launch_prompt=launch_prompt,
         )
         self._chats[key] = ctx
         return ctx
@@ -659,6 +670,9 @@ class AgentRun:
         effort = getattr(self._sdk_options, "effort", None)
         if isinstance(effort, str):
             invocation.reasoning_level = effort
+        if not ctx.history:
+            ctx.history.extend(ctx.launch_prompt)
+        ctx.launch_prompt = []
         if self._handler.should_capture_content():
             invocation.input_messages = list(ctx.history)
             invocation.system_instruction = self._system_prompt()

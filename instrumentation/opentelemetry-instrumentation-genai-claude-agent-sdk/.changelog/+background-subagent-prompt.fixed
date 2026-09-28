@@ -1,0 +1,1 @@
+Report a background subagent's prompt as the input of its first chat call, which the CLI does not forward.
