@@ -10,8 +10,7 @@ It is Observe's replacement for upstream's
 ``opentelemetry-instrumentation-genai-claude-agent-sdk``, not an addition to it.
 The two distributions install to the same paths, so an environment holding both
 gets a per-file mix of them and uninstalling either one breaks the other.
-Uninstall the upstream package first. The `repository README <../../README.md>`_
-describes what a mixed install actually does.
+Uninstall the upstream package first.
 
 Installation
 ------------

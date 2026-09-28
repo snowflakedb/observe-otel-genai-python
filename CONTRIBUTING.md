@@ -2,8 +2,7 @@
 
 This is a downstream fork of
 [open-telemetry/opentelemetry-python-genai](https://github.com/open-telemetry/opentelemetry-python-genai).
-Read [README.md](README.md) first for what the fork is and which packages it
-carries.
+Read [README.md](README.md) first for which packages it carries.
 
 If you are using AI agents to help, read [AGENTS.md](AGENTS.md) too.
 
@@ -34,18 +33,18 @@ pay for on each sync.
 
 ```
 ├── instrumentation/
-│   └── observe-instrumentation-genai-<name>/   # one package per GenAI library
+│   └── opentelemetry-instrumentation-genai-<name>/  # one package per GenAI library
 │       ├── src/opentelemetry/instrumentation/genai/<name>/
 │       ├── tests/
 │       ├── CHANGELOG.md
 │       └── pyproject.toml
 └── util/
-    ├── observe-util-genai/                     # shared GenAI utilities
+    ├── opentelemetry-util-genai/                    # shared GenAI utilities
     │   ├── src/opentelemetry/util/genai/
     │   ├── tests/
     │   ├── CHANGELOG.md
     │   └── pyproject.toml
-    └── observe-test-util-genai/                # test fixtures, not published
+    └── opentelemetry-test-util-genai/               # test fixtures, not published
 ```
 
 The monorepo uses `uv` workspaces; each package owns its own `pyproject.toml`,
@@ -54,15 +53,14 @@ version, and entry points. `tox.ini` defines the test matrix.
 ## Package naming
 
 Instrumentation packages are named `observe-instrumentation-genai-<name>` and
-import as `observe.instrumentation.genai.<name>`.
+import as `opentelemetry.instrumentation.genai.<name>`.
 
 Import paths, module layout, and class names are upstream's, unchanged. Only the
 distribution name in `pyproject.toml` differs. Keeping it that way is what makes
 a sync cheap, so don't rename anything to make it look like ours.
 
-Package versions currently match the upstream version they were forked from, so
-that `version.py` doesn't conflict on every rebase. This is an open question, not
-a settled policy — see "Still to decide" in README.md.
+Package versions still match upstream's. We plan to move to our own version
+line, shared by all packages, before the first release.
 
 ## Making a change
 
@@ -162,7 +160,7 @@ label.
 
 It fetches upstream, merges without committing, and keeps the packages we pruned
 deleted. Then review the result, run the tests, and commit the merge yourself.
-README.md explains the two conflict types you should expect.
+The header of `scripts/sync_upstream.sh` explains the conflicts to expect.
 
 Don't cherry-pick individual upstream commits. Merging keeps the shared history
 that makes the next sync cheap.
