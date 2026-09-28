@@ -67,9 +67,9 @@ Check out the `manual example <examples/manual>`_ for more details.
     anyio.run(main)
 
 Call ``instrument()`` before ``from claude_agent_sdk import query``. The
-instrumentation replaces ``query`` on the ``claude_agent_sdk`` module, so a name
-imported earlier still points at the original function and its calls are not
-traced. Calls to ``claude_agent_sdk.query(...)`` and ``ClaudeSDKClient`` are
+instrumentation replaces ``query`` on the ``claude_agent_sdk`` module, so a
+``query`` imported earlier still points at the original function and its calls
+are not traced. Calls to ``claude_agent_sdk.query(...)`` and ``ClaudeSDKClient`` are
 traced regardless of import order. This only matters for manual setup:
 ``opentelemetry-instrument`` instruments before your code runs.
 
