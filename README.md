@@ -18,7 +18,6 @@ requirement can't wait for upstream review, or when upstream won't take it.
 
 | Package | Import path | Instruments | Upstream counterpart |
 | --- | --- | --- | --- |
-| `observe-instrumentation-genai-bedrock` | `opentelemetry.instrumentation.genai.bedrock` | `boto3 >= 1.40.46, < 2` | [`opentelemetry-instrumentation-genai-bedrock`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-bedrock) |
 | `observe-instrumentation-genai-claude-agent-sdk` | `opentelemetry.instrumentation.genai.claude_agent_sdk` | `claude-agent-sdk >= 0.2.157, < 0.3` | [`opentelemetry-instrumentation-genai-claude-agent-sdk`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk) |
 | `observe-instrumentation-genai-langchain` | `opentelemetry.instrumentation.genai.langchain` | `langchain >= 0.3.21, < 2` | [`opentelemetry-instrumentation-genai-langchain`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-langchain) |
 | `observe-instrumentation-genai-openai` | `opentelemetry.instrumentation.genai.openai` | `openai >= 1.26.0, < 4` | [`opentelemetry-instrumentation-genai-openai`](https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai) |
@@ -82,7 +81,6 @@ instrumentation and util. Pin your instrumentation explicitly instead.
 ```
 observe-otel-genai-python/
 ├── instrumentation/
-│   ├── opentelemetry-instrumentation-genai-bedrock/
 │   ├── opentelemetry-instrumentation-genai-claude-agent-sdk/
 │   │   ├── src/opentelemetry/instrumentation/genai/claude_agent_sdk/
 │   │   ├── tests/

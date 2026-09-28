@@ -1,1 +1,0 @@
-Publish as `observe-instrumentation-genai-bedrock`, depending on `observe-util-genai` in place of `opentelemetry-util-genai`. It replaces upstream's `opentelemetry-instrumentation-genai-bedrock` rather than installing alongside it.
