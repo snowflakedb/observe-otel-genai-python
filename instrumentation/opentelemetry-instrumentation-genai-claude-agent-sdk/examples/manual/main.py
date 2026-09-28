@@ -12,14 +12,6 @@ an OTLP compatible endpoint.
 """
 
 import anyio
-from claude_agent_sdk import (
-    AgentDefinition,
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    TextBlock,
-    query,
-)
 
 # NOTE: OpenTelemetry Python Logs and Events APIs are in beta
 from opentelemetry import _logs, metrics, trace
@@ -67,6 +59,16 @@ metrics.set_meter_provider(
 
 # instrument Claude Agent SDK
 ClaudeAgentSDKInstrumentor().instrument()
+
+# Imported after instrument() so that `query` is the traced version.
+from claude_agent_sdk import (
+    AgentDefinition,
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultMessage,
+    TextBlock,
+    query,
+)
 
 
 async def code_reviewer_example():

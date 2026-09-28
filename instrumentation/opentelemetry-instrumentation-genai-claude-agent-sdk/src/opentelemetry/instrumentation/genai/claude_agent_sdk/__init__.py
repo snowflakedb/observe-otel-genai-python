@@ -16,6 +16,12 @@ Usage
     from opentelemetry.instrumentation.genai.claude_agent_sdk import (
         ClaudeAgentSDKInstrumentor,
     )
+
+    # Enable instrumentation
+    ClaudeAgentSDKInstrumentor().instrument()
+
+    # Use Claude Agent SDK normally
+    import anyio
     from claude_agent_sdk import (
         ClaudeAgentOptions,
         AgentDefinition,
@@ -23,12 +29,6 @@ Usage
         TextBlock,
         query,
     )
-
-    # Enable instrumentation
-    ClaudeAgentSDKInstrumentor().instrument()
-
-    # Use Claude Agent SDK normally
-    import anyio
 
 
     async def main():

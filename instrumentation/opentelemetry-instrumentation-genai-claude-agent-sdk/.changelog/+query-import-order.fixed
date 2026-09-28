@@ -1,0 +1,1 @@
+Document that `instrument()` must run before `from claude_agent_sdk import query`; the usage snippets and manual example imported `query` first, so their calls produced no spans.
