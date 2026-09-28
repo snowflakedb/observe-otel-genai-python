@@ -1479,6 +1479,7 @@ class TestOnToolStart:
             tool_type="function",
             agent_name=None,
             context=parent_wf.context,
+            conversation_id=None,
             _attach_to_context=True,
         )
 
@@ -1504,8 +1505,8 @@ class TestOnRetrieverStart:
             handler._invocation_manager.get_invocation(run_id) is retrieval_inv
         )
 
-    def test_conversation_id_not_passed_to_invocation(self):
-        """semconv does not define gen_ai.conversation.id for retrieval."""
+    def test_conversation_id_passed_to_invocation(self):
+        """This fork sets gen_ai.conversation.id on every span."""
         handler, telemetry, _ = _make_handler_with_retrieval()
         run_id = _run_id()
 
@@ -1516,7 +1517,7 @@ class TestOnRetrieverStart:
             metadata={"thread_id": "t1"},
         )
 
-        assert "conversation_id" not in telemetry.retrieval.call_args.kwargs
+        assert telemetry.retrieval.call_args.kwargs["conversation_id"] == "t1"
 
     def test_query_text_set_on_invocation(self):
         handler, _, retrieval_inv = _make_handler_with_retrieval()
@@ -1545,6 +1546,7 @@ class TestOnRetrieverStart:
             provider="Chroma",
             request_model=None,
             context=None,
+            conversation_id=None,
             _attach_to_context=True,
         )
 
@@ -1562,6 +1564,7 @@ class TestOnRetrieverStart:
             provider=None,
             request_model=None,
             context=None,
+            conversation_id=None,
             _attach_to_context=True,
         )
 
@@ -1583,6 +1586,7 @@ class TestOnRetrieverStart:
             provider="Chroma",
             request_model="text-embedding-3-small",
             context=None,
+            conversation_id=None,
             _attach_to_context=True,
         )
 
@@ -1601,6 +1605,7 @@ class TestOnRetrieverStart:
             provider="Chroma",
             request_model=None,
             context=None,
+            conversation_id=None,
             _attach_to_context=True,
         )
 
@@ -1641,6 +1646,7 @@ class TestOnRetrieverStart:
             provider=None,
             request_model=None,
             context=parent_wf.context,
+            conversation_id=None,
             _attach_to_context=True,
         )
 

@@ -14,6 +14,10 @@ from opentelemetry.semconv._incubating.attributes import (
 )
 from opentelemetry.test.test_base import TestBase
 from opentelemetry.util.genai.handler import TelemetryHandler
+from opentelemetry.util.genai.invocation import (
+    RetrievalInvocation,
+    ToolInvocation,
+)
 from opentelemetry.util.genai.types import Error
 
 CONVERSATION = GenAI.GEN_AI_CONVERSATION_ID
@@ -164,3 +168,74 @@ class ConversationIdOnEverySpanTest(TestBase):
         self.assertIs(get_current(), current)
         tool.stop()
         agent.stop()
+
+
+class ConversationIdAtCreationTest(TestBase):
+    """``tool()`` and ``retrieval()`` take a ``conversation_id`` like
+    ``inference()`` and ``workflow()`` do."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+
+    def _start(
+        self, operation: str, conversation_id: str | None
+    ) -> ToolInvocation | RetrievalInvocation:
+        if operation == "execute_tool":
+            return self.handler.tool("lookup", conversation_id=conversation_id)
+        return self.handler.retrieval(
+            data_source_id="kb", conversation_id=conversation_id
+        )
+
+    def _ids(self) -> dict[str, Any]:
+        return {
+            s.attributes[GenAI.GEN_AI_OPERATION_NAME]: s.attributes.get(
+                CONVERSATION
+            )
+            for s in self.get_finished_spans()
+        }
+
+    def test_the_id_is_on_the_span_and_its_children(self) -> None:
+        for operation in ("execute_tool", "retrieval"):
+            with self.subTest(operation):
+                self.memory_exporter.clear()
+                invocation = self._start(operation, "conv-42")
+                self.handler.inference("openai").stop()
+                invocation.stop()
+                self.assertEqual(
+                    self._ids(), {operation: "conv-42", "chat": "conv-42"}
+                )
+
+    def test_none_inherits_the_ambient_id(self) -> None:
+        for operation in ("execute_tool", "retrieval"):
+            with self.subTest(operation):
+                self.memory_exporter.clear()
+                agent = self.handler.invoke_local_agent(
+                    conversation_id="conv-42"
+                )
+                self._start(operation, None).stop()
+                agent.stop()
+                self.assertEqual(self._ids()[operation], "conv-42")
+
+    def test_an_explicit_id_overrides_the_ambient_one(self) -> None:
+        for operation in ("execute_tool", "retrieval"):
+            with self.subTest(operation):
+                self.memory_exporter.clear()
+                agent = self.handler.invoke_local_agent(
+                    conversation_id="conv-42"
+                )
+                invocation = self._start(operation, "conv-7")
+                self.handler.inference("openai").stop()
+                invocation.stop()
+                agent.stop()
+                self.assertEqual(
+                    self._ids(),
+                    {
+                        operation: "conv-7",
+                        "chat": "conv-7",
+                        "invoke_agent": "conv-42",
+                    },
+                )

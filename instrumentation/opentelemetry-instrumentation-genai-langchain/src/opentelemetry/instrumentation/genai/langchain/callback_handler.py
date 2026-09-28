@@ -752,6 +752,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             agent_name=agent_name,
             context=parent_context,
             _attach_to_context=self._attach_to_context,
+            conversation_id=_conversation_id(metadata),
         )
         tool_invocation.tool_description = description
         tool_invocation.arguments = arguments
@@ -816,6 +817,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             request_model=request_model,
             context=parent_context,
             _attach_to_context=self._attach_to_context,
+            conversation_id=_conversation_id(metadata),
         )
         retrieval.query_text = query
         self._invocation_manager.add_invocation_state(
