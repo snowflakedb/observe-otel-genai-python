@@ -34,13 +34,13 @@ Check out the `manual example <examples/manual>`_ for more details.
 .. code-block:: python
 
     from opentelemetry.instrumentation.genai.claude_agent_sdk import ClaudeAgentSDKInstrumentor
-    from claude_agent_sdk import ClaudeAgentOptions, AgentDefinition, AssistantMessage, TextBlock, query
 
     # Instrument Claude Agent SDK
     ClaudeAgentSDKInstrumentor().instrument()
 
     # Use Claude Agent SDK as normal
     import anyio
+    from claude_agent_sdk import ClaudeAgentOptions, AgentDefinition, AssistantMessage, TextBlock, query
 
     async def main():
         options = ClaudeAgentOptions(
@@ -66,6 +66,12 @@ Check out the `manual example <examples/manual>`_ for more details.
 
     anyio.run(main)
 
+Call ``instrument()`` before ``from claude_agent_sdk import query``. The
+instrumentation replaces ``query`` on the ``claude_agent_sdk`` module, so a name
+imported earlier still points at the original function and its calls are not
+traced. Calls to ``claude_agent_sdk.query(...)`` and ``ClaudeSDKClient`` are
+traced regardless of import order. This only matters for manual setup:
+``opentelemetry-instrument`` instruments before your code runs.
 
 With ``ClaudeSDKClient``, each turn of a connection gets its own
 ``invoke_agent`` span, however many ``receive_response()`` calls read it. The

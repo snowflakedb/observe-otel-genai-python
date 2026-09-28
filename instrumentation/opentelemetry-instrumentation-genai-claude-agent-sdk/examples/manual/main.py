@@ -12,13 +12,13 @@ an OTLP compatible endpoint.
 """
 
 import anyio
+import claude_agent_sdk
 from claude_agent_sdk import (
     AgentDefinition,
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
     TextBlock,
-    query,
 )
 
 # NOTE: OpenTelemetry Python Logs and Events APIs are in beta
@@ -91,7 +91,9 @@ async def code_reviewer_example():
         include_partial_messages=True,
     )
 
-    async for message in query(
+    # Looked up on the module at call time: instrument() runs after the
+    # imports above.
+    async for message in claude_agent_sdk.query(
         prompt="Use the code-reviewer agent to review the code in this file",
         options=options,
     ):
@@ -128,7 +130,7 @@ async def documentation_writer_example():
         include_partial_messages=True,
     )
 
-    async for message in query(
+    async for message in claude_agent_sdk.query(
         prompt="Use the doc-writer agent to explain what AgentDefinition is used for",
         options=options,
     ):
