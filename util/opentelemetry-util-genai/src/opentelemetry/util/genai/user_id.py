@@ -27,6 +27,9 @@ from opentelemetry.context import (
     get_value,
     set_value,
 )
+from opentelemetry.util.genai._observe_library_user_id import (
+    capture_user_id_from_library,
+)
 
 _USER_ID_KEY = create_key("observe.util.genai.user_id")
 
@@ -50,3 +53,18 @@ def using_user_id(user_id: str) -> Iterator[None]:
         yield
     finally:
         detach(token)
+
+
+def with_library_user_id(
+    user_id: str | None, context: Context | None = None
+) -> Context | None:
+    """For instrumentations: add a user id the instrumented library was given.
+
+    It overrides one set with ``using_user_id``. Returns ``context`` unchanged
+    when ``user_id`` is empty or ``OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY``
+    is not ``true``, so the result can be passed straight to a
+    ``TelemetryHandler`` factory's ``context``.
+    """
+    if not user_id or not capture_user_id_from_library():
+        return context
+    return with_user_id(user_id, context)
