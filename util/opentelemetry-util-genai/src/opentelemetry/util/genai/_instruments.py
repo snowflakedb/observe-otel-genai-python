@@ -10,6 +10,9 @@ from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from opentelemetry.util.genai._observe_metric_conversation_id import (
     metrics_include_conversation_id,
 )
+from opentelemetry.util.genai._observe_metric_user_id import (
+    metrics_include_user_id,
+)
 
 _GEN_AI_CLIENT_OPERATION_DURATION_BUCKETS: Final = [
     0.01,
@@ -191,6 +194,7 @@ class _Instruments:
             explicit_bucket_boundaries_advisory=_GEN_AI_CLIENT_INFERENCE_OPERATION_TOKENS_BUCKETS,
         )
         self.include_conversation_id: bool = metrics_include_conversation_id()
+        self.include_user_id: bool = metrics_include_user_id()
 
 
 __all__ = ["_Instruments"]

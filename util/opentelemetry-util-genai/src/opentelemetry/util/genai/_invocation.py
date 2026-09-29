@@ -132,6 +132,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         if agent_name:
             context = with_agent_name(agent_name, context)
         self._user_id: str | None = get_user_id(context)
+        self._put_user_id_on_metrics()
         self._start_attributes: dict[str, AttributeValue] = {
             GenAI.GEN_AI_OPERATION_NAME: operation_name,
             **(start_attributes or {}),
@@ -252,6 +253,11 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         else:
             self.metric_attributes.pop(GenAI.GEN_AI_CONVERSATION_ID, None)
         self._invalidate_metric_attributes()
+
+    def _put_user_id_on_metrics(self) -> None:
+        if self._instruments.include_user_id and self._user_id:
+            self.metric_attributes[USER_ID] = self._user_id
+            self._invalidate_metric_attributes()
 
     def _get_metric_token_counts(self) -> dict[str, int]:  # pylint: disable=no-self-use
         """Return {token_type: count} for token histogram recording."""
@@ -421,6 +427,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
                 self.span.set_attribute(USER_ID, self._user_id)
             # Again, in case metric_attributes was replaced since.
             self._put_conversation_id_on_metrics()
+            self._put_user_id_on_metrics()
             self._apply_finish(error)
         finally:
             self.suspend()

@@ -188,6 +188,13 @@ Set ``OBSERVE_GENAI_METRICS_INCLUDE_CONVERSATION_ID`` to ``true`` (case-insensit
 down by conversation. It is off by default: semconv keeps the conversation id off metrics because
 each conversation adds new time series. Specific to this fork.
 
+User ID on Metrics
+^^^^^^^^^^^^^^^^^^
+
+Set ``OBSERVE_GENAI_METRICS_INCLUDE_USER_ID`` to ``true`` (case-insensitive) to add ``user.id``
+to every metric this package records, not only to spans. It is off by default, because each user
+adds new time series. Specific to this fork.
+
 Completion Hook / Upload
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
