@@ -66,6 +66,26 @@ invocation. An agent always sets its own name, so the nearest agent wins, and on
 hides an outer agent's. A value an instrumentation sets itself, on ``attributes`` or
 ``metric_attributes``, takes precedence.
 
+User ID
+-------
+
+This fork records the standard OpenTelemetry ``user.id`` attribute on every GenAI span started
+while a user id is set. Wrap the code that serves a user in ``using_user_id``:
+
+.. code-block:: python
+
+    from opentelemetry.util.genai.user_id import using_user_id
+
+    with using_user_id("user-123"):
+        agent.run(...)
+
+The id travels on the OTel Context, so it reaches spans created by any instrumentation package,
+and by ``TelemetryHandler`` directly. It is not put in baggage, because baggage is sent in the
+headers of outgoing requests, including those to the model provider. To set it for a single
+operation, and the operations it starts, pass ``context=with_user_id("user-123")`` to a
+``TelemetryHandler`` factory such as ``handler.inference(...)``. A value an instrumentation sets on
+``attributes`` takes precedence.
+
 
 Inference Token Metrics
 -----------------------
