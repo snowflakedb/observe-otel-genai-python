@@ -20,6 +20,9 @@ from opentelemetry.metrics import Counter, Histogram
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
+from opentelemetry.semconv._incubating.attributes.user_attributes import (
+    USER_ID,
+)
 from opentelemetry.semconv.attributes import error_attributes
 from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
@@ -45,6 +48,7 @@ from opentelemetry.util.genai.types import (
     SystemInstructionPart,
     ToolDefinition,
 )
+from opentelemetry.util.genai.user_id import get_user_id
 from opentelemetry.util.genai.utils import (
     ContentCapturingMode,
     gen_ai_json_dumps,
@@ -127,6 +131,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         )
         if agent_name:
             context = with_agent_name(agent_name, context)
+        self._user_id: str | None = get_user_id(context)
         self._start_attributes: dict[str, AttributeValue] = {
             GenAI.GEN_AI_OPERATION_NAME: operation_name,
             **(start_attributes or {}),
@@ -412,6 +417,8 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
                 self.span.set_attribute(
                     GenAI.GEN_AI_CONVERSATION_ID, self.conversation_id
                 )
+            if self._user_id:
+                self.span.set_attribute(USER_ID, self._user_id)
             # Again, in case metric_attributes was replaced since.
             self._put_conversation_id_on_metrics()
             self._apply_finish(error)
