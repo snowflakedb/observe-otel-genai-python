@@ -1,22 +1,29 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""``user.id`` set on the Context reaches every GenAI span. Specific to this
-fork."""
+"""``user.id`` set on the Context reaches every GenAI span, and a library's own
+user id is added behind a flag. Specific to this fork."""
 
 from __future__ import annotations
 
+import os
 import threading
+from unittest import mock
 
+from opentelemetry import context as otel_context
 from opentelemetry.semconv._incubating.attributes.user_attributes import (
     USER_ID,
 )
 from opentelemetry.test.test_base import TestBase
+from opentelemetry.util.genai._observe_library_user_id import (
+    OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY,
+)
 from opentelemetry.util.genai.handler import TelemetryHandler
 from opentelemetry.util.genai.types import LLMInvocation
 from opentelemetry.util.genai.user_id import (
     get_user_id,
     using_user_id,
+    with_library_user_id,
     with_user_id,
 )
 
@@ -146,3 +153,44 @@ class UserIdTest(TestBase):
         for metric in self.get_sorted_metrics() or []:
             for point in metric.data.data_points:
                 self.assertNotIn(USER_ID, point.attributes, metric.name)
+
+
+class WithLibraryUserIdTest(TestBase):
+    def _set_flag(self, value: str | None) -> None:
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY, None)
+        if value is not None:
+            os.environ[OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY] = value
+
+    def test_off_by_default(self) -> None:
+        self._set_flag(None)
+        parent = otel_context.get_current()
+        self.assertIs(with_library_user_id("user-123", parent), parent)
+        self.assertIsNone(with_library_user_id("user-123"))
+
+    def test_the_flag_is_case_insensitive_and_only_true_enables_it(
+        self,
+    ) -> None:
+        for flag in ("1", "yes"):
+            self._set_flag(flag)
+            self.assertIsNone(with_library_user_id("user-123"))
+        self._set_flag(" TRUE ")
+        self.assertEqual(
+            get_user_id(with_library_user_id("user-123")), "user-123"
+        )
+
+    def test_an_empty_id_leaves_the_context_alone(self) -> None:
+        self._set_flag("true")
+        parent = with_user_id("from-helper")
+        for empty in (None, ""):
+            self.assertIs(with_library_user_id(empty, parent), parent)
+
+    def test_it_overrides_using_user_id(self) -> None:
+        self._set_flag("true")
+        with using_user_id("from-helper"):
+            self.assertEqual(
+                get_user_id(with_library_user_id("from-library")),
+                "from-library",
+            )

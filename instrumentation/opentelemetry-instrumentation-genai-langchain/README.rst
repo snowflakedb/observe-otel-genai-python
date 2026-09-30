@@ -178,6 +178,21 @@ programmatically, which takes precedence over the environment variable::
 
     LangChainInstrumentor().instrument(completion_hook=my_hook)
 
+Recording the User
+******************
+
+To record ``user.id``, pass it as ``user_id`` in the run's metadata and set
+``OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY=true``. LangChain passes the metadata on to the
+run's children, so every span the instrumentation creates for the run records it::
+
+    graph.invoke(inputs, config={"metadata": {"user_id": "user-123"}})
+
+It is off by default. Without it, or when the metadata has no ``user_id``, spans record the id set
+with ``opentelemetry.util.genai.user_id.using_user_id``, if any. When both are set, the metadata
+value wins. With the async API, spans created by other instrumentations under the run, such as
+HTTP client spans, do not get the metadata value, for the same reason as the context propagation
+limitation below.
+
 Known Limitations
 -----------------
 

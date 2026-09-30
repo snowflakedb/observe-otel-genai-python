@@ -1,0 +1,1 @@
+Record a run's `user_id` metadata as `user.id` on its spans when `OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY` is `true`.

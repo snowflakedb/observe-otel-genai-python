@@ -86,6 +86,12 @@ operation, and the operations it starts, pass ``context=with_user_id("user-123")
 ``TelemetryHandler`` factory such as ``handler.inference(...)``. A value an instrumentation sets on
 ``attributes`` takes precedence.
 
+Some libraries accept a user id of their own, such as a LangChain run's ``user_id`` metadata. Set
+``OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY`` to ``true`` to let instrumentations record it. It is
+off by default, so an id passed to a library does not start showing up in telemetry on upgrade.
+When it is on, the library's id takes precedence over one set with ``using_user_id``. The flag is
+read each time an instrumentation starts an operation.
+
 
 Inference Token Metrics
 -----------------------

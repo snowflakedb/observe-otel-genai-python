@@ -18,6 +18,7 @@ from langchain_core.outputs import (
     LLMResult,
 )
 
+from opentelemetry.context import Context
 from opentelemetry.instrumentation.genai.langchain.agent_context import (
     claim_agent,
 )
@@ -61,6 +62,7 @@ from opentelemetry.util.genai.types import (
     TextPart,
     ToolCallRequestPart,
 )
+from opentelemetry.util.genai.user_id import with_library_user_id
 
 SUPPORTED_RAPI_RESPONSE_HEADERS = ("x-ms-served-model",)
 
@@ -70,6 +72,14 @@ CONVERSATION_ID_METADATA_KEYS = (
     "session_id",
     "conversation_id",
 )
+
+USER_ID_METADATA_KEY = "user_id"
+
+
+def _user_id(metadata: dict[str, Any] | None) -> str | None:
+    """Return the user id from a run's own metadata, if it is a string."""
+    user_id = metadata.get(USER_ID_METADATA_KEY) if metadata else None
+    return user_id if isinstance(user_id, str) else None
 
 
 def _conversation_id(metadata: dict[str, Any] | None) -> str | None:
@@ -207,9 +217,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             agent_announcement is not None,
             ancestor_agent_names,
         )
-        parent_context = self._invocation_manager.get_parent_context(
-            parent_run_id
-        )
+        parent_context = self._parent_context(parent_run_id, metadata)
         conversation_id = _conversation_id(metadata)
         capture_content = self._telemetry_handler.should_capture_content()
         if operation == OperationName.INVOKE_WORKFLOW:
@@ -434,9 +442,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         if self._telemetry_handler.should_capture_content():
             input_messages = to_input_messages(flattened)
 
-        parent_context = self._invocation_manager.get_parent_context(
-            parent_run_id
-        )
+        parent_context = self._parent_context(parent_run_id, metadata)
         llm_invocation = self._telemetry_handler.inference(
             provider,
             request_model=request_model,
@@ -742,9 +748,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             except (json.JSONDecodeError, ValueError):
                 arguments = input_str
         agent_name, _ = self._find_agent_context(parent_run_id)
-        parent_context = self._invocation_manager.get_parent_context(
-            parent_run_id
-        )
+        parent_context = self._parent_context(parent_run_id, metadata)
 
         tool_invocation = self._telemetry_handler.tool(
             name=name,
@@ -809,9 +813,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         meta = metadata or {}
         provider = meta.get("ls_vector_store_provider") or None
         request_model = meta.get("ls_embedding_model") or None
-        parent_context = self._invocation_manager.get_parent_context(
-            parent_run_id
-        )
+        parent_context = self._parent_context(parent_run_id, metadata)
         retrieval = self._telemetry_handler.retrieval(
             provider=provider,
             request_model=request_model,
@@ -863,6 +865,14 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
 
         invocation.fail(error)
         self._invocation_manager.delete_invocation_state(run_id=run_id)
+
+    def _parent_context(
+        self, parent_run_id: UUID | None, metadata: dict[str, Any] | None
+    ) -> Context | None:
+        return with_library_user_id(
+            _user_id(metadata),
+            self._invocation_manager.get_parent_context(parent_run_id),
+        )
 
     def _find_agent_context(
         self, run_id: UUID | None
