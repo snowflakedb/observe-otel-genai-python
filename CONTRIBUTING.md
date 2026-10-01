@@ -59,10 +59,11 @@ The import paths are our own so that our packages and upstream's can be
 installed together without overwriting each other's files.
 `scripts/rename_namespace.py` moves upstream's `opentelemetry.util.genai` and
 `opentelemetry.instrumentation.genai.*` under `observeinc`, and
-`scripts/sync_upstream.sh` applies the same rename to upstream before merging,
-so the rename itself never conflicts. Class names, environment variables, entry
-point groups, and directory names are upstream's, unchanged. Don't rename
-anything else: every extra difference is a conflict on the next sync.
+`scripts/sync_upstream.sh` applies the same rename to upstream's code before
+bringing in its changes, so the rename itself never conflicts. Class names,
+environment variables, entry point groups, and directory names are upstream's,
+unchanged. Don't rename anything else: every extra difference is a conflict on
+the next sync.
 
 Package versions still match upstream's. We plan to move to our own version
 line, shared by all packages, before the first release.

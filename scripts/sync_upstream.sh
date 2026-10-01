@@ -1,26 +1,24 @@
 #!/bin/bash
-# Merge upstream opentelemetry-python-genai into this fork.
+# Bring upstream opentelemetry-python-genai changes into this fork.
 #
 # This fork differs from upstream in two mechanical ways: it carries only some of
 # upstream's packages (the prune), and it moves them under the `observeinc`
-# import namespace (scripts/rename_namespace.py). Merging upstream as-is would
-# make git reconcile both with every upstream change, so this script first
-# applies the same prune and rename to a copy of upstream and merges that copy
-# instead. Each copy is committed with two parents: the upstream commit it came
-# from, and the copy the previous sync merged. Git then compares the new copy
-# with the previous one, which differ only by what upstream changed, so the
-# rename never conflicts. What is left to resolve is:
+# import namespace (scripts/rename_namespace.py).
 #
-#   1. Upstream changed a file we deleted outside the prune. Kept deleted here,
-#      and listed so you can check none of them matter.
-#   2. A file we carry at a path the prune drops from upstream (for example our
-#      own RELEASING.md). Kept as ours here.
-#   3. Upstream changed a file we also changed. Left for you.
+# UPSTREAM_COMMIT records the upstream commit we last synced to. This
+# script prunes and renames a copy of that commit and of the new one, and
+# applies the difference between the two copies to our tree as a three-way
+# merge. Both copies already carry the prune and the rename, so the difference
+# is only what upstream changed. What is left to resolve is:
+#
+#   1. Upstream changed a file we deleted. Kept deleted here, and listed so you
+#      can check none of them matter.
+#   2. Upstream changed a file we also changed. Left for you.
 #
 # Upstream is the source of truth: keep our patch set small, and drop a local
 # change once its upstream equivalent ships.
 #
-# The merge is never committed: review it, run the tests
+# Nothing is committed: review the result, run the tests
 # (uvx --with tox-uv tox), then commit yourself.
 #
 # Usage: scripts/sync_upstream.sh [upstream-ref]     (default: main)
@@ -45,14 +43,14 @@ fi
 
 echo "==> Fetching $UPSTREAM_REMOTE/$UPSTREAM_REF"
 git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_REF"
-upstream_sha="$(git rev-parse "$UPSTREAM_REMOTE/$UPSTREAM_REF")"
+old_sha="$(cat UPSTREAM_COMMIT)"
+new_sha="$(git rev-parse "$UPSTREAM_REMOTE/$UPSTREAM_REF")"
 
-PREPARED_SUBJECT="Prune and rename upstream"
-previous_prepared="$(git log -1 --format=%H --grep="^$PREPARED_SUBJECT " HEAD)"
-if [ -z "$previous_prepared" ]; then
-  echo "No earlier '$PREPARED_SUBJECT' commit in this branch's history." >&2
-  exit 1
+if [ "$old_sha" = "$new_sha" ]; then
+  echo "Already at upstream ${new_sha:0:8}."
+  exit 0
 fi
+echo "==> Upstream ${old_sha:0:8}..${new_sha:0:8}: $(git rev-list --count "$old_sha..$new_sha") commit(s)"
 
 # Paths this fork does not carry.
 KEEP_UNDER_INSTRUMENTATION='^instrumentation/(AGENTS\.md|CLAUDE\.md|opentelemetry-instrumentation-genai-(claude-agent-sdk|langchain|openai|openai-agents)/)'
@@ -70,31 +68,42 @@ PRUNED_PATHS=(
   .github/copilot-instructions.md
 )
 
-echo "==> Preparing upstream ${upstream_sha:0:8}: prune, then rename to observeinc"
-prep_dir="$(mktemp -d -t sync-upstream.XXXXXX)"
-git worktree add -q --detach "$prep_dir" "$upstream_sha"
-trap 'git worktree remove --force "$prep_dir"' EXIT
-(
-  cd "$prep_dir"
-  {
-    git ls-files -- instrumentation | grep -Ev "$KEEP_UNDER_INSTRUMENTATION" || true
-    git ls-files -- .github/workflows | grep -Ev "$KEEP_WORKFLOWS" || true
-    git ls-files -- "${PRUNED_PATHS[@]}" 2>/dev/null || true
-  } | sort -u | xargs -r git rm -q -f --
-  python3 "$REPO_ROOT/scripts/rename_namespace.py" >/dev/null
-  git add -A
-)
-prepared_tree="$(git -C "$prep_dir" write-tree)"
-prepared_sha="$(git commit-tree "$prepared_tree" -p "$upstream_sha" -p "$previous_prepared" \
-  -m "$PREPARED_SUBJECT ${upstream_sha:0:8} for this fork")"
+old_dir="$(mktemp -d -t sync-upstream.XXXXXX)"
+new_dir="$(mktemp -d -t sync-upstream.XXXXXX)"
+trap 'git worktree remove --force "$old_dir"; git worktree remove --force "$new_dir"' EXIT
 
-echo "==> Merging the prepared upstream (no commit)"
+# Checks out upstream commit $1 in directory $2, prunes and renames it, and prints
+# a commit holding the result. The commit has no parent: it only exists to give
+# the merge below its inputs.
+prepare() {
+  git worktree add -q --detach "$2" "$1"
+  (
+    cd "$2"
+    {
+      git ls-files -- instrumentation | grep -Ev "$KEEP_UNDER_INSTRUMENTATION" || true
+      git ls-files -- .github/workflows | grep -Ev "$KEEP_WORKFLOWS" || true
+      git ls-files -- "${PRUNED_PATHS[@]}" 2>/dev/null || true
+    } | sort -u | xargs -r git rm -q -f --
+    python3 "$REPO_ROOT/scripts/rename_namespace.py" >/dev/null
+    git add -A
+    git commit-tree "$(git write-tree)" -m "upstream ${1:0:8}, pruned and renamed"
+  )
+}
+
+echo "==> Pruning and renaming both upstream commits"
+old_copy="$(prepare "$old_sha" "$old_dir")"
+new_copy="$(prepare "$new_sha" "$new_dir")"
+
+echo "==> Applying upstream's changes"
 merge_log="$(mktemp -t sync-upstream-merge.XXXXXX)"
-git merge --no-commit --no-ff "$prepared_sha" >"$merge_log" 2>&1 || true
+export "GITHEAD_$new_copy=upstream ${new_sha:0:8}"
+git merge-recursive "$old_copy" -- HEAD "$new_copy" >"$merge_log" 2>&1 || true
 echo "    full merge output: $merge_log"
+echo "$new_sha" >UPSTREAM_COMMIT
+git add UPSTREAM_COMMIT
 
-# During a merge "us" is this branch: DU is a file we deleted that upstream
-# changed, UD a file we have that the prepared upstream does not.
+# During the merge "us" is this branch: DU is a file we deleted that upstream
+# changed.
 deleted_by_us=$(git status --porcelain | sed -n 's/^DU //p')
 if [ -n "$deleted_by_us" ]; then
   count=$(echo "$deleted_by_us" | wc -l | tr -d ' ')
@@ -102,16 +111,6 @@ if [ -n "$deleted_by_us" ]; then
   echo "$deleted_by_us" | sed 's/^/    /'
   echo "$deleted_by_us" | xargs -r git rm -q -f --
 fi
-
-# A UD file still present in real upstream was dropped by the prune, so it is
-# ours to keep. One upstream itself deleted is a real conflict.
-deleted_by_them=$(git status --porcelain | sed -n 's/^UD //p')
-for path in $deleted_by_them; do
-  if git cat-file -e "$upstream_sha:$path" 2>/dev/null; then
-    git checkout -q --ours -- "$path"
-    git add -- "$path"
-  fi
-done
 
 # An emptied directory still matches the uv workspace glob and breaks uv lock.
 find instrumentation -mindepth 1 -type d -empty -delete 2>/dev/null || true
@@ -125,15 +124,15 @@ else
   echo "==> No conflicts left to resolve by hand."
 fi
 
-cat <<'NEXT'
+cat <<NEXT
 
 Next:
   UV_DEFAULT_INDEX=https://pypi.org/simple uv lock   # if any dependency moved
   uvx --with tox-uv tox            # run everything
-  git status                       # review, then commit the merge yourself
+  git status                       # review, then commit, for example as
+                                   # "Sync upstream ${old_sha:0:8}..${new_sha:0:8}"
 
-main only takes PRs. Push the merge to a branch and open a PR with the
-"Skip Changelog" label (upstream releases edit CHANGELOG.md directly). Merge
-it with "Create a merge commit": a squash or rebase drops upstream's history,
-and the next sync would conflict on everything again.
+main only takes PRs. Push the sync to a branch and open a PR with the
+"Skip Changelog" label (upstream releases edit CHANGELOG.md directly).
+To undo the sync instead: git reset --hard HEAD
 NEXT
