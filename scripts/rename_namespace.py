@@ -4,22 +4,19 @@
 
 """Move this fork's packages from upstream's import paths to our own.
 
-Upstream ships the same code under ``opentelemetry.util.genai`` and
-``opentelemetry.instrumentation.genai.*``. Keeping those paths would make our
-distributions and upstream's overwrite each other's files when installed
-together, so every package moves under ``observeinc``:
+Our packages import from ``observeinc`` so that they share no files with
+upstream's when both are installed:
 
     opentelemetry.util.genai               -> observeinc.util.genai
     opentelemetry.instrumentation.genai.*  -> observeinc.instrumentation.genai.*
     opentelemetry.test_util_genai          -> observeinc.test_util_genai
 
-The rename is purely mechanical and gives the same result every time it runs,
-so sync_upstream.sh applies it to upstream before merging. Both sides of the
-merge then carry the same rename, and only real code changes can conflict.
+sync_upstream.sh runs this on copies of upstream, so it must give the same
+result every time it runs.
 
 Changelogs are left alone: they describe releases made under the old paths.
 
-Usage: scripts/rename_namespace.py   (run from anywhere inside the repo)
+Usage: scripts/rename_namespace.py   (renames the repo it is run in)
 """
 
 from __future__ import annotations
@@ -58,7 +55,8 @@ def git(*args: str) -> str:
     ).stdout
 
 
-def move_packages(root: Path) -> None:
+def move_packages(root: Path) -> int:
+    moved = 0
     for src in sorted(root.glob("*/*/src/opentelemetry")):
         for module in MODULES:
             old_dir = src / module.replace(".", "/")
@@ -67,12 +65,14 @@ def move_packages(root: Path) -> None:
             new_dir = src.parent / NAMESPACE / module.replace(".", "/")
             new_dir.parent.mkdir(parents=True, exist_ok=True)
             git("mv", str(old_dir), str(new_dir))
+            moved += 1
         # What is left of opentelemetry/ is empty directories and __pycache__.
         if not any(
             p.is_file() and "__pycache__" not in p.parts
             for p in src.rglob("*")
         ):
             shutil.rmtree(src)
+    return moved
 
 
 def rewrite_references(root: Path) -> list[Path]:
@@ -113,7 +113,11 @@ def reformat(paths: list[Path]) -> None:
 
 def main() -> int:
     root = Path(git("rev-parse", "--show-toplevel").strip())
-    move_packages(root)
+    # On an already renamed tree, such as this repo, rewriting references would
+    # also rewrite the old paths this script and its docs mention on purpose.
+    if not move_packages(root):
+        print("Nothing to rename: no package is under src/opentelemetry.")
+        return 0
     changed = rewrite_references(root)
     reformat(changed)
     print(f"Renamed to {NAMESPACE}; rewrote {len(changed)} file(s).")
