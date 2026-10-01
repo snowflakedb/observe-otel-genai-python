@@ -11,7 +11,7 @@ from langchain_core.language_models.fake_chat_models import (
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from opentelemetry.test_util_genai._observe_token_metrics import (
+from observeinc.test_util_genai._observe_token_metrics import (
     assert_token_metrics_match_spans,
 )
 

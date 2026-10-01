@@ -17,16 +17,16 @@ from unittest import mock
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.test_util_genai.conformance import (
+    ExpectedViolation,
+    Scenario,
+)
+from observeinc.test_util_genai.instrumentor import instrument
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.test.weaver_live_check import LiveCheckReport
-from opentelemetry.test_util_genai.conformance import (
-    ExpectedViolation,
-    Scenario,
-)
-from opentelemetry.test_util_genai.instrumentor import instrument
 
 
 class InferenceStreamingScenario(Scenario):

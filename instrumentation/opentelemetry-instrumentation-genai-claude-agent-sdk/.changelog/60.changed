@@ -1,2 +1,2 @@
 Renamed the distribution to `observe-instrumentation-genai-claude-agent-sdk`. The
-import path is unchanged: `opentelemetry.instrumentation.genai.claude_agent_sdk`.
+import path is unchanged: `observeinc.instrumentation.genai.claude_agent_sdk`.

@@ -20,17 +20,17 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
-from opentelemetry.instrumentation.genai.langchain.callback_handler import (
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
+from observeinc.test_util_genai.instrumentor import instrument
+from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
-from opentelemetry.test_util_genai.instrumentor import instrument
-from opentelemetry.util.genai.handler import TelemetryHandler
 
 
 @pytest.mark.parametrize(

@@ -5,22 +5,22 @@ import os
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
-from opentelemetry.util.genai.completion_hook import _NoOpCompletionHook
-from opentelemetry.util.genai.environment_variables import (
+from observeinc.util.genai.completion_hook import _NoOpCompletionHook
+from observeinc.util.genai.environment_variables import (
     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
     OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT,
 )
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import (
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import (
     FunctionToolDefinition,
     InputMessage,
     OutputMessage,
     TextPart,
+)
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
 )
 
 _CAPTURE_EVENT_ENV = {

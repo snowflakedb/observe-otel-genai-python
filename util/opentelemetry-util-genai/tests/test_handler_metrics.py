@@ -6,17 +6,17 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import Error
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import Error
 
 _DEFAULT_SCHEMA_URL = Schemas.V1_37_0.value
 
-SCOPE = "opentelemetry.util.genai.handler"
+SCOPE = "observeinc.util.genai.handler"
 
 
 class TelemetryHandlerMetricsTest(TestBase):

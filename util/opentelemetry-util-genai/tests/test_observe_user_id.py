@@ -10,22 +10,22 @@ import os
 import threading
 from unittest import mock
 
-from opentelemetry import context as otel_context
-from opentelemetry.semconv._incubating.attributes.user_attributes import (
-    USER_ID,
-)
-from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai._observe_library_user_id import (
+from observeinc.util.genai._observe_library_user_id import (
     OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY,
 )
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import LLMInvocation
-from opentelemetry.util.genai.user_id import (
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import LLMInvocation
+from observeinc.util.genai.user_id import (
     get_user_id,
     using_user_id,
     with_library_user_id,
     with_user_id,
 )
+from opentelemetry import context as otel_context
+from opentelemetry.semconv._incubating.attributes.user_attributes import (
+    USER_ID,
+)
+from opentelemetry.test.test_base import TestBase
 
 
 class UserIdTest(TestBase):

@@ -55,7 +55,7 @@ calls nested underneath.
     from langgraph.graph import END, START, StateGraph
     from langgraph.graph.message import add_messages
 
-    from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+    from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
 
     LangChainInstrumentor().instrument()
 
@@ -188,7 +188,7 @@ run's children, so every span the instrumentation creates for the run records it
     graph.invoke(inputs, config={"metadata": {"user_id": "user-123"}})
 
 It is off by default. Without it, or when the metadata has no ``user_id``, spans record the id set
-with ``opentelemetry.util.genai.user_id.using_user_id``, if any. When both are set, the metadata
+with ``observeinc.util.genai.user_id.using_user_id``, if any. When both are set, the metadata
 value wins. With the async API, spans created by other instrumentations under the run, such as
 HTTP client spans, do not get the metadata value, for the same reason as the context propagation
 limitation below.

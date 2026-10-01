@@ -1,0 +1,1 @@
+Import as `observeinc.instrumentation.genai.langchain` instead of upstream's path, so this package can be installed next to the upstream OpenTelemetry GenAI packages without overwriting their files.

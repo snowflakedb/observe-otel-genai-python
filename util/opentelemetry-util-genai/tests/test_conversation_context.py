@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import unittest
 
+from observeinc.util.genai._conversation_context import (
+    get_ambient_conversation_id,
+    with_conversation_id,
+)
+from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry.context import attach, detach
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -17,11 +22,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
-from opentelemetry.util.genai._conversation_context import (
-    get_ambient_conversation_id,
-    with_conversation_id,
-)
-from opentelemetry.util.genai.handler import TelemetryHandler
 
 
 class TestConversationContextPrimitives(unittest.TestCase):

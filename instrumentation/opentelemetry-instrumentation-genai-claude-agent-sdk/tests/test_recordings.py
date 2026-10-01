@@ -22,8 +22,8 @@ from typing import Any
 import pytest
 from claude_agent_sdk._internal.message_parser import parse_message
 
-from opentelemetry.instrumentation.genai.claude_agent_sdk._run import AgentRun
-from opentelemetry.util.genai.handler import TelemetryHandler
+from observeinc.instrumentation.genai.claude_agent_sdk._run import AgentRun
+from observeinc.util.genai.handler import TelemetryHandler
 
 RECORDINGS = sorted(
     Path(__file__).parent.joinpath("recordings").glob("*.jsonl")

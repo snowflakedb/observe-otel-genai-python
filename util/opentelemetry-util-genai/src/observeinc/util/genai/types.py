@@ -1,0 +1,412 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from enum import Enum
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    TypeAlias,
+    Union,
+)
+
+if TYPE_CHECKING:
+    from observeinc.util.genai._inference_invocation import (  # pylint: disable=useless-import-alias
+        LLMInvocation as LLMInvocation,  # noqa: PLC0414
+    )
+    from observeinc.util.genai._invocation import (  # pylint: disable=useless-import-alias
+        GenAIInvocation as GenAIInvocation,  # noqa: PLC0414
+    )
+
+
+class ContentCapturingMode(Enum):
+    # Do not capture content (default).
+    NO_CONTENT = 0
+    # Only capture content in spans.
+    SPAN_ONLY = 1
+    # Only capture content in events.
+    EVENT_ONLY = 2
+    # Capture content in both spans and events.
+    SPAN_AND_EVENT = 3
+
+
+@dataclass()
+class GenericPart:
+    """Represents an arbitrary message part with any type and properties.
+    This allows for extensibility with custom message part types.
+
+    This model is specified as part of semconv in `GenAI messages Python models - GenericPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    type: str
+
+
+@dataclass()
+class ToolCallRequestPart:
+    """Represents a tool call requested by the model (message part only).
+
+    Use this for tool calls in message history. For execution tracking with spans
+    and metrics, use ToolInvocation instead.
+
+    This model is specified as part of semconv in `GenAI messages Python models - ToolCallRequestPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    arguments: Any
+    name: str
+    id: str | None
+    type: Literal["tool_call"] = "tool_call"
+
+
+@dataclass()
+class ToolCallResponsePart:
+    """Represents a tool call result sent to the model or a built-in tool call outcome and details
+
+    This model is specified as part of semconv in `GenAI messages Python models - ToolCallResponsePart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    response: Any
+    id: str | None
+    type: Literal["tool_call_response"] = "tool_call_response"
+
+
+@dataclass()
+class ServerToolCallPart:
+    """Represents a server-side tool call.
+
+    Server tool calls are executed by the model provider on the server side rather
+    than by the client application. Provider-specific tools (e.g., code_interpreter,
+    web_search) can have well-defined schemas defined by the respective providers.
+
+    This model is specified as part of semconv in `GenAI messages Python models - ServerToolCallPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    name: str
+    server_tool_call: Any
+    id: str | None = None
+    type: Literal["server_tool_call"] = "server_tool_call"
+
+
+@dataclass()
+class ServerToolCallResponsePart:
+    """Represents a server-side tool call response.
+
+    Contains the outcome and details of a server tool execution. Provider-specific
+    tools (e.g., code_interpreter, web_search) can have well-defined response schemas
+    defined by the respective providers.
+
+    This model is specified as part of semconv in `GenAI messages Python models - ServerToolCallResponsePart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    server_tool_call_response: Any
+    id: str | None = None
+    type: Literal["server_tool_call_response"] = "server_tool_call_response"
+
+
+@dataclass()
+class TextPart:
+    """Represents text content sent to or received from the model
+
+    This model is specified as part of semconv in `GenAI messages Python models - TextPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    content: str
+    type: Literal["text"] = "text"
+
+
+@dataclass()
+class ReasoningPart:
+    """Represents reasoning/thinking content received from the model
+
+    This model is specified as part of semconv in `GenAI messages Python models - ReasoningPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    content: str
+    type: Literal["reasoning"] = "reasoning"
+
+
+@dataclass()
+class CompactionPart:
+    """Represents a server-side context compaction event.
+
+    A bare ``CompactionPart`` (only ``type`` set) is the common case: it
+    records that the provider compacted the conversation without
+    returning an unencrypted summary. Requiring a payload field would
+    make providers that only return an opaque continuity value (e.g.
+    Anthropic) impossible to represent correctly.
+
+    This model is specified as part of semconv in `GenAI messages Python models - CompactionPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    id: str | None = None
+    content: str | None = None
+    type: Literal["compaction"] = "compaction"
+
+
+class Modality(str, Enum):
+    """Well-known content and token modalities.
+
+    Based on the `GenAI messages Python models - Modality
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    Token setters record only ``TEXT``, ``IMAGE``, and ``AUDIO``; other
+    modalities are ignored. Message parts accept all members and plain
+    strings for provider-specific modalities.
+    """
+
+    TEXT = "text"
+    IMAGE = "image"
+    VIDEO = "video"
+    AUDIO = "audio"
+    DOCUMENT = "document"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+ModalityTokens: TypeAlias = Iterable[tuple[Modality | str, int | None]]
+"""A per-modality token breakdown, as ``(modality, token count)`` pairs.
+
+The modality may be a plain string or an enum member carrying one as its
+``value``, so a provider SDK's own enum can be passed straight through.
+Token setters record only text, image, and audio; other modalities are ignored.
+"""
+
+
+@dataclass()
+class BlobPart:
+    """Represents blob binary data sent inline to the model
+
+    This model is specified as part of semconv in `GenAI messages Python models - BlobPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    mime_type: str | None
+    modality: Modality | str
+    content: bytes
+    type: Literal["blob"] = "blob"
+
+
+@dataclass()
+class FilePart:
+    """Represents an external referenced file sent to the model by file id
+
+    This model is specified as part of semconv in `GenAI messages Python models - FilePart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    mime_type: str | None
+    modality: Modality | str
+    file_id: str
+    type: Literal["file"] = "file"
+
+
+@dataclass()
+class UriPart:
+    """Represents an external referenced file sent to the model by URI
+
+    This model is specified as part of semconv in `GenAI messages Python models - UriPart
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    mime_type: str | None
+    modality: Modality | str
+    uri: str
+    type: Literal["uri"] = "uri"
+
+
+# Deprecated names for the message part classes, kept for backwards compatibility.
+# Delete this block once the deprecation period ends.
+
+ToolCallRequest = ToolCallRequestPart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`ToolCallRequestPart`, kept for backwards compatibility.
+"""
+
+ToolCallResponse = ToolCallResponsePart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`ToolCallResponsePart`, kept for backwards compatibility.
+"""
+
+ServerToolCall = ServerToolCallPart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`ServerToolCallPart`, kept for backwards compatibility.
+"""
+
+ServerToolCallResponse = ServerToolCallResponsePart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`ServerToolCallResponsePart`, kept for backwards compatibility.
+"""
+
+Text = TextPart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`TextPart`, kept for backwards compatibility.
+"""
+
+Reasoning = ReasoningPart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`ReasoningPart`, kept for backwards compatibility.
+"""
+
+Blob = BlobPart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`BlobPart`, kept for backwards compatibility.
+"""
+
+File = FilePart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`FilePart`, kept for backwards compatibility.
+"""
+
+Uri = UriPart
+"""
+.. deprecated:: 1.2b0
+    Alias of :class:`UriPart`, kept for backwards compatibility.
+"""
+
+
+@dataclass()
+class FunctionToolDefinition:
+    """Represents a function tool definition sent to the model"""
+
+    name: str
+    description: str | None
+    parameters: Any
+    type: Literal["function"] = "function"
+
+
+@dataclass()
+class GenericToolDefinition:
+    """Represents a generic tool definition sent to the model"""
+
+    name: str
+    type: str
+
+
+ToolDefinition = Union[FunctionToolDefinition, GenericToolDefinition]
+
+MessagePart = Union[
+    TextPart,
+    ToolCallRequestPart,
+    ToolCallResponsePart,
+    ServerToolCallPart,
+    ServerToolCallResponsePart,
+    BlobPart,
+    FilePart,
+    UriPart,
+    ReasoningPart,
+    CompactionPart,
+    GenericPart,  # For provider-specific types; prefer standard types above
+]
+
+
+FinishReason = Literal[
+    "content_filter", "error", "length", "stop", "tool_call", "compaction"
+]
+
+
+# Semconv schemas: model/gen-ai/gen-ai-{input,output}-messages.json (pinned by SEMCONV_GENAI_REF).
+class Role(str, Enum):
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
+SystemInstructionPart = Union[TextPart, GenericPart]
+
+
+@dataclass()
+class InputMessage:
+    role: str
+    parts: list[MessagePart]
+    name: str | None = None
+
+
+@dataclass()
+class OutputMessage:
+    role: str
+    parts: list[MessagePart]
+    finish_reason: str | FinishReason | None = None
+    """Deprecated. Report finish reasons in ``gen_ai.response.finish_reasons`` instead."""
+    name: str | None = None
+
+
+@dataclass()
+class RetrievalDocument:
+    """Represents a document retrieved from a vector database or search system.
+
+    Mirrors the `GenAI retrieval Python model - RetrievalDocument
+    <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+    """
+
+    id: str | None = None
+    score: float | None = None
+
+
+# Callback an instrumentor may supply to derive the error.type attribute from a
+# provider exception.
+# Returns None to fall back to the exception's fully qualified type name.
+ErrorTypeResolver: TypeAlias = Callable[[BaseException], "str | None"]
+
+
+@dataclass
+class Error:
+    message: str | None
+    type: str
+    """The ``error.type`` attribute value. A short, low-cardinality string (an
+    exception type name, an error code, etc.) — not necessarily a Python
+    exception class."""
+    exception: BaseException | None = None
+    """The originating exception, when the error was produced from one; ``None``
+    when built from an explicit ``type``/``message``."""
+
+    @classmethod
+    def from_exception(
+        cls,
+        exception: BaseException,
+        type_resolver: ErrorTypeResolver | None = None,
+    ) -> Error:
+        """Build an ``Error`` from an exception, deriving ``type`` and ``message``."""
+        from observeinc.util.genai.utils import (  # pylint: disable=import-outside-toplevel
+            fq_exception_type,
+        )
+
+        error_type = type_resolver(exception) if type_resolver else None
+        return cls(
+            message=str(exception),
+            type=error_type or fq_exception_type(exception),
+            exception=exception,
+        )
+
+
+def __getattr__(name: str) -> object:
+    if name == "GenAIInvocation":
+        import observeinc.util.genai.invocation as _inv  # pylint: disable=import-outside-toplevel
+
+        return _inv.GenAIInvocation
+    if name == "LLMInvocation":
+        from observeinc.util.genai._inference_invocation import (  # pylint: disable=import-outside-toplevel
+            LLMInvocation,
+        )
+
+        return LLMInvocation
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

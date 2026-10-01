@@ -66,9 +66,9 @@ ignore = [
 
 [tool.ruff.lint.isort]
 detect-same-package = false # to not consider instrumentation packages as first-party
-# `observe` is this fork's namespace; `opentelemetry` stays alongside it so that
+# `observeinc` is this fork's namespace; `opentelemetry` stays alongside it so that
 # import blocks in files carried from upstream keep their original grouping.
-known-first-party = ["observe", "opentelemetry"]
+known-first-party = ["observeinc", "opentelemetry"]
 known-third-party = [
   "pytest",
 ]

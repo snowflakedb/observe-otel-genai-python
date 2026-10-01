@@ -6,6 +6,11 @@ import os
 import unittest
 from unittest.mock import patch
 
+from observeinc.util.genai._inference_invocation import (
+    InferenceInvocation,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import ContentCapturingMode, Error
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
     InMemoryLogRecordExporter,
@@ -20,11 +25,6 @@ from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
 from opentelemetry.semconv.attributes import error_attributes
-from opentelemetry.util.genai._inference_invocation import (
-    InferenceInvocation,
-)
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import ContentCapturingMode, Error
 
 from .test_utils import (
     _create_input_message,

@@ -12,20 +12,20 @@ from langchain_aws import ChatBedrock
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.test_util_genai.vcr import scrub_response_headers_overwrite
 from opentelemetry.instrumentation._semconv import (
     _OpenTelemetrySemanticConventionStability,
     _StabilityMode,
 )
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
-from opentelemetry.test_util_genai.vcr import scrub_response_headers_overwrite
 
 # Loading the ``vcr`` module also activates the ``vcr_cassette_name`` override,
 # which strips the ``[parametrize]`` suffix so all ``content_capture`` matrix
 # cells share one cassette per test (the HTTP request is identical across
 # cells).
 pytest_plugins = [
-    "opentelemetry.test_util_genai.fixtures",
-    "opentelemetry.test_util_genai.vcr",
+    "observeinc.test_util_genai.fixtures",
+    "observeinc.test_util_genai.vcr",
 ]
 
 

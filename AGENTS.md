@@ -11,10 +11,12 @@ and the shared `observe-util-genai` utilities.
 This repo is a downstream fork of `open-telemetry/opentelemetry-python-genai`. Most of the guidance
 below came from upstream and still applies, but four things differ:
 
-- **Only the distribution names differ from upstream.** Directory layout, import paths, class
-  names, environment variables, and entry point groups are all upstream's, unchanged. The packages
-  are published as `observe-util-genai` and `observe-instrumentation-genai-<name>`. Don't rename
-  anything to make it look like ours — keeping it identical is what makes a sync cheap.
+- **Our own package and import names.** The packages are published as `observe-util-genai` and
+  `observe-instrumentation-genai-<name>`, and import as `observeinc.util.genai` and
+  `observeinc.instrumentation.genai.<name>`, so they can be installed next to upstream's.
+  `scripts/rename_namespace.py` does the rename, and the sync applies it to upstream too. Class
+  names, environment variables, entry point groups, and directory names stay upstream's. Don't
+  rename anything else — every extra difference is a conflict on the next sync.
 - **Where a change belongs.** Vendor-neutral work goes upstream, not here. See the top of
   [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Stay close to upstream.** Every line that differs from upstream is a conflict on the next sync.
@@ -60,15 +62,15 @@ comment - not in the PR description.
 - `util/opentelemetry-test-util-genai/` - shared test fixtures and assertion helpers
   (workspace-internal, not published)
 
-Instrumentation packages live under `src/opentelemetry/instrumentation/genai/{name}/` with their
+Instrumentation packages live under `src/observeinc/instrumentation/genai/{name}/` with their
 own `pyproject.toml` and `tests/`. The util package follows the equivalent layout under
-`src/opentelemetry/util/genai/`.
+`src/observeinc/util/genai/`.
 
 ## Package naming and versioning
 
 - Instrumentation packages are named `opentelemetry-instrumentation-genai-{lib}` and import as
-  `opentelemetry.instrumentation.genai.{lib}` — e.g. `opentelemetry-instrumentation-genai-anthropic`
-  imports `opentelemetry.instrumentation.genai.anthropic`. 
+  `observeinc.instrumentation.genai.{lib}` — e.g. `opentelemetry-instrumentation-genai-anthropic`
+  imports `observeinc.instrumentation.genai.anthropic`. 
 - Packages use the OpenTelemetry beta versioning format `MAJOR.MINORbN` (e.g. `1.0b0`). `version.py` carries a `.dev`
   suffix during development (`1.0b0.dev`); the release workflow drops it.
 
@@ -208,26 +210,26 @@ Apply to packages under `instrumentation/`.
 
 - Spans, logs, metrics, and events should go through `observe-util-genai`. Do not call OTel
   `Tracer`/`Meter`/`Logger` directly, and import only its public surface — never an
-  `opentelemetry.util.genai._*` module.
+  `observeinc.util.genai._*` module.
 - Construct the `TelemetryHandler` with the dotted instrumentation package path as
   `instrumentation_scope_name` and the package's `__version__` as
   `instrumentation_scope_version`. Use `__package__` when it resolves to that exact package path;
   do not use a submodule's `__name__`. Import `__version__` from the package's `version` module.
-  Subclass `opentelemetry.test_util_genai.scope.TelemetryHandlerScopeTest` in each package to verify
+  Subclass `observeinc.test_util_genai.scope.TelemetryHandlerScopeTest` in each package to verify
   its exact name and version on spans, metrics, and logs.
 - Content capture, hooks, and configuration are owned by the util. Don't add instrumentation-local
   env vars or settings.
-- Models describing complex attributes are owned by `opentelemetry.util.genai.types`. Land new type
+- Models describing complex attributes are owned by `observeinc.util.genai.types`. Land new type
   in utils when missing instead of defining it in instrumentation. If need to add ainstrumentation-specific properties,
   extend it. Don't workaround with dicts or type check suppressions.
 
 #### Completion hook
 
-The `CompletionHook` (`opentelemetry.util.genai.completion_hook`) lets users forward captured
+The `CompletionHook` (`observeinc.util.genai.completion_hook`) lets users forward captured
 prompt/completion content to external storage (e.g. object stores) instead of, or in addition to,
 recording it inline. Wiring is owned by the util — instrumentations just pass the hook through to
 the `TelemetryHandler`. Follow the OpenAI package
-([`OpenAIInstrumentor`](instrumentation/opentelemetry-instrumentation-genai-openai/src/opentelemetry/instrumentation/genai/openai/__init__.py))
+([`OpenAIInstrumentor`](instrumentation/opentelemetry-instrumentation-genai-openai/src/observeinc/instrumentation/genai/openai/__init__.py))
 as the reference:
 
 - In `_instrument(**kwargs)`, resolve the hook as
@@ -250,7 +252,7 @@ stay open until then. Do **not** call `invocation.stop()` when the SDK returns t
 span would close before any chunks arrive.
 
 Instrument streams by subclassing `SyncStreamWrapper` / `AsyncStreamWrapper` from
-`opentelemetry.util.genai.stream` (the public, supported helpers). The base class proxies the
+`observeinc.util.genai.stream` (the public, supported helpers). The base class proxies the
 underlying SDK stream, drives iteration, and finalizes telemetry exactly once on success, error,
 or `close()`. Subclasses pass the SDK stream to `super().__init__(stream)` and implement three
 hooks:
@@ -315,7 +317,7 @@ Full transparency isn't always reachable — prefer the least intrusive option t
 - Attributes whose value is a structured document (messages, tool definitions, system
   instructions, retrieval documents, …) have a **model** defined in
   [`models.py`](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py) and a JSON schema under `model/gen-ai/gen-ai-*.json`. genai-util should have models
-  for them defined in `opentelemetry.util.genai.types`. Use these models, don't invent new types
+  for them defined in `observeinc.util.genai.types`. Use these models, don't invent new types
   or hand-rolls dicts. 
 
 ### README
@@ -343,16 +345,16 @@ Full transparency isn't always reachable — prefer the least intrusive option t
   `UV_RESOLUTION=lowest-direct` (set on the `oldest` factor) derives them from `pyproject.toml`, so
   it stays the single source of truth; only pin test-only deps with no `pyproject.toml` bound in
   `tests/requirements.oldest.txt`.
-- `tests/conftest.py` must consume the shared fixtures from `opentelemetry.test_util_genai`
+- `tests/conftest.py` must consume the shared fixtures from `observeinc.test_util_genai`
   by registering them as plugins. Always register the fixtures plugin; register the VCR plugin
   too when the package's tests use VCR cassettes —
-  `pytest_plugins = ["opentelemetry.test_util_genai.fixtures", "opentelemetry.test_util_genai.vcr"]`
+  `pytest_plugins = ["observeinc.test_util_genai.fixtures", "observeinc.test_util_genai.vcr"]`
   (drop the `vcr` entry for packages with no cassette-backed tests) — rather than
   re-implementing provider/exporter/VCR plumbing. Import scrub helpers
   (`scrub_response_headers` / `scrub_response_headers_overwrite`) from
-  `opentelemetry.test_util_genai.vcr` where a `vcr_config` needs them.
+  `observeinc.test_util_genai.vcr` where a `vcr_config` needs them.
 - Drive instrumentation in tests through the shared `instrument` context manager from
-  `opentelemetry.test_util_genai.instrumentor` — `instrument(SomeInstrumentor(),
+  `observeinc.test_util_genai.instrumentor` — `instrument(SomeInstrumentor(),
   tracer_provider=…, logger_provider=…, meter_provider=…, semconv=…, content_capture=…)`. It sets
   the content-capture (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`) env var *before* instrumenting and
   restores them after, so a package's `instrument_*` fixtures don't manage that env themselves
@@ -373,7 +375,7 @@ Packages with substantive instrumentation ship `tests/conformance/<scenario>.py`
 scenarios and a `tests/test_conformance.py` that validates emitted telemetry
 against the [GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai)
 via Weaver live-check. Each scenario module defines a subclass of
-`opentelemetry.test_util_genai.conformance.Scenario` that sets
+`observeinc.test_util_genai.conformance.Scenario` that sets
 `expected_spans`, `expected_metrics`, and implements
 `run(*, tracer_provider, meter_provider, logger_provider, vcr)`.
 

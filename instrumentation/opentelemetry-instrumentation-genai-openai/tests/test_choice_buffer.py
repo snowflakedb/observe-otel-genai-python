@@ -8,7 +8,7 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDeltaToolCallFunction,
 )
 
-from opentelemetry.instrumentation.genai.openai.chat_buffers import (
+from observeinc.instrumentation.genai.openai.chat_buffers import (
     ChoiceBuffer,
     ToolCallBuffer,
 )

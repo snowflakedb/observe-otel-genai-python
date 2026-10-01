@@ -21,7 +21,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from typing_extensions import Self
 
-from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
+from observeinc.instrumentation.genai.langchain.operation_mapping import (
     OperationName,
     classify_chain_run,
     resolve_agent_name,

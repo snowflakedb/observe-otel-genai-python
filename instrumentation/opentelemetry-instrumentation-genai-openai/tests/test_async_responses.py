@@ -16,10 +16,11 @@ from openai import (
 )
 from pydantic import BaseModel
 
-from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
-from opentelemetry.instrumentation.genai.openai.response_wrappers import (
+from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.instrumentation.genai.openai.response_wrappers import (
     AsyncResponseStreamManagerWrapper,
 )
+from observeinc.util.genai.utils import is_experimental_mode
 from opentelemetry.semconv._incubating.attributes import (
     error_attributes as ErrorAttributes,
 )
@@ -33,7 +34,6 @@ from opentelemetry.semconv._incubating.attributes import (
     server_attributes as ServerAttributes,
 )
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai.utils import is_experimental_mode
 
 from .test_responses import assert_responses_streaming_timing_metrics
 from .test_utils import (

@@ -21,13 +21,13 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.test_util_genai.instrumentor import instrument
+from observeinc.util.genai.user_id import using_user_id
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
-from opentelemetry.test_util_genai.instrumentor import instrument
-from opentelemetry.util.genai.user_id import using_user_id
 
 CAPTURE_FLAG = "OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY"
 

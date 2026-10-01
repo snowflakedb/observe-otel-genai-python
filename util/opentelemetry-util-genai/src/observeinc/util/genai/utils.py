@@ -1,0 +1,282 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import inspect
+import json
+import logging
+import os
+import urllib.parse
+from base64 import b64decode, b64encode
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, is_dataclass
+from functools import lru_cache, partial
+from typing import Any
+
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+    OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT,
+)
+from observeinc.util.genai.types import (
+    BlobPart,
+    ContentCapturingMode,
+    MessagePart,
+    Modality,
+    UriPart,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def get_content_capturing_mode() -> ContentCapturingMode:
+    """Gets ContentCapturingMode from associated envvar, defaulting to NO_CONTENT if unset."""
+    envvar = os.environ.get(
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, ""
+    ).strip()
+    if not envvar:
+        return ContentCapturingMode.NO_CONTENT
+    try:
+        return ContentCapturingMode[envvar.upper()]
+    except KeyError:
+        logger.warning(
+            "%s is not a valid option for `%s` environment variable. Must be one of %s. Defaulting to `NO_CONTENT`.",
+            envvar,
+            OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+            ", ".join(e.name for e in ContentCapturingMode),
+        )
+        return ContentCapturingMode.NO_CONTENT
+
+
+def decode_base64(data: str) -> bytes | None:
+    """Decode a base64 string, returning ``None`` if it is malformed.
+
+    Called only when content capture is enabled
+    (``TelemetryHandler.should_capture_content()``).
+    """
+    try:
+        return b64decode("".join(data.split()), validate=True)
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+
+
+def image_from_url(
+    url: str, *, modality: Modality | str = Modality.IMAGE
+) -> MessagePart | None:
+    """Return a media part for a ``url``, defaulting to the image modality.
+
+    Override ``modality`` for other standard or provider-specific media,
+    such as audio or documents.
+
+    A ``data:<mime>;base64,<payload>`` URL is decoded into a
+    :class:`~observeinc.util.genai.types.BlobPart`; a ``data:`` URL without
+    base64 encoding has its percent-encoded payload decoded into bytes; any
+    other URL becomes a :class:`~observeinc.util.genai.types.UriPart`. Shared
+    by instrumentations that parse provider media blocks.
+
+    Called only when content capture is enabled
+    (``TelemetryHandler.should_capture_content()``).
+    """
+    if url.startswith("data:"):
+        header, _, payload = url[len("data:") :].partition(",")
+        mime_type = header.split(";", 1)[0] or None
+        if ";base64" in header.lower():
+            decoded = decode_base64(payload)
+            if decoded is None:
+                return None
+            content = decoded
+        else:
+            # Non-base64 data URL payloads are percent-encoded (RFC 2397).
+            content = urllib.parse.unquote_to_bytes(payload)
+        return BlobPart(
+            mime_type=mime_type,
+            modality=modality,
+            content=content,
+        )
+    return UriPart(mime_type=None, modality=modality, uri=url)
+
+
+def is_experimental_mode() -> bool:
+    """
+    Kept for backwards compatibility. The utils in this library only support the experimental mode sem convs now.
+    Don't use this function always returns True.
+    """
+    return True
+
+
+def _should_emit_event(
+    content_capturing_mode: ContentCapturingMode,
+) -> bool:
+    """Check if event emission is enabled.
+
+    Returns True if event emission is enabled, False otherwise.
+
+    If the environment variable OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT is explicitly set,
+    its value takes precedence. Otherwise, the default value is determined by
+    the provided ContentCapturingMode:
+    - NO_CONTENT or SPAN_ONLY: defaults to False
+    - EVENT_ONLY or SPAN_AND_EVENT: defaults to True
+    """
+    # If explicitly set (and not empty), use the user's value (highest priority)
+    if (
+        envvar := os.environ.get(OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT, "")
+        .lower()
+        .strip()
+    ):
+        if envvar == "true":
+            return True
+        if envvar == "false":
+            return False
+        logger.warning(
+            "%s is not a valid option for `%s` environment variable. Must be one of true or false (case-insensitive). Defaulting based on content capturing mode.",
+            envvar,
+            OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT,
+        )
+    # EVENT_ONLY and SPAN_AND_EVENT require events, so default to True
+    return content_capturing_mode in (
+        ContentCapturingMode.EVENT_ONLY,
+        ContentCapturingMode.SPAN_AND_EVENT,
+    )
+
+
+def should_emit_event() -> bool:
+    """Check if event emission is enabled.
+
+    Returns True if event emission is enabled, False otherwise.
+
+    .. deprecated:: 1.2b0
+        This function reads environment variables on every call and should NOT
+        be called on the hot path. Event emission is managed internally by
+        telemetry handlers and invocations.
+    """
+    return _should_emit_event(get_content_capturing_mode())
+
+
+def should_capture_content_on_spans() -> bool:
+    """Returns whether capture content is enabled on spans.
+
+    This function reads environment variables on every call and should NOT
+    be called on the hot path.
+
+    .. deprecated:: 1.2b0
+        Use ``GenAIInvocation.should_capture_content``
+        or ``TelemetryHandler.should_capture_content``
+        instead.
+    """
+    return get_content_capturing_mode() in (
+        ContentCapturingMode.SPAN_ONLY,
+        ContentCapturingMode.SPAN_AND_EVENT,
+    )
+
+
+def fq_exception_type(exception: BaseException) -> str:
+    """Return the fully qualified name of an exception's type.
+
+    Matches the ``exception.type`` value the exception event records, so
+    ``error.type`` and ``exception.type`` stay consistent. Builtins are returned
+    unqualified (e.g. ``ValueError``, not ``builtins.ValueError``).
+    """
+    # Mirrors the SDK's Span.record_exception so error.type matches the
+    # exception event's exception.type:
+    # https://github.com/open-telemetry/opentelemetry-python/blob/main/opentelemetry-sdk/src/opentelemetry/sdk/trace/__init__.py
+    exc_type = type(exception)
+    module = exc_type.__module__
+    qualname = exc_type.__qualname__
+    if module and module != "builtins":
+        return f"{module}.{qualname}"
+    return qualname
+
+
+class _GenAiJsonEncoder(json.JSONEncoder):
+    def default(self, o: Any) -> Any:
+        if is_dataclass(o) and not isinstance(o, type):
+            return asdict(o)
+        if isinstance(o, bytes):
+            return b64encode(o).decode()
+        return super().default(o)
+
+
+gen_ai_json_dump = partial(
+    json.dump, separators=(",", ":"), cls=_GenAiJsonEncoder
+)
+"""Should be used by GenAI instrumentations when serializing objects that may contain
+bytes, datetimes, etc. for GenAI observability."""
+
+gen_ai_json_dumps = partial(
+    json.dumps, separators=(",", ":"), cls=_GenAiJsonEncoder
+)
+"""Should be used by GenAI instrumentations when serializing objects that may contain
+bytes, datetimes, etc. for GenAI observability."""
+
+
+_SIGNATURE_CACHE_MAX_SIZE = 1024
+_inspect_signature = inspect.signature
+
+
+@lru_cache(maxsize=_SIGNATURE_CACHE_MAX_SIZE)
+def _cached_signature(
+    fn: Callable[..., object], drop_first: bool
+) -> inspect.Signature:
+    sig = _inspect_signature(fn)
+    if drop_first:
+        params = list(sig.parameters.values())[1:]
+        sig = sig.replace(parameters=params)
+    return sig
+
+
+def get_signature(func: Callable[..., object]) -> inspect.Signature:
+    """Return the inspect.Signature for a callable, caching long-lived definitions.
+
+    Bound methods are new objects on every attribute access, so key on the
+    underlying function. Only long-lived definitions are cached; per-call
+    closures and callable instances would otherwise be pinned in the cache.
+    """
+    try:
+        underlying = getattr(func, "__func__", None)
+        if (
+            underlying is not None
+            and getattr(func, "__self__", None) is not None
+            and "<locals>" not in getattr(underlying, "__qualname__", "")
+        ):
+            return _cached_signature(underlying, True)
+        if inspect.isfunction(func) and "<locals>" not in func.__qualname__:
+            return _cached_signature(func, False)
+    except TypeError:
+        pass
+    return _inspect_signature(func)
+
+
+def bind_arguments(
+    func: Callable[..., object],
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+    *,
+    apply_defaults: bool = False,
+) -> dict[str, object]:
+    """Bind positional and keyword arguments to func's parameters by name."""
+    try:
+        sig = get_signature(func)
+        bound = sig.bind_partial(*args, **kwargs)
+        if apply_defaults:
+            bound.apply_defaults()
+        return dict(bound.arguments)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+
+
+def get_argument(
+    name: str,
+    func: Callable[..., object],
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+    default: object = None,
+    *,
+    apply_defaults: bool = False,
+) -> object:
+    """Extract a named argument from kwargs or args via signature binding."""
+    if name in kwargs:
+        return kwargs[name]
+    if not args and not apply_defaults:
+        return default
+    bound = bind_arguments(func, args, kwargs, apply_defaults=apply_defaults)
+    return bound.get(name, default)

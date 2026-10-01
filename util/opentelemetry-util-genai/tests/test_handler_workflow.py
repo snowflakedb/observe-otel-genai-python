@@ -8,6 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import WorkflowInvocation
+from observeinc.util.genai.types import (
+    Error,
+    InputMessage,
+    OutputMessage,
+    TextPart,
+)
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -20,14 +28,6 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.test.test_base import TestBase
 from opentelemetry.trace import INVALID_SPAN, SpanKind
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import WorkflowInvocation
-from opentelemetry.util.genai.types import (
-    Error,
-    InputMessage,
-    OutputMessage,
-    TextPart,
-)
 
 
 class _WorkflowTestBase(TestCase):

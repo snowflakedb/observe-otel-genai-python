@@ -35,14 +35,14 @@ from claude_agent_sdk.types import (
     UserMessage,
 )
 
-from opentelemetry import context as otel_context
-from opentelemetry import trace
-from opentelemetry.instrumentation.genai.claude_agent_sdk._run import AgentRun
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import (
+from observeinc.instrumentation.genai.claude_agent_sdk._run import AgentRun
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import (
     LocalAgentInvocation,
     ToolInvocation,
 )
+from opentelemetry import context as otel_context
+from opentelemetry import trace
 
 SESSION = "session-abc"
 NEW_CONVERSATION = "conversation-def"

@@ -10,6 +10,17 @@ from unittest.mock import patch
 
 import pytest
 
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import FetchResponseInvocation
+from observeinc.util.genai.types import (
+    Error,
+    FunctionToolDefinition,
+    OutputMessage,
+    TextPart,
+)
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
@@ -23,17 +34,6 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.semconv.attributes import server_attributes
 from opentelemetry.trace import INVALID_SPAN, SpanKind
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai.environment_variables import (
-    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
-)
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import FetchResponseInvocation
-from opentelemetry.util.genai.types import (
-    Error,
-    FunctionToolDefinition,
-    OutputMessage,
-    TextPart,
-)
 
 # TODO: use the semconv constants once these attributes are released in
 # opentelemetry-semantic-conventions.

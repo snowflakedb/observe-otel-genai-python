@@ -14,15 +14,15 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
-from opentelemetry.sdk._logs import LoggerProvider
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.test_util_genai.conformance import (
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.test_util_genai.conformance import (
     ExpectedViolation,
     Scenario,
 )
-from opentelemetry.test_util_genai.instrumentor import instrument
+from observeinc.test_util_genai.instrumentor import instrument
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.trace import TracerProvider
 
 
 class GraphState(TypedDict):

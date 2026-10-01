@@ -46,8 +46,8 @@ from claude_agent_sdk.types import (
     UserMessage,
 )
 
-from opentelemetry.instrumentation.genai.claude_agent_sdk._run import AgentRun
-from opentelemetry.util.genai.handler import TelemetryHandler
+from observeinc.instrumentation.genai.claude_agent_sdk._run import AgentRun
+from observeinc.util.genai.handler import TelemetryHandler
 
 SESSION = "session-contract"
 

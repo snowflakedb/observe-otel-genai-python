@@ -9,13 +9,13 @@ from __future__ import annotations
 import os
 from unittest import mock
 
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import LLMInvocation
+from observeinc.util.genai.user_id import using_user_id
 from opentelemetry.semconv._incubating.attributes.user_attributes import (
     USER_ID,
 )
 from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import LLMInvocation
-from opentelemetry.util.genai.user_id import using_user_id
 
 FLAG = "OBSERVE_GENAI_METRICS_INCLUDE_USER_ID"
 

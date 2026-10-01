@@ -24,7 +24,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from pydantic import Field
 
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from opentelemetry.semconv.attributes import error_attributes

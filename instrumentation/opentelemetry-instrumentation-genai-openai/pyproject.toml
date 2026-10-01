@@ -33,7 +33,7 @@ dependencies = [
 instruments = ["openai >= 1.26.0, < 4"]
 
 [project.entry-points.opentelemetry_instrumentor]
-openai = "opentelemetry.instrumentation.genai.openai:OpenAIInstrumentor"
+openai = "observeinc.instrumentation.genai.openai:OpenAIInstrumentor"
 
 [project.urls]
 Homepage = "https://github.com/snowflake-eng/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai"
@@ -41,13 +41,13 @@ Repository = "https://github.com/snowflake-eng/observe-otel-genai-python"
 Upstream = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai"
 
 [tool.hatch.version]
-path = "src/opentelemetry/instrumentation/genai/openai/version.py"
+path = "src/observeinc/instrumentation/genai/openai/version.py"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/opentelemetry"]
+packages = ["src/observeinc"]
 
 [tool.towncrier]
 directory = ".changelog"

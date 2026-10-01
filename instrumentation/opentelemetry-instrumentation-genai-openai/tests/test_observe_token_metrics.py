@@ -6,10 +6,10 @@ real OpenAI responses. Specific to this fork."""
 
 import pytest
 
-from opentelemetry.test_util_genai._observe_token_metrics import (
+from observeinc.test_util_genai._observe_token_metrics import (
     assert_token_metrics_match_spans,
 )
-from opentelemetry.util.genai.utils import is_experimental_mode
+from observeinc.util.genai.utils import is_experimental_mode
 
 from .test_utils import (
     CACHEABLE_MESSAGES,

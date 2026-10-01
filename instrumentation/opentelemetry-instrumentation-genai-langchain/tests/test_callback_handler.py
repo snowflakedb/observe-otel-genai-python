@@ -36,12 +36,12 @@ from langchain_core.outputs import (
     LLMResult,
 )
 
-from opentelemetry.instrumentation.genai.langchain.callback_handler import (
+from observeinc.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
     _document_to_retrieval_document,
     _extract_document_score,
 )
-from opentelemetry.instrumentation.genai.langchain.utils import (
+from observeinc.instrumentation.genai.langchain.utils import (
     _legacy_function_call_request,
     _media_part,
     _normalize_role,
@@ -53,13 +53,13 @@ from opentelemetry.instrumentation.genai.langchain.utils import (
     to_input_messages,
     to_output_messages,
 )
-from opentelemetry.util.genai.invocation import (
+from observeinc.util.genai.invocation import (
     InferenceInvocation,
     LocalAgentInvocation,
     RetrievalInvocation,
     WorkflowInvocation,
 )
-from opentelemetry.util.genai.types import (
+from observeinc.util.genai.types import (
     BlobPart,
     FilePart,
     InputMessage,
@@ -3522,7 +3522,7 @@ def test_instrumentor_routes_sync_and_async_callback_managers():
         CallbackManager,
     )
 
-    from opentelemetry.instrumentation.genai.langchain import (
+    from observeinc.instrumentation.genai.langchain import (
         LangChainInstrumentor,
     )
 

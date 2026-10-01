@@ -7,6 +7,23 @@ import os
 import unittest
 from unittest.mock import patch
 
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import (
+    AgentInvocation,
+    LocalAgentInvocation,
+    RemoteAgentInvocation,
+)
+from observeinc.util.genai.types import (
+    ContentCapturingMode,
+    Error,
+    FunctionToolDefinition,
+    InputMessage,
+    OutputMessage,
+    TextPart,
+)
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -19,23 +36,6 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.semconv.attributes import server_attributes
 from opentelemetry.test.test_base import TestBase
 from opentelemetry.trace import INVALID_SPAN, SpanKind
-from opentelemetry.util.genai.environment_variables import (
-    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
-)
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import (
-    AgentInvocation,
-    LocalAgentInvocation,
-    RemoteAgentInvocation,
-)
-from opentelemetry.util.genai.types import (
-    ContentCapturingMode,
-    Error,
-    FunctionToolDefinition,
-    InputMessage,
-    OutputMessage,
-    TextPart,
-)
 
 
 class TestLocalAgentInvocation(unittest.TestCase):  # pylint: disable=too-many-public-methods
@@ -411,7 +411,7 @@ class TestAgentInvocationContent(unittest.TestCase):
         self.handler = TelemetryHandler(tracer_provider=self.tracer_provider)
 
     @patch(
-        "opentelemetry.util.genai.handler.get_content_capturing_mode",
+        "observeinc.util.genai.handler.get_content_capturing_mode",
         return_value=ContentCapturingMode.SPAN_AND_EVENT,
     )
     def test_system_instruction_on_span(self, _mock_cap):
@@ -426,7 +426,7 @@ class TestAgentInvocationContent(unittest.TestCase):
         assert GenAI.GEN_AI_SYSTEM_INSTRUCTIONS in attrs
 
     @patch(
-        "opentelemetry.util.genai.handler.get_content_capturing_mode",
+        "observeinc.util.genai.handler.get_content_capturing_mode",
         return_value=ContentCapturingMode.SPAN_AND_EVENT,
     )
     def test_tool_definitions_on_span(self, _mock_cap):
@@ -444,7 +444,7 @@ class TestAgentInvocationContent(unittest.TestCase):
         assert GenAI.GEN_AI_TOOL_DEFINITIONS in attrs
 
     @patch(
-        "opentelemetry.util.genai.handler.get_content_capturing_mode",
+        "observeinc.util.genai.handler.get_content_capturing_mode",
         return_value=ContentCapturingMode.NO_CONTENT,
     )
     def test_tool_definitions_omitted_without_content_capture(self, _mock_cap):
@@ -462,7 +462,7 @@ class TestAgentInvocationContent(unittest.TestCase):
         assert GenAI.GEN_AI_TOOL_DEFINITIONS not in attrs
 
     @patch(
-        "opentelemetry.util.genai.handler.get_content_capturing_mode",
+        "observeinc.util.genai.handler.get_content_capturing_mode",
         return_value=ContentCapturingMode.SPAN_AND_EVENT,
     )
     def test_messages_on_span(self, _mock_cap):

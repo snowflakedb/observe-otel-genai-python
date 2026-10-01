@@ -45,7 +45,7 @@ prefer opt-in or additive. Breaking changes need explicit justification in the P
 - Content capture, hooks, and other cross-cutting configuration are owned by the util.
   Instrumentations must not introduce their own env vars, settings, or hook interfaces.
 - Completion hook wiring must follow the util's contract (reference:
-  [`OpenAIInstrumentor`](../../instrumentation/opentelemetry-instrumentation-genai-openai/src/opentelemetry/instrumentation/genai/openai/__init__.py)):
+  [`OpenAIInstrumentor`](../../instrumentation/opentelemetry-instrumentation-genai-openai/src/observeinc/instrumentation/genai/openai/__init__.py)):
   `_instrument` resolves `kwargs.get("completion_hook") or load_completion_hook()` and passes it to
   the `TelemetryHandler` (an explicit `instrument(completion_hook=…)` takes precedence over the
   `OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK` env var). Flag instrumentations that define their own
@@ -55,7 +55,7 @@ prefer opt-in or additive. Breaking changes need explicit justification in the P
   capture path — never as unconditional span/log attributes.
 - Adding attributes to invocations produced by the util is fine.
 - Streaming responses must be instrumented by subclassing the util's `SyncStreamWrapper` /
-  `AsyncStreamWrapper` (`opentelemetry.util.genai.stream`). Flag hand-rolled stream wrappers.
+  `AsyncStreamWrapper` (`observeinc.util.genai.stream`). Flag hand-rolled stream wrappers.
 - Instrumentation should not change what a call returns or when its work happens. Flag: work the SDK
   didn't do (materializing a result early to build telemetry — stay lazy); a changed return type
   (`isinstance`/`__class__` should still resolve to the original; `wrapt.ObjectProxy` is the usual
@@ -88,7 +88,7 @@ Flag, with a link to the rule:
 - Flag `Any`, a dict, `TypedDict`, or other ad-hoc value built for an attribute that semconv models in
   [`models.py`](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py)
   (messages, tool definitions, system instructions, retrieval documents, …). These must be built
-  from the matching `opentelemetry.util.genai.types` dataclass.
+  from the matching `observeinc.util.genai.types` dataclass.
 - Flag a local workaround for a util type that cannot represent what the provider returns —
   dropping the data, stuffing it into an unrelated field, or bypassing the type. The util type
   must be extended instead.
@@ -113,12 +113,12 @@ Flag, with a link to the rule:
 - Tests must verify exact attribute names **and value types**, checked against the semconv spec.
 - Test against oldest and latest supported library versions via `tests/requirements.{oldest,latest}.txt`
   and `{oldest,latest}` `tox.ini` factors.
-- `tests/conftest.py` must consume the shared fixtures from `opentelemetry.test_util_genai`
+- `tests/conftest.py` must consume the shared fixtures from `observeinc.test_util_genai`
   by registering them as plugins. Always register the fixtures plugin; register the VCR plugin
   too when the package's tests use VCR cassettes —
-  `pytest_plugins = ["opentelemetry.test_util_genai.fixtures", "opentelemetry.test_util_genai.vcr"]`
+  `pytest_plugins = ["observeinc.test_util_genai.fixtures", "observeinc.test_util_genai.vcr"]`
   (drop the `vcr` entry for packages with no cassette-backed tests), importing scrub helpers from
-  `opentelemetry.test_util_genai.vcr` as needed. Do not re-implement in-memory provider/exporter
+  `observeinc.test_util_genai.vcr` as needed. Do not re-implement in-memory provider/exporter
   setup or the VCR pretty-print serializer locally.
 - When recording VCR cassettes, scrub account-identifying values in the conftest's
   `vcr_config` (`filter_headers` for requests, `scrub_response_headers_overwrite` for
@@ -127,10 +127,10 @@ Flag, with a link to the rule:
   account.
 - Conformance: packages ship `tests/conformance/<scenario>.py` modules (each
   defining a subclass of
-  `opentelemetry.test_util_genai.conformance.Scenario` that sets
+  `observeinc.test_util_genai.conformance.Scenario` that sets
   `expected_spans`, `expected_metrics`, and implements `run(...)`) and a
   `tests/test_conformance.py` that runs them via
-  `opentelemetry.test_util_genai.conformance.run_conformance`.
+  `observeinc.test_util_genai.conformance.run_conformance`.
 
 ## 7. Examples
 
@@ -153,7 +153,7 @@ New instrumentations must ship a minimal example under the package's `examples/`
 ## 10. Package naming and versioning
 
 - Instrumentation packages must be named `opentelemetry-instrumentation-genai-{lib}` and import
-  as `opentelemetry.instrumentation.genai.{lib}` (`opentelemetry-instrumentation-google-genai`
+  as `observeinc.instrumentation.genai.{lib}` (`opentelemetry-instrumentation-google-genai`
   is a pre-existing exception that keeps its historical name).
 - Versions use the OpenTelemetry beta versioning format `MAJOR.MINORbN` (e.g. `1.0b0`);
   `version.py` carries a `.dev` suffix during development.

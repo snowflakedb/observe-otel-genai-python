@@ -54,7 +54,7 @@ exercised — a text-only scenario leaves the package's image/audio/file/tool
 mapping unverified. So exercise **every non-text part type the library can
 emit** and assert it landed on a message. Cover only what the package
 instruments: walk its wrappers (the step-6 mapping for a port) for which
-`opentelemetry.util.genai.types` parts they produce.
+`observeinc.util.genai.types` parts they produce.
 
 | Part `type` | util-genai type | Emitted when the library accepts… |
 |---|---|---|
@@ -104,7 +104,7 @@ gap), still write the scenario and record it as a
 ## Scenario modules
 
 Each scenario module defines a subclass of `Scenario` from
-`opentelemetry.test_util_genai.conformance`. It sets the `expected_spans` /
+`observeinc.test_util_genai.conformance`. It sets the `expected_spans` /
 `expected_metrics` ClassVars and implements
 `run(self, *, tracer_provider, meter_provider, logger_provider, vcr)`.
 
@@ -122,12 +122,12 @@ already-configured `vcr`, so a cassette-based scenario just calls
 # tests/conformance/inference.py
 from typing import Any
 
-from opentelemetry.instrumentation.genai.<lib> import <Lib>Instrumentor
+from observeinc.instrumentation.genai.<lib> import <Lib>Instrumentor
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.test_util_genai.conformance import Scenario
-from opentelemetry.test_util_genai.instrumentor import instrument
+from observeinc.test_util_genai.conformance import Scenario
+from observeinc.test_util_genai.instrumentor import instrument
 
 
 class InferenceScenario(Scenario):
@@ -225,7 +225,7 @@ import json
 from typing import Any
 
 from opentelemetry.test.weaver_live_check import LiveCheckReport
-from opentelemetry.test_util_genai.conformance import Scenario
+from observeinc.test_util_genai.conformance import Scenario
 
 
 class ToolCallingScenario(Scenario):
@@ -308,7 +308,7 @@ import pytest
 pytest.importorskip("opentelemetry.test.weaver_live_check")
 
 from opentelemetry.test.weaver_live_check import WeaverLiveCheck  # noqa: E402
-from opentelemetry.test_util_genai.conformance import (  # noqa: E402
+from observeinc.test_util_genai.conformance import (  # noqa: E402
     Scenario,
     run_conformance,
 )

@@ -10,18 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
-from opentelemetry.trace import get_current_span
-from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai._instruments import _Instruments
-from opentelemetry.util.genai._tool_invocation import ToolInvocation
-from opentelemetry.util.genai.completion_hook import CompletionHook
-from opentelemetry.util.genai.stream import (
+from observeinc.util.genai._instruments import _Instruments
+from observeinc.util.genai._tool_invocation import ToolInvocation
+from observeinc.util.genai.completion_hook import CompletionHook
+from observeinc.util.genai.stream import (
     AsyncStreamManagerWrapper,
     AsyncStreamWrapper,
     AsyncToolStreamWrapper,
@@ -31,8 +23,16 @@ from opentelemetry.util.genai.stream import (
     finalize_on_aclose,
     finalize_on_close,
 )
-from opentelemetry.util.genai.types import ContentCapturingMode
-from opentelemetry.util.genai.utils import gen_ai_json_dumps
+from observeinc.util.genai.types import ContentCapturingMode
+from observeinc.util.genai.utils import gen_ai_json_dumps
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.trace import get_current_span
+from opentelemetry.trace.status import StatusCode
 
 
 def test_stream_wrapper_abstract_method_signatures_match():
