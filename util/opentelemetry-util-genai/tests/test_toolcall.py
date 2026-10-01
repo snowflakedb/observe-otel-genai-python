@@ -8,6 +8,26 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from observeinc.util.genai._instruments import _Instruments
+from observeinc.util.genai.completion_hook import CompletionHook
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import GenAIInvocation, ToolInvocation
+from observeinc.util.genai.types import (
+    CompactionPart,
+    InputMessage,
+    ServerToolCall,
+    ServerToolCallPart,
+    ServerToolCallResponse,
+    ServerToolCallResponsePart,
+    ToolCallRequest,
+    ToolCallRequestPart,
+    ToolCallResponse,
+    ToolCallResponsePart,
+)
+from observeinc.util.genai.utils import gen_ai_json_dumps
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -24,26 +44,6 @@ from opentelemetry.trace import (
     get_current_span,
     set_span_in_context,
 )
-from opentelemetry.util.genai._instruments import _Instruments
-from opentelemetry.util.genai.completion_hook import CompletionHook
-from opentelemetry.util.genai.environment_variables import (
-    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
-)
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import GenAIInvocation, ToolInvocation
-from opentelemetry.util.genai.types import (
-    CompactionPart,
-    InputMessage,
-    ServerToolCall,
-    ServerToolCallPart,
-    ServerToolCallResponse,
-    ServerToolCallResponsePart,
-    ToolCallRequest,
-    ToolCallRequestPart,
-    ToolCallResponse,
-    ToolCallResponsePart,
-)
-from opentelemetry.util.genai.utils import gen_ai_json_dumps
 
 
 def _make_handler() -> TelemetryHandler:

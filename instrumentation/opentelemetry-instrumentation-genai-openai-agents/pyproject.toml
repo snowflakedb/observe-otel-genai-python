@@ -37,14 +37,14 @@ instruments = [
 ]
 
 [project.entry-points.opentelemetry_instrumentor]
-openai_agents = "opentelemetry.instrumentation.genai.openai_agents:OpenAIAgentsInstrumentor"
+openai_agents = "observeinc.instrumentation.genai.openai_agents:OpenAIAgentsInstrumentor"
 
 [project.urls]
 Homepage = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai-agents"
 Repository = "https://github.com/open-telemetry/opentelemetry-python-genai"
 
 [tool.hatch.version]
-path = "src/opentelemetry/instrumentation/genai/openai_agents/version.py"
+path = "src/observeinc/instrumentation/genai/openai_agents/version.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -52,7 +52,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/opentelemetry"]
+packages = ["src/observeinc"]
 
 [tool.towncrier]
 directory = ".changelog"

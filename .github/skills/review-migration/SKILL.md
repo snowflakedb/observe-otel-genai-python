@@ -272,8 +272,8 @@ or `uv run tox -e py312-test-instrumentation-genai-<lib>` fails.
 
 | Asset | Required content | Status |
 |---|---|---|
-| `README.rst` | install snippet, usage snippet importing from `opentelemetry.instrumentation.genai.<lib>`, pointer to `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` and the util-genai README, pointer to `tests/conformance/` (no `examples/`) | |
-| `src/opentelemetry/instrumentation/genai/<lib>/__init__.py` module docstring | usage example using the new module path; configuration section listing the env vars users actually need | |
+| `README.rst` | install snippet, usage snippet importing from `observeinc.instrumentation.genai.<lib>`, pointer to `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` and the util-genai README, pointer to `tests/conformance/` (no `examples/`) | |
+| `src/observeinc/instrumentation/genai/<lib>/__init__.py` module docstring | usage example using the new module path; configuration section listing the env vars users actually need | |
 
 Render only rows that are missing/wrong/stale (e.g. README still imports
 from `openinference.instrumentation.<lib>`, install command points
@@ -284,7 +284,7 @@ OpenInference URL).
 semconv shape checks inline instead of factoring them into the migrated package's
 `tests/test_utils.py` helpers (e.g. `assert_all_attributes`,
 `assert_completion_attributes`, `assert_messages_attribute`). There is no
-shared `opentelemetry.test_util_genai.assertions` module — assert directly
+shared `observeinc.test_util_genai.assertions` module — assert directly
 on `span.attributes[GenAIAttributes.GEN_AI_…]` using the semconv constants.
 
 ### 5. Follow-up work

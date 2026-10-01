@@ -3,7 +3,7 @@
 
 """Tests for the ClaudeAgentSDKInstrumentor class."""
 
-from opentelemetry.instrumentation.genai.claude_agent_sdk import (
+from observeinc.instrumentation.genai.claude_agent_sdk import (
     ClaudeAgentSDKInstrumentor,
 )
 

@@ -16,19 +16,19 @@ from agents.tracing.span_data import (
     ResponseSpanData,
 )
 
-from opentelemetry.instrumentation.genai.openai_agents.processor import (
+from observeinc.instrumentation.genai.openai_agents.processor import (
     GenAITracingProcessor,
 )
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import ToolInvocation
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 from opentelemetry.trace import StatusCode
-from opentelemetry.util.genai.environment_variables import (
-    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
-)
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import ToolInvocation
 
 
 class _Span:

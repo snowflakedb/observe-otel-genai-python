@@ -1,0 +1,114 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from observeinc.util.genai._instruments import _Instruments
+from observeinc.util.genai._invocation import Error, GenAIInvocation
+from observeinc.util.genai.completion_hook import CompletionHook
+from observeinc.util.genai.utils import ContentCapturingMode
+from opentelemetry._logs import Logger
+from opentelemetry.context import Context
+from opentelemetry.semconv._incubating.attributes import (
+    gen_ai_attributes as GenAI,
+)
+from opentelemetry.semconv.attributes import server_attributes
+from opentelemetry.trace import SpanKind, Tracer
+from opentelemetry.util.types import AttributeValue
+
+
+class EmbeddingInvocation(GenAIInvocation):
+    """Represents a single embedding model invocation.
+
+    Use handler.embedding(provider) rather than constructing this directly.
+    """
+
+    def __init__(
+        self,
+        tracer: Tracer,
+        instruments: _Instruments,
+        logger: Logger,
+        completion_hook: CompletionHook,
+        provider: str,
+        *,
+        request_model: str | None = None,
+        server_address: str | None = None,
+        server_port: int | None = None,
+        content_capturing_mode: ContentCapturingMode | None = None,
+        context: Context | None = None,
+        _attach_to_context: bool = True,
+    ) -> None:
+        """Use handler.embedding(provider) rather than calling this directly."""
+        _operation_name = GenAI.GenAiOperationNameValues.EMBEDDINGS.value
+        start_attributes: dict[str, AttributeValue] = {
+            k: v
+            for k, v in (
+                (GenAI.GEN_AI_REQUEST_MODEL, request_model),
+                (GenAI.GEN_AI_PROVIDER_NAME, provider),
+                (server_attributes.SERVER_ADDRESS, server_address),
+                (server_attributes.SERVER_PORT, server_port),
+            )
+            if v is not None
+        }
+        super().__init__(
+            tracer,
+            instruments,
+            logger,
+            completion_hook,
+            operation_name=_operation_name,
+            span_name=f"{_operation_name} {request_model}"
+            if request_model
+            else _operation_name,
+            span_kind=SpanKind.CLIENT,
+            start_attributes=start_attributes,
+            content_capturing_mode=content_capturing_mode,
+            context=context,
+            _attach_to_context=_attach_to_context,
+        )
+        # e.g., azure.ai.openai, openai, aws.bedrock
+        self._provider: str = provider
+        self._request_model: str | None = request_model
+        self._server_address: str | None = server_address
+        self._server_port: int | None = server_port
+        # encoding_formats can be multi-value -> combinational cardinality risk.
+        # Keep on spans/events only.
+        self.encoding_formats: list[str] | None = None
+        self.input_tokens: int | None = None
+        self.dimension_count: int | None = None
+        self.response_model_name: str | None = None
+
+    def _get_metric_attributes(self) -> dict[str, AttributeValue]:
+        optional_attrs = (
+            (GenAI.GEN_AI_PROVIDER_NAME, self._provider),
+            (GenAI.GEN_AI_REQUEST_MODEL, self._request_model),
+            (GenAI.GEN_AI_RESPONSE_MODEL, self.response_model_name),
+            (server_attributes.SERVER_ADDRESS, self._server_address),
+            (server_attributes.SERVER_PORT, self._server_port),
+        )
+        attrs: dict[str, AttributeValue] = {
+            GenAI.GEN_AI_OPERATION_NAME: self._operation_name,
+            **{k: v for k, v in optional_attrs if v is not None},
+        }
+        attrs.update(self.metric_attributes)
+        return attrs
+
+    def _get_metric_token_counts(self) -> dict[str, int]:
+        if self.input_tokens is not None:
+            return {GenAI.GenAiTokenTypeValues.INPUT.value: self.input_tokens}
+        return {}
+
+    def _apply_finish(self, error: Error | None = None) -> None:
+        optional_attrs = (
+            (GenAI.GEN_AI_EMBEDDINGS_DIMENSION_COUNT, self.dimension_count),
+            (GenAI.GEN_AI_REQUEST_ENCODING_FORMATS, self.encoding_formats),
+            (GenAI.GEN_AI_RESPONSE_MODEL, self.response_model_name),
+            (GenAI.GEN_AI_USAGE_INPUT_TOKENS, self.input_tokens),
+        )
+        attributes: dict[str, AttributeValue] = {
+            key: value for key, value in optional_attrs if value is not None
+        }
+        if error is not None:
+            self._apply_error_attributes(error)
+        attributes.update(self.attributes)
+        self.span.set_attributes(attributes)
+        self._record_client_metrics()

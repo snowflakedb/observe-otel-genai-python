@@ -34,20 +34,20 @@ dependencies = [
 instruments = ["claude-agent-sdk >= 0.1.14, < 1"]
 
 [project.entry-points.opentelemetry_instrumentor]
-claude-agent-sdk = "opentelemetry.instrumentation.genai.claude_agent_sdk:ClaudeAgentSDKInstrumentor"
+claude-agent-sdk = "observeinc.instrumentation.genai.claude_agent_sdk:ClaudeAgentSDKInstrumentor"
 
 [project.urls]
 Homepage = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk"
 Repository = "https://github.com/open-telemetry/opentelemetry-python-genai"
 
 [tool.hatch.version]
-path = "src/opentelemetry/instrumentation/genai/claude_agent_sdk/version.py"
+path = "src/observeinc/instrumentation/genai/claude_agent_sdk/version.py"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests", "/examples"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/opentelemetry"]
+packages = ["src/observeinc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,6 +10,12 @@ from unittest.mock import patch
 
 import pytest
 
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import RetrievalInvocation
+from observeinc.util.genai.types import Error, RetrievalDocument
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -21,12 +27,6 @@ from opentelemetry.semconv._incubating.attributes import (
 )
 from opentelemetry.trace import INVALID_SPAN, SpanKind
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai.environment_variables import (
-    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
-)
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.invocation import RetrievalInvocation
-from opentelemetry.util.genai.types import Error, RetrievalDocument
 
 
 class _RetrievalTestBase(TestCase):

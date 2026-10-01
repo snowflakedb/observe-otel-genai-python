@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.entry-points.opentelemetry_genai_completion_hook]
-upload = "opentelemetry.util.genai._upload:upload_completion_hook"
+upload = "observeinc.util.genai._upload:upload_completion_hook"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0.0"]
@@ -43,13 +43,13 @@ Homepage = "https://github.com/open-telemetry/opentelemetry-python-contrib/tree/
 Repository = "https://github.com/open-telemetry/opentelemetry-python-contrib"
 
 [tool.hatch.version]
-path = "src/opentelemetry/util/genai/version.py"
+path = "src/observeinc/util/genai/version.py"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/opentelemetry"]
+packages = ["src/observeinc"]
 
 [tool.towncrier]
 directory = ".changelog"

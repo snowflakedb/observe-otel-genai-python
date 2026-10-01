@@ -13,12 +13,9 @@ import pytest
 from openai import NOT_GIVEN
 from pydantic import BaseModel
 
-from opentelemetry.instrumentation.genai.openai import response_extractors
-from opentelemetry.instrumentation.genai.openai.utils import get_served_model
-from opentelemetry.semconv._incubating.attributes import (
-    openai_attributes as OpenAIAttributes,
-)
-from opentelemetry.util.genai.types import (
+from observeinc.instrumentation.genai.openai import response_extractors
+from observeinc.instrumentation.genai.openai.utils import get_served_model
+from observeinc.util.genai.types import (
     BlobPart,
     FilePart,
     FunctionToolDefinition,
@@ -31,7 +28,10 @@ from opentelemetry.util.genai.types import (
     ToolCallResponsePart,
     UriPart,
 )
-from opentelemetry.util.genai.utils import gen_ai_json_dumps
+from observeinc.util.genai.utils import gen_ai_json_dumps
+from opentelemetry.semconv._incubating.attributes import (
+    openai_attributes as OpenAIAttributes,
+)
 
 try:
     # Responses types are not available in the oldest supported OpenAI SDK.

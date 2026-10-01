@@ -22,13 +22,13 @@ project.
 ```
 ├── instrumentation/
 │   └── opentelemetry-instrumentation-genai-<name>/  # one package per GenAI library
-│       ├── src/opentelemetry/instrumentation/genai/<name>/
+│       ├── src/observeinc/instrumentation/genai/<name>/
 │       ├── tests/
 │       ├── CHANGELOG.md
 │       └── pyproject.toml
 └── util/
     └── opentelemetry-util-genai/              # shared GenAI utilities
-        ├── src/opentelemetry/util/genai/
+        ├── src/observeinc/util/genai/
         ├── tests/
         ├── CHANGELOG.md
         └── pyproject.toml
@@ -40,9 +40,9 @@ version, and entry points. `tox.ini` defines the test matrix.
 ## Package naming and versioning
 
 Instrumentation packages are named `opentelemetry-instrumentation-genai-<name>` and import as
-`opentelemetry.instrumentation.genai.<name>` — for example,
+`observeinc.instrumentation.genai.<name>` — for example,
 `opentelemetry-instrumentation-genai-anthropic` imports
-`opentelemetry.instrumentation.genai.anthropic`. 
+`observeinc.instrumentation.genai.anthropic`. 
 
 Packages use the OpenTelemetry beta versioning format — `MAJOR.MINORbN` (e.g. `1.0b0`). `version.py` carries a `.dev`
 suffix during development (`1.0b0.dev`); the release workflow drops it.
@@ -90,7 +90,7 @@ package's `tests/cassettes/`.
   rerun the test. `pytest-vcr` writes the cassette on the live call.
 - **Sanitize**: every package's `vcr_config()` in `tests/conftest.py` must
   scrub auth via `filter_headers` and strip identifying response headers via
-  `scrub_response_headers(...)` from `opentelemetry.test_util_genai.vcr`.
+  `scrub_response_headers(...)` from `observeinc.test_util_genai.vcr`.
   Diff each new cassette before committing — leaked API keys, org ids, or
   `Set-Cookie` values block the PR.
 - **AI-generated cassettes**: if you lack provider access, you may

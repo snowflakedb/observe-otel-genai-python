@@ -9,20 +9,20 @@ import agents
 import agents.tracing
 import pytest
 
-from opentelemetry.instrumentation.genai.openai_agents import (
+from observeinc.instrumentation.genai.openai_agents import (
     OpenAIAgentsInstrumentor,
 )
-from opentelemetry.instrumentation.genai.openai_agents.package import (
+from observeinc.instrumentation.genai.openai_agents.package import (
     _instruments,
 )
-from opentelemetry.instrumentation.genai.openai_agents.processor import (
+from observeinc.instrumentation.genai.openai_agents.processor import (
     GenAITracingProcessor,
 )
+from observeinc.test_util_genai.instrumentor import instrument
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
-from opentelemetry.test_util_genai.instrumentor import instrument
 from opentelemetry.trace import StatusCode
 
 

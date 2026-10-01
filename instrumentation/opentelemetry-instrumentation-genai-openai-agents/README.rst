@@ -54,7 +54,7 @@ workflow span with the agent and tool spans nested underneath.
 
     from agents import Agent, Runner, function_tool
 
-    from opentelemetry.instrumentation.genai.openai_agents import (
+    from observeinc.instrumentation.genai.openai_agents import (
         OpenAIAgentsInstrumentor,
     )
 

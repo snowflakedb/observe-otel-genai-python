@@ -11,6 +11,40 @@ from enum import Enum
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from observeinc.util.genai._inference_invocation import LLMInvocation
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import (
+    Blob,
+    BlobPart,
+    ContentCapturingMode,
+    File,
+    FilePart,
+    GenericPart,
+    InputMessage,
+    MessagePart,
+    Modality,
+    OutputMessage,
+    Reasoning,
+    ReasoningPart,
+    Role,
+    SystemInstructionPart,
+    Text,
+    TextPart,
+    Uri,
+    UriPart,
+)
+from observeinc.util.genai.utils import (
+    _should_emit_event,
+    bind_arguments,
+    decode_base64,
+    gen_ai_json_dumps,
+    get_argument,
+    get_content_capturing_mode,
+    get_signature,
+    image_from_url,
+    should_capture_content_on_spans,
+    should_emit_event,
+)
 from opentelemetry import trace
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
@@ -32,40 +66,6 @@ from opentelemetry.semconv.attributes import (
 )
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai._inference_invocation import LLMInvocation
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import (
-    Blob,
-    BlobPart,
-    ContentCapturingMode,
-    File,
-    FilePart,
-    GenericPart,
-    InputMessage,
-    MessagePart,
-    Modality,
-    OutputMessage,
-    Reasoning,
-    ReasoningPart,
-    Role,
-    SystemInstructionPart,
-    Text,
-    TextPart,
-    Uri,
-    UriPart,
-)
-from opentelemetry.util.genai.utils import (
-    _should_emit_event,
-    bind_arguments,
-    decode_base64,
-    gen_ai_json_dumps,
-    get_argument,
-    get_content_capturing_mode,
-    get_signature,
-    image_from_url,
-    should_capture_content_on_spans,
-    should_emit_event,
-)
 
 
 def _create_input_message(
@@ -1993,7 +1993,7 @@ class TestArgumentBinding(unittest.TestCase):
         self.assertIs(sig_fn1, sig_fn2)
 
     def test_get_signature_local_function_not_cached(self):
-        from opentelemetry.util.genai.utils import _cached_signature
+        from observeinc.util.genai.utils import _cached_signature
 
         def local_fn(x: int):
             pass
@@ -2007,7 +2007,7 @@ class TestArgumentBinding(unittest.TestCase):
         self.assertEqual(sig1, sig2)
 
     def test_get_signature_local_method_not_cached(self):
-        from opentelemetry.util.genai.utils import _cached_signature
+        from observeinc.util.genai.utils import _cached_signature
 
         class LocalService:
             def execute(self, x: int):
@@ -2025,7 +2025,7 @@ class TestArgumentBinding(unittest.TestCase):
     def test_cached_signature_lru_eviction(self):
         from functools import lru_cache
 
-        from opentelemetry.util.genai.utils import _cached_signature
+        from observeinc.util.genai.utils import _cached_signature
 
         cached_fn = lru_cache(maxsize=2)(_cached_signature.__wrapped__)
 
@@ -2069,9 +2069,7 @@ class TestArgumentBinding(unittest.TestCase):
         def sample_func(user_id: str | None = None):
             pass
 
-        with patch(
-            "opentelemetry.util.genai.utils.bind_arguments"
-        ) as mock_bind:
+        with patch("observeinc.util.genai.utils.bind_arguments") as mock_bind:
             val = get_argument(
                 "user_id",
                 sample_func,

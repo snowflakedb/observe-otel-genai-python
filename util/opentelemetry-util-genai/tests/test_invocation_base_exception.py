@@ -16,13 +16,13 @@ from unittest import TestCase
 
 import pytest
 
+from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 from opentelemetry.trace.status import StatusCode
-from opentelemetry.util.genai.handler import TelemetryHandler
 
 # Bounds every await in the cancellation scenarios below. The scenarios park on
 # ``asyncio.sleep(60)`` -- effectively forever -- so that a cancellation that

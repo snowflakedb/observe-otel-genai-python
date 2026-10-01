@@ -5,10 +5,10 @@
 
 from unittest.mock import MagicMock, patch, sentinel
 
-from opentelemetry.instrumentation.genai.claude_agent_sdk import (
+from observeinc.instrumentation.genai.claude_agent_sdk import (
     ClaudeAgentSDKInstrumentor,
 )
-from opentelemetry.test_util_genai.instrumentor import instrument
+from observeinc.test_util_genai.instrumentor import instrument
 
 
 def test_completion_hook_forwarded_to_handler(
@@ -18,7 +18,7 @@ def test_completion_hook_forwarded_to_handler(
     hook = MagicMock()
     with (
         patch(
-            "opentelemetry.instrumentation.genai.claude_agent_sdk.TelemetryHandler"
+            "observeinc.instrumentation.genai.claude_agent_sdk.TelemetryHandler"
         ) as handler_cls,
         instrument(
             ClaudeAgentSDKInstrumentor(),
@@ -37,10 +37,10 @@ def test_completion_hook_defaults_to_load_completion_hook(
     """Without an explicit hook, the one from load_completion_hook() is used."""
     with (
         patch(
-            "opentelemetry.instrumentation.genai.claude_agent_sdk.TelemetryHandler"
+            "observeinc.instrumentation.genai.claude_agent_sdk.TelemetryHandler"
         ) as handler_cls,
         patch(
-            "opentelemetry.instrumentation.genai.claude_agent_sdk.load_completion_hook",
+            "observeinc.instrumentation.genai.claude_agent_sdk.load_completion_hook",
             return_value=sentinel.default_hook,
         ) as load_hook,
         instrument(

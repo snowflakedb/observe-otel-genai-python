@@ -22,20 +22,20 @@ try:
 except ImportError:
     from httpx2 import URL
 
-from opentelemetry.instrumentation.genai.openai.patch import (
+from observeinc.instrumentation.genai.openai.patch import (
     _create_embedding_invocation as create_embedding_invocation,
 )
-from opentelemetry.instrumentation.genai.openai.patch import (
+from observeinc.instrumentation.genai.openai.patch import (
     async_embeddings_create,
     embeddings_create,
 )
+from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
 from opentelemetry.semconv._incubating.attributes import (
     server_attributes as ServerAttributes,
 )
-from opentelemetry.util.genai.handler import TelemetryHandler
 
 
 def _make_client(base_url: str | URL | None = "https://api.openai.com/v1"):

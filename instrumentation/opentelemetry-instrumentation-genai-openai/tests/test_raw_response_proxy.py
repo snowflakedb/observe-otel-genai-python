@@ -16,14 +16,14 @@ import logging
 import pytest
 from openai import AsyncStream, Stream
 
-from opentelemetry.instrumentation.genai.openai._raw_response import (
+from observeinc.instrumentation.genai.openai._raw_response import (
     RawResponseStreamProxy,
     wrap_stream_result,
 )
-from opentelemetry.instrumentation.genai.openai.chat_wrappers import (
+from observeinc.instrumentation.genai.openai.chat_wrappers import (
     ChatStreamWrapper,
 )
-from opentelemetry.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.handler import TelemetryHandler
 
 
 class _HttpResponse:
@@ -139,7 +139,7 @@ def test_parse_non_stream_returned_untouched(caplog):
 
     with caplog.at_level(
         logging.DEBUG,
-        logger="opentelemetry.instrumentation.genai.openai._raw_response",
+        logger="observeinc.instrumentation.genai.openai._raw_response",
     ):
         parsed = proxy.parse()
     assert parsed == "not-a-stream"  # handed back untouched
@@ -225,7 +225,7 @@ async def test_parse_awaited_non_stream_returned_untouched(caplog):
 
     with caplog.at_level(
         logging.DEBUG,
-        logger="opentelemetry.instrumentation.genai.openai._raw_response",
+        logger="observeinc.instrumentation.genai.openai._raw_response",
     ):
         parsed = await proxy.parse()
 

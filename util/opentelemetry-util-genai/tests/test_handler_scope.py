@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from observeinc.util.genai.handler import (
+    TelemetryHandler,
+)
+from observeinc.util.genai.version import __version__
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
     InMemoryLogRecordExporter,
@@ -12,13 +16,9 @@ from opentelemetry.sdk._logs.export import (
 )
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai.handler import (
-    TelemetryHandler,
-)
-from opentelemetry.util.genai.version import __version__
 
 _SCHEMA_URL = Schemas.V1_37_0.value
-_UTIL_SCOPE = "opentelemetry.util.genai.handler"
+_UTIL_SCOPE = "observeinc.util.genai.handler"
 
 
 class TelemetryHandlerScopeTest(TestBase):
@@ -46,7 +46,7 @@ class TelemetryHandlerScopeTest(TestBase):
                 tracer_provider=self.tracer_provider,
                 meter_provider=self.meter_provider,
                 logger_provider=self.logger_provider,
-                instrumentation_scope_name="opentelemetry.instrumentation.genai.example",
+                instrumentation_scope_name="observeinc.instrumentation.genai.example",
                 instrumentation_scope_version="4.2b0",
             )
             self._emit(handler)
@@ -54,7 +54,7 @@ class TelemetryHandlerScopeTest(TestBase):
         span = self.memory_exporter.get_finished_spans()[0]
         self.assertEqual(
             span.instrumentation_scope.name,
-            "opentelemetry.instrumentation.genai.example",
+            "observeinc.instrumentation.genai.example",
         )
         self.assertEqual(span.instrumentation_scope.version, "4.2b0")
         self.assertEqual(span.instrumentation_scope.schema_url, _SCHEMA_URL)
@@ -66,7 +66,7 @@ class TelemetryHandlerScopeTest(TestBase):
         ]
         self.assertEqual(len(scopes), 1)
         self.assertEqual(
-            scopes[0].name, "opentelemetry.instrumentation.genai.example"
+            scopes[0].name, "observeinc.instrumentation.genai.example"
         )
         self.assertEqual(scopes[0].version, "4.2b0")
         self.assertEqual(scopes[0].schema_url, _SCHEMA_URL)
@@ -75,7 +75,7 @@ class TelemetryHandlerScopeTest(TestBase):
             0
         ].instrumentation_scope
         self.assertEqual(
-            log_scope.name, "opentelemetry.instrumentation.genai.example"
+            log_scope.name, "observeinc.instrumentation.genai.example"
         )
         self.assertEqual(log_scope.version, "4.2b0")
         self.assertEqual(log_scope.schema_url, _SCHEMA_URL)

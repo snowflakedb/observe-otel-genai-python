@@ -29,7 +29,7 @@ Check out the `manual example <examples/manual>`_ for more details.
 
 .. code-block:: python
 
-    from opentelemetry.instrumentation.genai.claude_agent_sdk import ClaudeAgentSDKInstrumentor
+    from observeinc.instrumentation.genai.claude_agent_sdk import ClaudeAgentSDKInstrumentor
     from claude_agent_sdk import ClaudeAgentOptions, AgentDefinition, AssistantMessage, TextBlock, query
 
     # Instrument Claude Agent SDK

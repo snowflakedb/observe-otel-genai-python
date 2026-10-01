@@ -21,6 +21,10 @@ from claude_agent_sdk import (
     query,
 )
 
+from observeinc.instrumentation.genai.claude_agent_sdk import (
+    ClaudeAgentSDKInstrumentor,
+)
+
 # NOTE: OpenTelemetry Python Logs and Events APIs are in beta
 from opentelemetry import _logs, metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
@@ -31,9 +35,6 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
 )
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter,
-)
-from opentelemetry.instrumentation.genai.claude_agent_sdk import (
-    ClaudeAgentSDKInstrumentor,
 )
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor

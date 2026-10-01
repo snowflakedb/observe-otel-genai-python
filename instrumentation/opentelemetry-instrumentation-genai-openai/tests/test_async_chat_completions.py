@@ -13,6 +13,7 @@ from openai import (
 from openai.types.chat import ChatCompletion
 from pydantic import BaseModel
 
+from observeinc.util.genai.utils import is_experimental_mode
 from opentelemetry.semconv._incubating.attributes import (
     error_attributes as ErrorAttributes,
 )
@@ -25,7 +26,6 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.semconv._incubating.attributes import (
     server_attributes as ServerAttributes,
 )
-from opentelemetry.util.genai.utils import is_experimental_mode
 
 from .test_utils import (
     CACHEABLE_MESSAGES,

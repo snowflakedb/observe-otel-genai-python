@@ -24,12 +24,14 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from openai import AuthenticationError
 
-from opentelemetry.instrumentation.genai.langchain import (
+from observeinc.instrumentation.genai.langchain import (
     LangChainInstrumentor,
 )
-from opentelemetry.instrumentation.genai.langchain.utils import (
+from observeinc.instrumentation.genai.langchain.utils import (
     to_input_messages,
 )
+from observeinc.test_util_genai.instrumentor import instrument
+from observeinc.util.genai.types import TextPart
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.semconv._incubating.attributes import (
     event_attributes as EventAttributes,
@@ -37,8 +39,6 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from opentelemetry.semconv.attributes import error_attributes
-from opentelemetry.test_util_genai.instrumentor import instrument
-from opentelemetry.util.genai.types import TextPart
 
 
 def _openai_cassette_name(model, base: str) -> str:

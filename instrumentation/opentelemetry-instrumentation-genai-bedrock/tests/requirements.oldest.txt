@@ -1,9 +1,0 @@
-# Copyright The OpenTelemetry Authors
-# SPDX-License-Identifier: Apache-2.0
-
-# The oldest tox factor resolves declared dependencies from pyproject.toml
-# with UV_RESOLUTION=lowest-direct.
-
-# Test-only dep with no pyproject.toml bound, so it is pinned here. This is the
-# aiobotocore release that resolves against the declared boto3 lower bound.
-aiobotocore == 2.25.2

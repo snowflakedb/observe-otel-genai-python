@@ -24,18 +24,18 @@ from unittest import mock
 
 from agents import Agent, Runner, function_tool
 
-from opentelemetry.instrumentation.genai.openai_agents import (
+from observeinc.instrumentation.genai.openai_agents import (
     OpenAIAgentsInstrumentor,
 )
+from observeinc.test_util_genai.conformance import (
+    ExpectedViolation,
+    Scenario,
+)
+from observeinc.test_util_genai.instrumentor import instrument
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.test.weaver_live_check import LiveCheckReport
-from opentelemetry.test_util_genai.conformance import (
-    ExpectedViolation,
-    Scenario,
-)
-from opentelemetry.test_util_genai.instrumentor import instrument
 
 DEFAULT_MODEL = "gpt-4o-mini"
 

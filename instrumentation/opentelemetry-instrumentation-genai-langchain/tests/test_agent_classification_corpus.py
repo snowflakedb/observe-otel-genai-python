@@ -21,15 +21,15 @@ from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 from typing_extensions import Self
 
-import opentelemetry.instrumentation.genai.langchain as langchain_instrumentation
-from opentelemetry.instrumentation.genai.langchain import (
+import observeinc.instrumentation.genai.langchain as langchain_instrumentation
+from observeinc.instrumentation.genai.langchain import (
     LangChainInstrumentor,
     agent_context,
 )
-from opentelemetry.instrumentation.genai.langchain.callback_handler import (
+from observeinc.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
-from opentelemetry.util.genai.invocation import (
+from observeinc.util.genai.invocation import (
     LocalAgentInvocation,
     ToolInvocation,
     WorkflowInvocation,

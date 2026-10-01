@@ -15,16 +15,18 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 from langchain_core.tools import tool
 
-from opentelemetry.instrumentation._semconv import (
-    _OpenTelemetrySemanticConventionStability,
-)
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
-from opentelemetry.instrumentation.genai.langchain.callback_handler import (
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
-from opentelemetry.instrumentation.genai.langchain.utils import (
+from observeinc.instrumentation.genai.langchain.utils import (
     _get_property_value,
     prepare_tool_definitions,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import FunctionToolDefinition
+from opentelemetry.instrumentation._semconv import (
+    _OpenTelemetrySemanticConventionStability,
 )
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
@@ -41,8 +43,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv.attributes import error_attributes
 from opentelemetry.trace import StatusCode
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import FunctionToolDefinition
 
 
 @pytest.fixture(autouse=True)

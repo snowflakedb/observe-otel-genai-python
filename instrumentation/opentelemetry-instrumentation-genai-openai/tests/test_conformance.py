@@ -17,11 +17,11 @@ import pytest
 # Skip collection when weaver_live_check isn't installed (non-conformance envs).
 pytest.importorskip("opentelemetry.test.weaver_live_check")
 
-from opentelemetry.test.weaver_live_check import WeaverLiveCheck
-from opentelemetry.test_util_genai.conformance import (
+from observeinc.test_util_genai.conformance import (
     Scenario,
     run_conformance,
 )
+from opentelemetry.test.weaver_live_check import WeaverLiveCheck
 
 from .conformance.embedding import EmbeddingScenario
 from .conformance.inference import InferenceScenario

@@ -50,7 +50,7 @@ calls nested underneath.
     from langgraph.graph import END, START, StateGraph
     from langgraph.graph.message import add_messages
 
-    from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
+    from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
 
     LangChainInstrumentor().instrument()
 

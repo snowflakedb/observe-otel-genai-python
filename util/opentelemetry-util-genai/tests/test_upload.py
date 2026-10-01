@@ -14,12 +14,12 @@ from unittest.mock import ANY, MagicMock, patch
 
 import fsspec
 
-from opentelemetry._logs import LogRecord
-from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai import types
-from opentelemetry.util.genai._upload.completion_hook import (
+from observeinc.util.genai import types
+from observeinc.util.genai._upload.completion_hook import (
     UploadCompletionHook,
 )
+from opentelemetry._logs import LogRecord
+from opentelemetry.test.test_base import TestBase
 
 # Use MemoryFileSystem for testing
 # https://filesystem-spec.readthedocs.io/en/latest/api.html#fsspec.implementations.memory.MemoryFileSystem
@@ -83,7 +83,7 @@ class ThreadSafeMagicMock(MagicMock):
 class TestUploadCompletionHook(TestCase):
     def setUp(self):
         self._fsspec_patcher = patch(
-            "opentelemetry.util.genai._upload.completion_hook.fsspec"
+            "observeinc.util.genai._upload.completion_hook.fsspec"
         )
         mock_fsspec = self._fsspec_patcher.start()
         self.mock_fs = ThreadSafeMagicMock()
@@ -312,7 +312,7 @@ class TestUploadCompletionHook(TestCase):
     def test_threadpool_max_workers(self):
         for max_queue_size, expect_threadpool_workers in ((10, 10), (100, 64)):
             with patch(
-                "opentelemetry.util.genai._upload.completion_hook.ThreadPoolExecutor"
+                "observeinc.util.genai._upload.completion_hook.ThreadPoolExecutor"
             ) as mock:
                 hook = UploadCompletionHook(
                     base_path=BASE_PATH, max_queue_size=max_queue_size

@@ -14,6 +14,10 @@ from agents import (
 )
 from dotenv import load_dotenv
 
+from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.instrumentation.genai.openai_agents import (
+    OpenAIAgentsInstrumentor,
+)
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
@@ -24,10 +28,6 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
 )
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter,
-)
-from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
-from opentelemetry.instrumentation.genai.openai_agents import (
-    OpenAIAgentsInstrumentor,
 )
 from opentelemetry.metrics import set_meter_provider
 from opentelemetry.sdk._logs import LoggerProvider
