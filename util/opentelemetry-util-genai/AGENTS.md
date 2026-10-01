@@ -73,7 +73,7 @@ stay open until then. Do **not** call `invocation.stop()` when the SDK returns t
 span would close before any chunks arrive.
 
 Instrument streams by subclassing `SyncStreamWrapper` / `AsyncStreamWrapper` from
-`opentelemetry.util.genai.stream` (the public, supported helpers). The base class proxies the
+`observeinc.util.genai.stream` (the public, supported helpers). The base class proxies the
 underlying SDK stream, drives iteration, and finalizes telemetry exactly once on success, error,
 or `close()`. Subclasses pass the SDK stream to `super().__init__(stream)` and implement three
 hooks:

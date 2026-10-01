@@ -7,10 +7,10 @@ from unittest import mock
 
 import pytest
 
-from opentelemetry.instrumentation.genai.langchain.invocation_manager import (
+from observeinc.instrumentation.genai.langchain.invocation_manager import (
     _InvocationManager,
 )
-from opentelemetry.util.genai.invocation import InferenceInvocation
+from observeinc.util.genai.invocation import InferenceInvocation
 
 
 @pytest.fixture

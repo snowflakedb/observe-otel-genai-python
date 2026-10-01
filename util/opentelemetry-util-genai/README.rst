@@ -27,7 +27,7 @@ Key Components
 Usage
 -----
 
-See the module docstring in ``opentelemetry.util.genai.handler`` for usage examples,
+See the module docstring in ``observeinc.util.genai.handler`` for usage examples,
 including context manager and manual lifecycle patterns.
 
 
@@ -74,7 +74,7 @@ while a user id is set. Wrap the code that serves a user in ``using_user_id``:
 
 .. code-block:: python
 
-    from opentelemetry.util.genai.user_id import using_user_id
+    from observeinc.util.genai.user_id import using_user_id
 
     with using_user_id("user-123"):
         agent.run(...)
@@ -114,14 +114,14 @@ counters to the input or output ones.
 Modalities
 ----------
 
-``opentelemetry.util.genai.types.Modality`` provides string enum members
+``observeinc.util.genai.types.Modality`` provides string enum members
 ``TEXT``, ``IMAGE``, ``VIDEO``, ``AUDIO``, and ``DOCUMENT``. Use these constants
 when constructing ``BlobPart``, ``FilePart``, and ``UriPart`` or passing
 modality/token-count pairs to the inference invocation's token setters:
 
 .. code-block:: python
 
-    from opentelemetry.util.genai.types import Modality, UriPart
+    from observeinc.util.genai.types import Modality, UriPart
 
     image = UriPart(
         mime_type="image/png",
@@ -143,11 +143,11 @@ Retrieval Documents
 -------------------
 
 Set ``RetrievalInvocation.documents`` using
-``opentelemetry.util.genai.types.RetrievalDocument`` objects:
+``observeinc.util.genai.types.RetrievalDocument`` objects:
 
 .. code-block:: python
 
-    from opentelemetry.util.genai.types import RetrievalDocument
+    from observeinc.util.genai.types import RetrievalDocument
 
     with handler.retrieval(data_source_id="my-index") as invocation:
         invocation.documents = [RetrievalDocument(id="doc-1", score=0.9)]

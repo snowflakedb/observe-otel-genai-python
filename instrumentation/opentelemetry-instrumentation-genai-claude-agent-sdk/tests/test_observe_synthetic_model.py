@@ -15,8 +15,8 @@ from claude_agent_sdk.types import (
     TextBlock,
 )
 
+from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry import trace
-from opentelemetry.util.genai.handler import TelemetryHandler
 
 from .test_stream import (
     SESSION,

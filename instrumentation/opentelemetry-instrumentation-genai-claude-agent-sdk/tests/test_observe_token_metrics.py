@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from opentelemetry.test_util_genai._observe_token_metrics import (
+from observeinc.test_util_genai._observe_token_metrics import (
     assert_token_metrics_match_spans,
 )
-from opentelemetry.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.handler import TelemetryHandler
 
 from .test_recordings import RECORDINGS, replay
 

@@ -11,14 +11,14 @@ from unittest.mock import patch
 
 import pytest
 
-from opentelemetry.util.genai._upload.completion_hook import (
+from observeinc.util.genai._upload.completion_hook import (
     UploadCompletionHook,
 )
-from opentelemetry.util.genai.completion_hook import (
+from observeinc.util.genai.completion_hook import (
     _NoOpCompletionHook,
     _SafeCompletionHook,
 )
-from opentelemetry.util.genai.completion_hook import (
+from observeinc.util.genai.completion_hook import (
     load_completion_hook as real_load_completion_hook,
 )
 
@@ -64,12 +64,12 @@ def test_upload_entry_point(load_completion_hook):
 def test_upload_entry_point_no_fsspec(load_completion_hook):
     """Tests that the a no-op uploader is used when fsspec is not installed"""
 
-    from opentelemetry.util.genai import _upload
+    from observeinc.util.genai import _upload
 
     # Simulate fsspec imports failing
     with patch.dict(
         sys.modules,
-        {"opentelemetry.util.genai._upload.completion_hook": None},
+        {"observeinc.util.genai._upload.completion_hook": None},
     ):
         importlib.reload(_upload)
         assert isinstance(load_completion_hook(), _NoOpCompletionHook)

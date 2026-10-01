@@ -34,13 +34,13 @@ pay for on each sync.
 ```
 ├── instrumentation/
 │   └── opentelemetry-instrumentation-genai-<name>/  # one package per GenAI library
-│       ├── src/opentelemetry/instrumentation/genai/<name>/
+│       ├── src/observeinc/instrumentation/genai/<name>/
 │       ├── tests/
 │       ├── CHANGELOG.md
 │       └── pyproject.toml
 └── util/
     ├── opentelemetry-util-genai/                    # shared GenAI utilities
-    │   ├── src/opentelemetry/util/genai/
+    │   ├── src/observeinc/util/genai/
     │   ├── tests/
     │   ├── CHANGELOG.md
     │   └── pyproject.toml
@@ -53,11 +53,16 @@ version, and entry points. `tox.ini` defines the test matrix.
 ## Package naming
 
 Instrumentation packages are named `observe-instrumentation-genai-<name>` and
-import as `opentelemetry.instrumentation.genai.<name>`.
+import as `observeinc.instrumentation.genai.<name>`.
 
-Import paths, module layout, and class names are upstream's, unchanged. Only the
-distribution name in `pyproject.toml` differs. Keeping it that way is what makes
-a sync cheap, so don't rename anything to make it look like ours.
+The import paths are our own so that our packages and upstream's can be
+installed together without overwriting each other's files.
+`scripts/rename_namespace.py` moves upstream's `opentelemetry.util.genai` and
+`opentelemetry.instrumentation.genai.*` under `observeinc`, and
+`scripts/sync_upstream.sh` applies the same rename to upstream before merging,
+so the rename itself never conflicts. Class names, environment variables, entry
+point groups, and directory names are upstream's, unchanged. Don't rename
+anything else: every extra difference is a conflict on the next sync.
 
 Package versions still match upstream's. We plan to move to our own version
 line, shared by all packages, before the first release.
@@ -112,7 +117,7 @@ package that does call a provider follows these rules:
   writes the cassette on the live call.
 - **Sanitize**: every package's `vcr_config()` in `tests/conftest.py` must scrub
   auth via `filter_headers` and strip identifying response headers via
-  `scrub_response_headers(...)` from `opentelemetry.test_util_genai.vcr`. Diff each new
+  `scrub_response_headers(...)` from `observeinc.test_util_genai.vcr`. Diff each new
   cassette before committing — leaked API keys, org ids, or `Set-Cookie` values
   block the PR.
 - **CI**: replay only.

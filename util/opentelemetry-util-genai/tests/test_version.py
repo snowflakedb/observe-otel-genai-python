@@ -3,7 +3,7 @@
 
 import unittest
 
-from opentelemetry.util.genai.version import __version__
+from observeinc.util.genai.version import __version__
 
 
 class TestVersion(unittest.TestCase):

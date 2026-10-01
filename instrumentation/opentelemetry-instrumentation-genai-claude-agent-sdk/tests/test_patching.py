@@ -34,10 +34,10 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk._internal.message_parser import parse_message
 
-from opentelemetry.instrumentation.genai.claude_agent_sdk import (
+from observeinc.instrumentation.genai.claude_agent_sdk import (
     ClaudeAgentSDKInstrumentor,
 )
-from opentelemetry.test_util_genai.instrumentor import instrument
+from observeinc.test_util_genai.instrumentor import instrument
 
 SESSION = "session-abc"
 MODEL = "claude-sonnet-4-5"

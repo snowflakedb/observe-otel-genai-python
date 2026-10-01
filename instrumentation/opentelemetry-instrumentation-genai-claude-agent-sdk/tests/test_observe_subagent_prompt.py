@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from opentelemetry.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.handler import TelemetryHandler
 
 from .test_recordings import RECORDINGS, replay
 

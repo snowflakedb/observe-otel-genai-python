@@ -4,12 +4,12 @@
 import os
 from unittest.mock import MagicMock, patch
 
+from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
 from opentelemetry.instrumentation._semconv import (
     _OpenTelemetrySemanticConventionStability,
-)
-from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
-from opentelemetry.util.genai.environment_variables import (
-    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
 )
 
 from .test_utils import DEFAULT_MODEL, USER_ONLY_PROMPT
@@ -77,7 +77,7 @@ def test_default_hook_loaded_from_env(
     default_hook = MagicMock()
     instrumentor = OpenAIInstrumentor()
     with patch(
-        "opentelemetry.instrumentation.genai.openai.load_completion_hook",
+        "observeinc.instrumentation.genai.openai.load_completion_hook",
         return_value=default_hook,
     ):
         instrumentor.instrument(

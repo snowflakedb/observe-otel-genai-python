@@ -5,8 +5,8 @@
 
 from unittest.mock import MagicMock, patch, sentinel
 
-from opentelemetry.instrumentation.genai.langchain import LangChainInstrumentor
-from opentelemetry.test_util_genai.instrumentor import instrument
+from observeinc.instrumentation.genai.langchain import LangChainInstrumentor
+from observeinc.test_util_genai.instrumentor import instrument
 
 
 def test_completion_hook_forwarded_to_handler(
@@ -16,7 +16,7 @@ def test_completion_hook_forwarded_to_handler(
     hook = MagicMock()
     with (
         patch(
-            "opentelemetry.instrumentation.genai.langchain.TelemetryHandler"
+            "observeinc.instrumentation.genai.langchain.TelemetryHandler"
         ) as get_handler,
         instrument(
             LangChainInstrumentor(),
@@ -35,10 +35,10 @@ def test_completion_hook_defaults_to_load_completion_hook(
     """Without an explicit hook, the one from load_completion_hook() is used."""
     with (
         patch(
-            "opentelemetry.instrumentation.genai.langchain.TelemetryHandler"
+            "observeinc.instrumentation.genai.langchain.TelemetryHandler"
         ) as get_handler,
         patch(
-            "opentelemetry.instrumentation.genai.langchain.load_completion_hook",
+            "observeinc.instrumentation.genai.langchain.load_completion_hook",
             return_value=sentinel.default_hook,
         ) as load_hook,
         instrument(

@@ -11,7 +11,7 @@ the rest of the session — which test_patching.py, going through the patched
 entry points, would then be running against.
 """
 
-from opentelemetry.instrumentation.genai.claude_agent_sdk import (
+from observeinc.instrumentation.genai.claude_agent_sdk import (
     ClaudeAgentSDKInstrumentor,
 )
 

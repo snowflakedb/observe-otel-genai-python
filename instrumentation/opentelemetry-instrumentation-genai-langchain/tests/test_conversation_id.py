@@ -23,10 +23,11 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
-from opentelemetry.instrumentation.genai.langchain import agent_context
-from opentelemetry.instrumentation.genai.langchain.callback_handler import (
+from observeinc.instrumentation.genai.langchain import agent_context
+from observeinc.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
+from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -35,7 +36,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
-from opentelemetry.util.genai.handler import TelemetryHandler
 
 _CONVERSATION_ID = GenAI.GEN_AI_CONVERSATION_ID
 

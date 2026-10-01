@@ -14,11 +14,11 @@ import pytest
 pytest.importorskip("opentelemetry.test.weaver_live_check")
 pytest.importorskip("opentelemetry.exporter.otlp.proto.grpc")
 
-from opentelemetry.test.weaver_live_check import WeaverLiveCheck
-from opentelemetry.test_util_genai.conformance import (
+from observeinc.test_util_genai.conformance import (
     Scenario,
     run_conformance,
 )
+from opentelemetry.test.weaver_live_check import WeaverLiveCheck
 
 from .conformance.orchestration import OrchestrationScenario
 

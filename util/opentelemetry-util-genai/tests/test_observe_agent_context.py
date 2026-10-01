@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import Error, LLMInvocation
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
 from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import Error, LLMInvocation
 
 AGENT = GenAI.GEN_AI_AGENT_NAME
 

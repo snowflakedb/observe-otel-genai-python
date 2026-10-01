@@ -8,13 +8,13 @@ from typing import Any
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
-from opentelemetry.util.genai.completion_hook import (
+from observeinc.util.genai.completion_hook import (
     CompletionHook,
     _NoOpCompletionHook,
     _SafeCompletionHook,
     load_completion_hook,
 )
-from opentelemetry.util.genai.environment_variables import (
+from observeinc.util.genai.environment_variables import (
     OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK,
 )
 
@@ -40,7 +40,7 @@ class TestCompletionHook(TestCase):
         self.assertIsInstance(load_completion_hook(), _NoOpCompletionHook)
 
     @patch(
-        "opentelemetry.util.genai.completion_hook.entry_points",
+        "observeinc.util.genai.completion_hook.entry_points",
     )
     @patch.dict(
         "os.environ", {OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK: "my-hook"}
@@ -54,7 +54,7 @@ class TestCompletionHook(TestCase):
         self.assertIsInstance(hook, _SafeCompletionHook)
         self.assertIsInstance(hook._wrapped, FakeCompletionHook)
 
-    @patch("opentelemetry.util.genai.completion_hook.entry_points")
+    @patch("observeinc.util.genai.completion_hook.entry_points")
     @patch.dict(
         "os.environ", {OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK: "my-hook"}
     )
@@ -70,7 +70,7 @@ class TestCompletionHook(TestCase):
             "is not a valid CompletionHook. Using noop", logs.output[0]
         )
 
-    @patch("opentelemetry.util.genai.completion_hook.entry_points")
+    @patch("observeinc.util.genai.completion_hook.entry_points")
     @patch.dict(
         "os.environ", {OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK: "my-hook"}
     )
@@ -82,7 +82,7 @@ class TestCompletionHook(TestCase):
 
         self.assertIsInstance(load_completion_hook(), _NoOpCompletionHook)
 
-    @patch("opentelemetry.util.genai.completion_hook.entry_points")
+    @patch("observeinc.util.genai.completion_hook.entry_points")
     @patch.dict(
         "os.environ", {OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK: "my-hook"}
     )
@@ -119,7 +119,7 @@ class TestSafeCompletionHook(TestCase):
         safe = _SafeCompletionHook(RaisingCompletionHook())
 
         with self.assertLogs(
-            "opentelemetry.util.genai.completion_hook", level=logging.WARNING
+            "observeinc.util.genai.completion_hook", level=logging.WARNING
         ) as logs:
             safe.on_completion(
                 inputs=[],

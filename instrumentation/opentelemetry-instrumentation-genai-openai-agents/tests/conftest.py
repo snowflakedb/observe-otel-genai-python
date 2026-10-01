@@ -7,15 +7,15 @@ import os
 
 import pytest
 
-pytest.register_assert_rewrite("opentelemetry.test_util_genai.vcr")
+pytest.register_assert_rewrite("observeinc.test_util_genai.vcr")
 
-from opentelemetry.test_util_genai.vcr import (
+from observeinc.test_util_genai.vcr import (
     scrub_response_headers_overwrite,
 )
 
 pytest_plugins = [
-    "opentelemetry.test_util_genai.fixtures",
-    "opentelemetry.test_util_genai.vcr",
+    "observeinc.test_util_genai.fixtures",
+    "observeinc.test_util_genai.vcr",
 ]
 
 

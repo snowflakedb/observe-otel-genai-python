@@ -10,12 +10,12 @@ from typing import Any
 
 from openai import OpenAI
 
-from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.test_util_genai.conformance import Scenario
+from observeinc.test_util_genai.instrumentor import instrument
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.test_util_genai.conformance import Scenario
-from opentelemetry.test_util_genai.instrumentor import instrument
 
 DEFAULT_MODEL = "gpt-4o-mini"
 WEATHER_TOOL_PROMPT = [

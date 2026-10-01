@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import Error, Modality
 from opentelemetry.sdk.metrics.export import Histogram, Sum
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
 from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import Error, Modality
 
 USAGE = "gen_ai.client.inference.usage."
 OPERATION = "gen_ai.client.inference.operation."

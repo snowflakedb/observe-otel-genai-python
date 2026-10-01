@@ -8,15 +8,15 @@ import os
 import pytest
 from openai import AsyncOpenAI, OpenAI
 
-from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.test_util_genai.instrumentor import instrument
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
-from opentelemetry.test_util_genai.instrumentor import instrument
 
 pytest_plugins = [
-    "opentelemetry.test_util_genai.fixtures",
-    "opentelemetry.test_util_genai.vcr",
+    "observeinc.test_util_genai.fixtures",
+    "observeinc.test_util_genai.vcr",
 ]
 
 
@@ -38,7 +38,7 @@ def async_openai_client():
 
 @pytest.fixture(scope="module")
 def vcr_config():
-    from opentelemetry.test_util_genai.vcr import (
+    from observeinc.test_util_genai.vcr import (
         scrub_response_headers_overwrite,
     )
 

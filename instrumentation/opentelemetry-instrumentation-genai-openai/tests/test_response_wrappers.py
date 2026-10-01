@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from opentelemetry.instrumentation.genai.openai.response_wrappers import (
+from observeinc.instrumentation.genai.openai.response_wrappers import (
     AsyncResponseStreamManagerWrapper,
     AsyncResponseStreamWrapper,
     FetchResponseStreamWrapper,

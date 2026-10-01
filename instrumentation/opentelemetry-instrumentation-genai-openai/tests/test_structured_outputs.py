@@ -7,13 +7,13 @@ import pytest
 from openai import NotFoundError
 from openai.resources.chat.completions import Completions
 
+from observeinc.util.genai.utils import is_experimental_mode
 from opentelemetry.semconv._incubating.attributes import (
     error_attributes as ErrorAttributes,
 )
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
-from opentelemetry.util.genai.utils import is_experimental_mode
 
 from .structured_outputs_utils import (
     STRUCTURED_OUTPUT_EXPECTED_INPUT_MESSAGES,

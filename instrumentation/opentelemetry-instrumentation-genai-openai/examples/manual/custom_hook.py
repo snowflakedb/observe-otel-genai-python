@@ -12,6 +12,14 @@ import os
 
 from openai import OpenAI
 
+from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.util.genai.completion_hook import CompletionHook
+from observeinc.util.genai.types import (
+    InputMessage,
+    MessagePart,
+    OutputMessage,
+    ToolDefinition,
+)
 from opentelemetry import _logs, metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
     OTLPLogExporter,
@@ -22,20 +30,12 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter,
 )
-from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.util.genai.completion_hook import CompletionHook
-from opentelemetry.util.genai.types import (
-    InputMessage,
-    MessagePart,
-    OutputMessage,
-    ToolDefinition,
-)
 
 
 class PrintCompletionHook(CompletionHook):

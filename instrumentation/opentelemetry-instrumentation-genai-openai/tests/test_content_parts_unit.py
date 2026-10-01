@@ -12,10 +12,10 @@ descriptors a well-formed request would not carry.
 
 from __future__ import annotations
 
-from opentelemetry.instrumentation.genai.openai.utils import (
+from observeinc.instrumentation.genai.openai.utils import (
     _content_to_parts,
 )
-from opentelemetry.util.genai.types import BlobPart, FilePart, TextPart
+from observeinc.util.genai.types import BlobPart, FilePart, TextPart
 
 
 def test_mp3_audio_uses_the_registered_mpeg_media_type():

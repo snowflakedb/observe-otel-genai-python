@@ -10,14 +10,14 @@ from typing import Any
 
 from agents.tracing.span_data import AgentSpanData, FunctionSpanData
 
-from opentelemetry.instrumentation.genai.openai_agents.processor import (
+from observeinc.instrumentation.genai.openai_agents.processor import (
     GenAITracingProcessor,
 )
+from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
-from opentelemetry.util.genai.handler import TelemetryHandler
 
 
 class _Span:

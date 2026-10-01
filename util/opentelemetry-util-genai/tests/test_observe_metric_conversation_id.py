@@ -9,12 +9,12 @@ from __future__ import annotations
 import os
 from unittest import mock
 
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import LLMInvocation
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
 from opentelemetry.test.test_base import TestBase
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import LLMInvocation
 
 CONVERSATION = GenAI.GEN_AI_CONVERSATION_ID
 FLAG = "OBSERVE_GENAI_METRICS_INCLUDE_CONVERSATION_ID"

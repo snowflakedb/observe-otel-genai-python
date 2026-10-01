@@ -137,7 +137,7 @@ violate:
    in the migrated package's `src/` or `tests/`. Verify with
    `rg openinference instrumentation/<target>` — output must be empty.
 2. **Public util-genai surface only.** Beyond the AGENTS.md rule, the migrated package
-   must not import any `opentelemetry.util.genai._*` module — the allowed
+   must not import any `observeinc.util.genai._*` module — the allowed
    modules are enumerated in step 4.
 3. **Ignore all other OpenInference instrumentations during the migration.** The only
    instrumentation code to read is the OpenInference package being migrated
@@ -245,7 +245,7 @@ OpenInference **only** what you actually reuse:
 - Reusable cassettes (step 9), if any.
 
 ```sh
-mkdir -p instrumentation/<target>/src/opentelemetry/instrumentation/genai/<lib>
+mkdir -p instrumentation/<target>/src/observeinc/instrumentation/genai/<lib>
 mkdir -p instrumentation/<target>/tests/conformance instrumentation/<target>/tests/cassettes
 cp <source-path>/LICENSE instrumentation/<target>/LICENSE
 cp instrumentation/opentelemetry-instrumentation-genai-anthropic/CHANGELOG.md instrumentation/<target>/CHANGELOG.md
@@ -265,8 +265,8 @@ OpenInference packages live at `src/openinference/instrumentation/<lib>/`.
 Move that tree under the OTel GenAI namespace, update path according to the target package name:
 
 ```sh
-mkdir -p src/opentelemetry/instrumentation/genai
-mv src/openinference/instrumentation/<lib> src/opentelemetry/instrumentation/genai/<lib>
+mkdir -p src/observeinc/instrumentation/genai
+mv src/openinference/instrumentation/<lib> src/observeinc/instrumentation/genai/<lib>
 rm -rf src/openinference
 ```
 
@@ -279,7 +279,7 @@ Update every import. Verify zero `openinference` references remain in
 - `[project] name` → new package name.
 - `[project.entry-points.opentelemetry_instrumentor]` → un-prefixed lib name
   pointing at the new module path
-  (`<lib> = "opentelemetry.instrumentation.genai.<lib>:<Lib>Instrumentor"`).
+  (`<lib> = "observeinc.instrumentation.genai.<lib>:<Lib>Instrumentor"`).
 - Hatch version path, project URLs, classifiers → new repo paths.
 - **Strip every `openinference-*` dependency.** OpenInference packages typically depend on
   `openinference-instrumentation`, `openinference-semantic-conventions`, and
@@ -288,19 +288,19 @@ Update every import. Verify zero `openinference` references remain in
   `BaseInstrumentor`) and the underlying SDK (`openai`, `anthropic`, …) at
   the same range OpenInference was using. 
 - `__version__` in `version.py` should equal the value in
-  `util/opentelemetry-util-genai/src/opentelemetry/util/genai/version.py` — all
+  `util/opentelemetry-util-genai/src/observeinc/util/genai/version.py` — all
   workspace packages share one version. Verify:
 
   ```sh
-  diff <(grep ^__version__ instrumentation/<target>/src/opentelemetry/instrumentation/genai/<lib>/version.py) \
-       <(grep ^__version__ util/opentelemetry-util-genai/src/opentelemetry/util/genai/version.py)
+  diff <(grep ^__version__ instrumentation/<target>/src/observeinc/instrumentation/genai/<lib>/version.py) \
+       <(grep ^__version__ util/opentelemetry-util-genai/src/observeinc/util/genai/version.py)
   ```
 
 - Hatchling builds **require a `README.md` or `README.rst`**. Rewrite it to
   point at the new repo URLs and module path; drop OpenInference links, OpenInference badges,
   `using_attributes(...)` examples, `OpenInferenceTracer` / `TraceConfig`
   configuration, and any "OpenInference semconv" links. Include a usage snippet
-  importing from `opentelemetry.instrumentation.genai.<lib>`, a pointer to
+  importing from `observeinc.instrumentation.genai.<lib>`, a pointer to
   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, and a pointer to
   `tests/conformance/` (no `examples/`).
 
@@ -316,7 +316,7 @@ rg 'openinference|OpenInferenceTracer|TraceConfig|using_attributes|using_session
 Drop every match. The mappings:
 
 - **`OpenInferenceTracer` / `TraceConfig`** — replaced by `TelemetryHandler` from
-  `opentelemetry.util.genai.handler`. Instrumentation code does not
+  `observeinc.util.genai.handler`. Instrumentation code does not
   construct or pass tracers.
 - **`using_attributes(session_id=…, user_id=…, …)` / `using_session` /
   `using_metadata` / `using_tags`** — there is **no OTel GenAI equivalent**
@@ -330,19 +330,19 @@ Drop every match. The mappings:
   by util-genai. The conversion is in step 6.
 - **`safe_json_dumps`** — drop; util-genai serializes message payloads.
 
-**Any import of `opentelemetry.util.genai._<anything>` from instrumentation
+**Any import of `observeinc.util.genai._<anything>` from instrumentation
 `src/` is a violation.** Public surface only:
 
-- `opentelemetry.util.genai.handler` — `TelemetryHandler`
-- `opentelemetry.util.genai.invocation` — `InferenceInvocation`,
+- `observeinc.util.genai.handler` — `TelemetryHandler`
+- `observeinc.util.genai.invocation` — `InferenceInvocation`,
   `EmbeddingInvocation`, `ToolInvocation`, `WorkflowInvocation`,
   `AgentInvocation`, `Error`, `GenAIInvocation`
-- `opentelemetry.util.genai.types` — `InputMessage`, `OutputMessage`,
+- `observeinc.util.genai.types` — `InputMessage`, `OutputMessage`,
   `TextPart`, `ToolCallRequestPart`, `ToolCallResponsePart`, `ReasoningPart`,
   `ServerToolCallPart`, `ServerToolCallResponsePart`, `GenericPart`, `BlobPart`,
   `FilePart`, `UriPart`, `Modality`
-- `opentelemetry.util.genai.completion_hook`
-- `opentelemetry.util.genai.environment_variables`
+- `observeinc.util.genai.completion_hook`
+- `observeinc.util.genai.environment_variables`
 
 ```sh
 rg 'from opentelemetry\.util\.genai\._' instrumentation/<target>/src/
@@ -397,7 +397,7 @@ input (when the original SDK accepts both) is incomplete and must not
 ship.
 
 Mapping cheat sheet — OpenInference source shape on the left, OTel construct on the
-right (all types from `opentelemetry.util.genai.types` unless noted):
+right (all types from `observeinc.util.genai.types` unless noted):
 
 | Source request item | OTel construct |
 |---|---|
@@ -488,8 +488,8 @@ which registers the shared fixtures as plugins:
 
 ```python
 pytest_plugins = [
-    "opentelemetry.test_util_genai.fixtures",
-    "opentelemetry.test_util_genai.vcr",
+    "observeinc.test_util_genai.fixtures",
+    "observeinc.test_util_genai.vcr",
 ]
 ```
 
@@ -499,10 +499,10 @@ for the lib's API-key env var, library-client fixtures (e.g.
 `openai_client` / `async_openai_client`), and the `instrument_*` fixtures
 (`instrument_no_content`, `instrument_with_content`, `instrument_event_only`)
 built on the shared `instrument` context manager from
-`opentelemetry.test_util_genai.instrumentor` (see [AGENTS.md](../../../AGENTS.md) Tests).
+`observeinc.test_util_genai.instrumentor` (see [AGENTS.md](../../../AGENTS.md) Tests).
 
 **Assertions — no shared helper module.** There is no
-`opentelemetry.test_util_genai.assertions`. Assert directly on
+`observeinc.test_util_genai.assertions`. Assert directly on
 `span.attributes[GenAIAttributes.GEN_AI_…]` using the semconv constants
 from `opentelemetry.semconv._incubating.attributes.gen_ai_attributes`, and
 on metric/log records from the in-memory exporters. Factor repeated checks

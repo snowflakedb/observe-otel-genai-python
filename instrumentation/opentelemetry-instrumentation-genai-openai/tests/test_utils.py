@@ -11,11 +11,18 @@ from typing import Any
 
 import pytest
 
-from opentelemetry.instrumentation.genai.openai.utils import (
+from observeinc.instrumentation.genai.openai.utils import (
     _content_to_parts,
     _prepare_input_messages,
     create_chat_invocation,
     get_property_value,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import (
+    BlobPart,
+    InputMessage,
+    TextPart,
+    UriPart,
 )
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.semconv._incubating.attributes import (
@@ -28,13 +35,6 @@ from opentelemetry.semconv._incubating.attributes import (
     server_attributes as ServerAttributes,
 )
 from opentelemetry.trace import SpanKind
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import (
-    BlobPart,
-    InputMessage,
-    TextPart,
-    UriPart,
-)
 
 _REAL_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAARklEQVR42u3X"
@@ -888,10 +888,10 @@ def test_prepare_input_messages_reduces_tool_content_to_data():
     """A tool result may hold SDK models, which the span serializer rejects."""
     from pydantic import BaseModel
 
-    from opentelemetry.instrumentation.genai.openai.utils import (
+    from observeinc.instrumentation.genai.openai.utils import (
         _prepare_input_messages,
     )
-    from opentelemetry.util.genai.utils import gen_ai_json_dumps
+    from observeinc.util.genai.utils import gen_ai_json_dumps
 
     class Part(BaseModel):
         text: str

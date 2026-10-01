@@ -80,7 +80,7 @@ Make sure to configure OpenTelemetry tracing, logging, and events to capture all
 
 .. code-block:: python
 
-    from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
+    from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
 
     OpenAIInstrumentor().instrument()
 
@@ -151,7 +151,7 @@ To uninstrument clients, call the uninstrument method:
 
 .. code-block:: python
 
-    from opentelemetry.instrumentation.genai.openai import OpenAIInstrumentor
+    from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
 
     OpenAIInstrumentor().instrument()
     # ...

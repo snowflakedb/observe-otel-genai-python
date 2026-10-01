@@ -33,7 +33,7 @@ instruments = [
 ]
 
 [project.entry-points.opentelemetry_instrumentor]
-langchain = "opentelemetry.instrumentation.genai.langchain:LangChainInstrumentor"
+langchain = "observeinc.instrumentation.genai.langchain:LangChainInstrumentor"
 
 [project.urls]
 Homepage = "https://github.com/snowflake-eng/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-langchain"
@@ -41,7 +41,7 @@ Repository = "https://github.com/snowflake-eng/observe-otel-genai-python"
 Upstream = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-langchain"
 
 [tool.hatch.version]
-path = "src/opentelemetry/instrumentation/genai/langchain/version.py"
+path = "src/observeinc/instrumentation/genai/langchain/version.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -50,7 +50,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/opentelemetry"]
+packages = ["src/observeinc"]
 
 
 [tool.towncrier]
