@@ -100,8 +100,6 @@ interactions:
       openai-organization: test_openai_org_id
       set-cookie:
       - test_set_cookie
-      - _cfuvid=FiOO9id9BeHCp.jp23WGFYuUJAqS3RdB2T1lLaroTEs-1771535146.9666395-1.0.1.1-GwFV1AQJkfqXaVwhyb_WBpNzyDw3zVtMUGJb8rtOMFg;
-        HttpOnly; SameSite=None; Secure; Path=/; Domain=api.openai.com
       vary:
       - Origin
       x-openai-proxy-wasm:

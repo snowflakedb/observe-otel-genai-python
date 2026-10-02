@@ -23,10 +23,7 @@ span-name suffix leaves the whole suite green and LLM Explorer blank.
 Time to first token is not asserted here: it looks unimplemented rather than
 untested, since ``_run.py`` never reads ``ttft_ms`` off the result message.
 ``gen_ai.client.operation.time_to_first_chunk`` is recorded from stream-event
-arrivals, but that is a metric rather than the span field the contract names.
-
-Contract: LLM Explorer Critical Trace Field Structure Contract
-https://app.notion.com/p/observeinc/LLM-Explorer-Critical-Trace-Field-Structure-Contract-3b9770a806fc8194a45de79ed2e66222
+arrivals, but that is a metric rather than the span field LLM Explorer reads.
 """
 
 from __future__ import annotations

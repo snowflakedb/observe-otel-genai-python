@@ -37,8 +37,8 @@ jobs:
       - name: Fetch base branch
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref || github.base_ref || 'main' }}
-        # This repo is not public and checkout kept no credentials, but the
-        # full-depth checkout above already has the base branch.
+        # Checkout kept no credentials, but the full-depth checkout above
+        # already has the base branch.
         run: git fetch . "refs/remotes/origin/${BASE_REF}"
 
       - name: Ensure no direct changes to CHANGELOG.md
