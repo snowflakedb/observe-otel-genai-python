@@ -1,15 +1,15 @@
 # Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Checks the fields LLM Explorer needs, separately from the upstream tests.
+"""Checks the fields Observe needs, separately from the upstream tests.
 
 The upstream test files check that the instrumentation follows the GenAI
 semantic conventions. This file checks the narrower thing our product depends
-on: that the specific fields LLM Explorer reads are actually present on the
+on: that the specific fields Observe reads are actually present on the
 spans we emit. Keeping it in its own file means a rebase never has to
 reconcile our product requirements with upstream's test expectations.
 
-Add a test here when LLM Explorer starts depending on a field, and a
+Add a test here when Observe starts depending on a field, and a
 ``test_observe_*`` file next to the upstream tests when we carry a fix or an
 intentional difference from upstream.
 
@@ -18,12 +18,12 @@ conversation id is asserted on every span of several runs, cost comes off
 ``modelUsage``, and the span hierarchy is what most of that file is about. What
 nothing there covers is ``gen_ai.agent.name``, because every test finds an agent
 span by matching its *name string* — so dropping the attribute while keeping the
-span-name suffix leaves the whole suite green and LLM Explorer blank.
+span-name suffix leaves the whole suite green and Observe showing no agents.
 
 Time to first token is not asserted here: it looks unimplemented rather than
 untested, since ``_run.py`` never reads ``ttft_ms`` off the result message.
 ``gen_ai.client.operation.time_to_first_chunk`` is recorded from stream-event
-arrivals, but that is a metric rather than the span field LLM Explorer reads.
+arrivals, but that is a metric rather than the span field Observe reads.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def _assistant(
 async def test_every_span_that_names_an_agent_carries_the_attribute(
     handler, span_exporter
 ):
-    """``gen_ai.agent.name`` is what LLM Explorer groups a conversation by.
+    """``gen_ai.agent.name`` is what Observe groups a conversation by.
 
     The span name is not a substitute: it is a display string, and a reader that
     parses the agent back out of it is reading a label rather than a field.
@@ -176,7 +176,7 @@ async def test_every_span_that_names_an_agent_carries_the_attribute(
         named["execute_tool Read"].attributes["gen_ai.agent.name"]
         == "code-reviewer"
     )
-    # Every span in the trace is reachable by conversation, which is how the
-    # Explorer assembles one.
+    # Every span in the trace is reachable by conversation, which is how
+    # Observe assembles one.
     for span in spans:
         assert span.attributes["gen_ai.conversation.id"] == SESSION

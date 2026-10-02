@@ -4,8 +4,8 @@
 """Carry ``gen_ai.agent.name`` on the OTel Context. Specific to this fork.
 
 Semconv puts the agent name on ``invoke_agent`` and ``execute_tool`` only, but
-LLM Explorer groups the inference, embeddings and retrieval calls an agent makes,
-and their metrics, by agent. An agent invocation publishes its name here, the way
+Observe groups the inference, embeddings and retrieval calls an agent makes, and
+their metrics, by agent. An agent invocation publishes its name here, the way
 ``_conversation_context`` carries the conversation id, so those calls record it
 even when another instrumentation package creates them. Callers reach this
 through ``handler.*(agent_name=...)``.
