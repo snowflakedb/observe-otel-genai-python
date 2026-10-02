@@ -122,13 +122,13 @@ ATTR_CONVERSATION_COMPACTED = "gen_ai.conversation.compacted"
 
 _PROVIDER = GenAI.GenAiProviderNameValues
 
-# Routing env vars the CLI reads to pick a hosting platform, in the order its own
-# resolver checks them (read off CLI 2.1.220) — the order decides the answer when
-# two are set. Mantle is a second Bedrock endpoint; the two "Claude Platform on
-# <cloud>" flags reach Anthropic's own API, which the CLI groups with firstParty.
+# Routing env vars the CLI reads to pick a hosting platform, in the order it
+# checks them as of CLI 2.1.220 — the order decides the answer when two are set.
+# Mantle is a second Bedrock endpoint; the two "Claude Platform on <cloud>" flags
+# reach Anthropic's own API.
 #
-# The CLI resolves a "gateway" provider ahead of all of these, but it keys off
-# session auth state rather than the environment, so it cannot be seen from here.
+# The CLI can also route through a gateway picked from session auth state rather
+# than the environment, which cannot be seen from here.
 _PROVIDER_ENV: tuple[tuple[str, str], ...] = (
     ("CLAUDE_CODE_USE_BEDROCK", _PROVIDER.AWS_BEDROCK.value),
     ("CLAUDE_CODE_USE_FOUNDRY", _PROVIDER.AZURE_AI_INFERENCE.value),
@@ -138,9 +138,8 @@ _PROVIDER_ENV: tuple[tuple[str, str], ...] = (
     ("CLAUDE_CODE_USE_VERTEX", _PROVIDER.GCP_VERTEX_AI.value),
 )
 
-# The CLI's own rule for reading these flags, from the bool parser its env
-# schema runs them through: an allowlist over the trimmed, lowercased value. A
-# denylist would read "no" and "off" as on.
+# How the CLI reads these flags: on only if the trimmed, lowercased value is in
+# this allowlist. A denylist would read "no" and "off" as on.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 # Task statuses meaning the task has finished. Mirrors the SDK's own set; the
@@ -151,9 +150,8 @@ _TERMINAL_TASK_STATUSES = frozenset(
 )
 
 # The tool names that launch a subagent, and so the only ones whose input is a
-# TaskToolInput. Both, because the CLI accepts either (read off CLI 2.1.220,
-# which resolves a subagent_type for "Agent" and "Task" alike); every recorded
-# session uses "Agent".
+# TaskToolInput. Both, because CLI 2.1.220 accepts either and resolves a
+# subagent_type for "Agent" and "Task" alike; every recorded session uses "Agent".
 _DELEGATION_TOOLS = frozenset({"Agent", "Task"})
 
 # Terminal reasons of a turn the caller stopped with interrupt(). Its result is
@@ -257,8 +255,8 @@ def _merge_usage(snapshot: Usage | None, final: Usage | None) -> Usage | None:
     cache counters are conditional. Taking the delta wholesale therefore throws
     away whatever the assistant message's snapshot knew — a delta carrying just
     ``{"output_tokens": 812}`` reported zero input tokens and no cache counters
-    against a snapshot holding 42,500. The CLI's own vendored Anthropic
-    accumulator merges these the same way, per field.
+    against a snapshot holding 42,500. Anthropic's SDK stream accumulator merges
+    these the same way, per field.
     """
     if final is None:
         return snapshot
