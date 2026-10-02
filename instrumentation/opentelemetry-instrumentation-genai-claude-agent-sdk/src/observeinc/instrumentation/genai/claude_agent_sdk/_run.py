@@ -1,4 +1,4 @@
-# Copyright The OpenTelemetry Authors
+# Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 """Rebuilds a span tree from the Claude Agent SDK's message stream.

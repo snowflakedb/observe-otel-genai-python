@@ -1,4 +1,4 @@
-# Copyright The OpenTelemetry Authors
+# Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 """Wraps the SDK's stream-producing entry points.

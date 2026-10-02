@@ -1,4 +1,4 @@
-# Copyright The OpenTelemetry Authors
+# Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 """The inference token metrics add up to the token counts on the spans, for

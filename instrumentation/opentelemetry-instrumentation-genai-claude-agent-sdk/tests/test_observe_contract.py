@@ -1,4 +1,4 @@
-# Copyright The OpenTelemetry Authors
+# Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 """Checks the fields LLM Explorer needs, separately from the upstream tests.

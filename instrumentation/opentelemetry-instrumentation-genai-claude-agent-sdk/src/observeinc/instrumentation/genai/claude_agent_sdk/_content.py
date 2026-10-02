@@ -1,4 +1,4 @@
-# Copyright The OpenTelemetry Authors
+# Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 """Maps Claude Agent SDK content blocks onto util-genai message parts.

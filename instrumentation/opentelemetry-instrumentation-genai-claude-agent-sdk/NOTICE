@@ -2,4 +2,6 @@ Copyright 2026 Snowflake Inc.
 
 This product includes software developed by The OpenTelemetry Authors
 (https://github.com/open-telemetry/opentelemetry-python-genai), licensed under
-the Apache License, Version 2.0. Snowflake Inc. has modified some of those files.
+the Apache License, Version 2.0: the package scaffolding, examples and some
+tests. Those files keep their "Copyright The OpenTelemetry Authors" headers,
+and Snowflake Inc. has modified some of them.

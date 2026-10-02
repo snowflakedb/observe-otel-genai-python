@@ -53,7 +53,7 @@ fi
 echo "==> Upstream ${old_sha:0:8}..${new_sha:0:8}: $(git rev-list --count "$old_sha..$new_sha") commit(s)"
 
 # Paths this fork does not carry.
-KEEP_UNDER_INSTRUMENTATION='^instrumentation/(AGENTS\.md|CLAUDE\.md|opentelemetry-instrumentation-genai-(claude-agent-sdk|langchain|openai|openai-agents)/)'
+KEEP_UNDER_INSTRUMENTATION='^instrumentation/(AGENTS\.md|CLAUDE\.md|opentelemetry-instrumentation-genai-(langchain|openai|openai-agents)/)'
 KEEP_WORKFLOWS='^\.github/workflows/(ci\.yml|test\.yml|misc\.yml|changelog\.yml|check-links\.yml|check_links_config\.json)$'
 PRUNED_PATHS=(
   docs
