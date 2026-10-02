@@ -1,6 +1,4 @@
 # Learn about CODEOWNERS file format:
 # https://help.github.com/en/articles/about-code-owners
-#
-# TODO: replace with a snowflake-eng team once one exists for this repo.
 
-* @zening-chen_snow
+* @snowflake-eng/observe-agent-team
