@@ -22,6 +22,12 @@ For the third case, link the upstream PR in your PR description and delete the
 local change once upstream ships it. Every patch we carry is a merge conflict we
 pay for on each sync.
 
+The Claude Agent SDK package
+(`instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk`) is our
+own, not a fork: a sync leaves it alone, and the rules above don't apply to it.
+Files we write there start with `# Copyright Snowflake Inc.`; the few that came
+from upstream keep their `Copyright The OpenTelemetry Authors` header.
+
 ## Prerequisites
 
 - [Python](https://www.python.org/downloads/) — see [`tox.ini`](tox.ini) for the

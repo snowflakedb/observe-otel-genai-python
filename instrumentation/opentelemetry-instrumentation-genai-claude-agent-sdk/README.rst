@@ -6,18 +6,15 @@ This library traces LLM requests made through the
 emits `OpenTelemetry GenAI semantic conventions
 <https://opentelemetry.io/docs/specs/semconv/gen-ai/>`_.
 
-It is Observe's replacement for upstream's
-``opentelemetry-instrumentation-genai-claude-agent-sdk``, not an addition to it.
-The two distributions install to the same paths, so an environment holding both
-gets a per-file mix of them and uninstalling either one breaks the other.
-Uninstall the upstream package first.
+Don't install it next to the OpenTelemetry project's
+``opentelemetry-instrumentation-genai-claude-agent-sdk``: both instrument the
+same SDK, so every call would be recorded twice.
 
 Installation
 ------------
 
 ::
 
-    pip uninstall opentelemetry-instrumentation-genai-claude-agent-sdk opentelemetry-util-genai
     pip install observe-instrumentation-genai-claude-agent-sdk
 
 If you don't have a Claude Agent SDK application yet, try our `examples <examples>`_
