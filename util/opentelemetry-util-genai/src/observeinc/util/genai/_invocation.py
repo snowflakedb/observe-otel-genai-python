@@ -417,8 +417,8 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         self._finished = True
         try:
             if self.conversation_id:
-                # On every span, not only where semconv defines it, since LLM
-                # Explorer lists only spans that carry it. Set first so
+                # On every span, not only where semconv defines it, since
+                # Observe lists only spans that carry it. Set first so
                 # self.attributes wins.
                 self.span.set_attribute(
                     GenAI.GEN_AI_CONVERSATION_ID, self.conversation_id

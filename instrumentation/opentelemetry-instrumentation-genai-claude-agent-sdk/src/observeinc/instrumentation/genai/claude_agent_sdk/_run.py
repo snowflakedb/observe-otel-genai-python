@@ -593,7 +593,7 @@ class AgentRun:
             conversation_id=self._conversation_id,
         )
         # LocalAgentInvocation is INTERNAL and carries no provider of its own,
-        # but the Explorer reads the provider off every row.
+        # but Observe reads the provider off every row.
         root.attributes[GenAI.GEN_AI_PROVIDER_NAME] = self._provider
         if self._compacted:
             root.attributes[ATTR_CONVERSATION_COMPACTED] = True

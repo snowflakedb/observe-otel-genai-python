@@ -15,7 +15,7 @@ conventions. Those belong in an upstream PR, not here.
 Change this repo when one of these is true:
 
 - Upstream has rejected the change, or won't get to it in time for our ship date.
-- The behaviour is specific to what LLM Explorer needs and isn't generally useful.
+- The behaviour is specific to what Observe needs and isn't generally useful.
 - We carry a fix while the upstream PR is still in review.
 
 For the third case, link the upstream PR in your PR description and delete the

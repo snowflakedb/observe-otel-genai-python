@@ -2,7 +2,7 @@
 
 Python instrumentation for GenAI frameworks, emitting [OpenTelemetry GenAI
 semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) in the
-shape Observe's LLM Explorer expects.
+shape Observe expects.
 
 ## Packages
 
