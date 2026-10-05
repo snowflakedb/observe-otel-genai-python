@@ -1,4 +1,4 @@
-# Copyright The OpenTelemetry Authors
+# Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 """The ``ALLOW_LIST`` content capturing mode. Specific to this fork.
@@ -8,9 +8,10 @@ that every span, event and metric point an invocation records keeps only the
 attributes named in ``_content_allow_list.json``. A key missing from the list,
 including one added in a later release, is dropped.
 
-``_content_allow_list.json`` must stay identical to ``spec/content-allow-list.json``
-in genai-otel, which the TypeScript SDK ships too. Only its ``keep`` list is
-enforced; ``content`` names the keys known to carry content, for tests and docs.
+Only the ``keep`` list in ``_content_allow_list.json`` is enforced; ``content``
+names the keys known to carry content, for tests and docs. Observe's TypeScript
+SDK applies the same ``keep`` list (``src/content/allow-list.ts`` in genai-otel),
+so change both together.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# Copyright The OpenTelemetry Authors
+# Copyright Snowflake Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 """Checks for telemetry recorded in the ``ALLOW_LIST`` capture mode. Specific
