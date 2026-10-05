@@ -170,6 +170,8 @@ Set the environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTEN
 - ``SPAN_ONLY``: Capture message content in spans only.
 - ``EVENT_ONLY``: Capture message content in events only.
 - ``SPAN_AND_EVENT``: Capture message content in both spans and events.
+- ``ALLOW_LIST``: Do not capture message content, and keep only allowlisted attributes. Specific
+  to this fork; see `Allowlist Mode`_.
 
 To control event emission, you can optionally set ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT`` to ``true`` or ``false`` (case-insensitive).
 This variable controls whether to emit ``gen_ai.client.inference.operation.details`` events.
@@ -200,6 +202,47 @@ User ID on Metrics
 Set ``OBSERVE_GENAI_METRICS_INCLUDE_USER_ID`` to ``true`` (case-insensitive) to add ``user.id``
 to every metric this package records, not only to spans. It is off by default, because each user
 adds new time series. Specific to this fork.
+
+Allowlist Mode
+^^^^^^^^^^^^^^
+
+Set ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to ``ALLOW_LIST`` (case-insensitive)
+when the telemetry must not hold message content: prompts, completions, system instructions, and
+tool arguments and results. No message content is captured, as with ``NO_CONTENT``, and every
+span, event and metric this package records keeps only the attributes on a fixed list. It holds
+keys such as model and provider names, token counts, request settings such as temperature, finish
+reasons, ``server.address`` and ``server.port``, ``error.type``, ``user.id``, response and
+conversation ids, and agent and tool ids, names and descriptions. Those values are kept as the
+application or library set them. Every other attribute is dropped, including ones an
+instrumentation adds through ``attributes`` or ``metric_attributes``, and ones a later release
+starts recording. Specific to this fork.
+
+In this mode:
+
+- A span keeps its status code but not its status description, and a recorded exception keeps
+  only ``exception.type``.
+- Code that writes to the current span while a GenAI operation runs, such as
+  ``trace.get_current_span().set_attribute(...)``, goes through the same filter.
+- The ``gen_ai.client.inference.operation.details`` event is emitted only when
+  ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT`` is ``true``, as with ``NO_CONTENT``. It then carries
+  the allowed attributes and no body.
+- The completion hook is never called, even when one is configured, and
+  ``should_capture_content()`` returns ``False``. A configured hook gets a warning, logged once,
+  and the hook named by ``OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK`` is not loaded at all, so
+  the ``upload`` hook does not start.
+
+The list is fixed in this version, and Observe's TypeScript SDK applies the same one. Some
+attributes this package records are not on it yet and are dropped, such as
+``gen_ai.request.top_k``, ``gen_ai.usage.cache_write.input_tokens`` and the per-modality token
+counts. ``gen_ai.token.modality`` is one of them, so token metrics are not split by modality.
+Instrumentation-specific keys are dropped too, such as the OpenAI package's
+``openai.api.type``, ``openai.request.service_tier``, ``openai.response.service_tier`` and
+``openai.response.system_fingerprint``.
+
+Not filtered: span names, resource attributes, attributes that the application's own span
+processors add, spans, logs and metrics that other libraries record, such as HTTP client spans,
+and the Python ``logging`` messages instrumentations write, such as debug logs that include an
+exception.
 
 Completion Hook / Upload
 ^^^^^^^^^^^^^^^^^^^^^^^^

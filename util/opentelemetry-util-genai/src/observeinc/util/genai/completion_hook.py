@@ -16,6 +16,10 @@ import logging
 from os import environ
 from typing import Any, Protocol, runtime_checkable
 
+from observeinc.util.genai._observe_content_allow_list import (
+    allow_list_configured,
+    warn_completion_hook_ignored,
+)
 from observeinc.util.genai.environment_variables import (
     OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK,
 )
@@ -122,6 +126,9 @@ def load_completion_hook() -> CompletionHook:
     """
     hook_name = environ.get(OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK, None)
     if not hook_name:
+        return _NoOpCompletionHook()
+    if allow_list_configured():
+        warn_completion_hook_ignored()
         return _NoOpCompletionHook()
 
     for entry_point in entry_points(

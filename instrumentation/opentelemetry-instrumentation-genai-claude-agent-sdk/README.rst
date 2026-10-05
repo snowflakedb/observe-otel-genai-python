@@ -85,11 +85,15 @@ Capture Message Content
 
 By default, prompts and completions are not captured. To capture message content, set the
 environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to one of
-``NO_CONTENT``, ``SPAN_ONLY``, ``EVENT_ONLY``, or ``SPAN_AND_EVENT``:
+``NO_CONTENT``, ``SPAN_ONLY``, ``EVENT_ONLY``, ``SPAN_AND_EVENT``, or ``ALLOW_LIST``:
 
 ::
 
     export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_AND_EVENT
+
+``ALLOW_LIST`` captures no content, like ``NO_CONTENT``, and keeps only a fixed list of
+attributes on everything recorded, as described in the ``observe-util-genai`` README. It drops
+this package's ``claude_agent_sdk.*`` attributes, the run cost among them.
 
 Any other value is rejected with a warning and falls back to ``NO_CONTENT``.
 
