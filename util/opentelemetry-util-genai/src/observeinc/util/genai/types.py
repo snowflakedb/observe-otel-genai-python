@@ -32,6 +32,8 @@ class ContentCapturingMode(Enum):
     EVENT_ONLY = 2
     # Capture content in both spans and events.
     SPAN_AND_EVENT = 3
+    # Capture no content, and keep only allowlisted attributes. Specific to this fork.
+    ALLOW_LIST = 4
 
 
 @dataclass()

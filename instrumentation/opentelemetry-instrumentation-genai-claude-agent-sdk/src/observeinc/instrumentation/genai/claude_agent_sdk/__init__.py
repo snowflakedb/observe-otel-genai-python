@@ -55,10 +55,12 @@ Usage
 Configuration
 -------------
 
-Message content capture is off by default. Enable it by setting
+Message content capture is off by default. Choose the mode by setting
 ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to one of
-``NO_CONTENT``, ``SPAN_ONLY``, ``EVENT_ONLY`` or ``SPAN_AND_EVENT``. Any other
-value, ``true`` included, is not a mode and reads as ``NO_CONTENT``.
+``NO_CONTENT``, ``SPAN_ONLY``, ``EVENT_ONLY``, ``SPAN_AND_EVENT`` or
+``ALLOW_LIST``. ``ALLOW_LIST`` captures no content and keeps only a fixed list
+of attributes. Any other value, ``true`` included, is not a mode and reads as
+``NO_CONTENT``.
 
 The root ``invoke_agent`` span is named ``claude-agent-sdk``. Pass
 ``ClaudeAgentSDKInstrumentor().instrument(agent_name="...")`` to name it after

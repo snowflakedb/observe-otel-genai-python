@@ -42,6 +42,10 @@ from __future__ import annotations
 from observeinc.util.genai._inference_invocation import LLMInvocation
 from observeinc.util.genai._instruments import _Instruments
 from observeinc.util.genai._invocation import Error
+from observeinc.util.genai._observe_content_allow_list import (
+    allow_list_telemetry,
+    warn_completion_hook_ignored,
+)
 from observeinc.util.genai.completion_hook import (
     CompletionHook,
     _NoOpCompletionHook,
@@ -139,6 +143,15 @@ class TelemetryHandler:
             )
         else:
             self._completion_hook = _SafeCompletionHook(completion_hook)
+        if self._content_capturing_mode is ContentCapturingMode.ALLOW_LIST:
+            if not isinstance(self._completion_hook, _NoOpCompletionHook):
+                warn_completion_hook_ignored()
+            self._completion_hook = _NoOpCompletionHook()
+            self._tracer, self._instruments, self._logger = (
+                allow_list_telemetry(
+                    self._tracer, self._instruments, self._logger
+                )
+            )
         self._capture_content = (
             self._content_capturing_mode
             in (
