@@ -23,7 +23,6 @@ from observeinc.util.genai._observe_content_allow_list import (
     ALLOWED_KEYS,
     CONTENT_KEYS,
     allow_list_telemetry,
-    start_span,
     warn_completion_hook_ignored,
 )
 from observeinc.util.genai._observe_metric_conversation_id import (
@@ -42,10 +41,7 @@ from observeinc.util.genai.environment_variables import (
     OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT,
 )
 from observeinc.util.genai.handler import TelemetryHandler
-from observeinc.util.genai.invocation import (
-    GenAIInvocation,
-    InferenceInvocation,
-)
+from observeinc.util.genai.invocation import GenAIInvocation
 from observeinc.util.genai.types import (
     ContentCapturingMode,
     FunctionToolDefinition,
@@ -560,26 +556,6 @@ def test_content_is_not_captured(telemetry: Telemetry) -> None:
     )
 
 
-def test_an_invocation_drops_its_hook_without_the_handler(
-    telemetry: Telemetry,
-) -> None:
-    hook = RecordingHook()
-    chat = InferenceInvocation(
-        telemetry.tracer_provider.get_tracer("test"),
-        _Instruments(telemetry.meter_provider.get_meter("test")),
-        telemetry.logger_provider.get_logger("test"),
-        hook,
-        "openai",
-        content_capturing_mode=ContentCapturingMode.ALLOW_LIST,
-    )
-    assert chat.should_capture_content is False
-    chat.input_messages = _inputs()
-    chat.stop()
-
-    assert hook.calls == []
-    telemetry.assert_allow_listed()
-
-
 @pytest.mark.usefixtures("allow_list")
 def test_a_configured_hook_is_reported_once(
     telemetry: Telemetry, caplog: pytest.LogCaptureFixture
@@ -660,8 +636,10 @@ def test_other_modes_record_the_real_span(
 
 def test_every_instrument_is_filtered(telemetry: Telemetry) -> None:
     instruments = _Instruments(telemetry.meter_provider.get_meter("test"))
-    filtered, _ = allow_list_telemetry(
-        instruments, telemetry.logger_provider.get_logger("test")
+    _, filtered, _ = allow_list_telemetry(
+        telemetry.tracer_provider.get_tracer("test"),
+        instruments,
+        telemetry.logger_provider.get_logger("test"),
     )
     for name, instrument in vars(instruments).items():
         if isinstance(instrument, Instrument):
@@ -671,13 +649,18 @@ def test_every_instrument_is_filtered(telemetry: Telemetry) -> None:
 # ─── the span wrapper ────────────────────────────────────────────────────────
 
 
-def _allow_list_span(telemetry: Telemetry, **kwargs: Any) -> trace.Span:
-    return start_span(
+def _allow_list_tracer(telemetry: Telemetry) -> trace.Tracer:
+    tracer, _, _ = allow_list_telemetry(
         telemetry.tracer_provider.get_tracer("test"),
-        ContentCapturingMode.ALLOW_LIST,
-        "chat",
-        kind=SpanKind.CLIENT,
-        **kwargs,
+        _Instruments(telemetry.meter_provider.get_meter("test")),
+        telemetry.logger_provider.get_logger("test"),
+    )
+    return tracer
+
+
+def _allow_list_span(telemetry: Telemetry, **kwargs: Any) -> trace.Span:
+    return _allow_list_tracer(telemetry).start_span(
+        "chat", kind=SpanKind.CLIENT, **kwargs
     )
 
 
@@ -772,6 +755,27 @@ def test_the_span_as_a_context_manager(telemetry: Telemetry) -> None:
     (exported,) = telemetry.spans()
     assert exported.name == "chat gpt-5"
     assert exported.context == span.get_span_context()
+    assert exported.status.status_code is StatusCode.ERROR
+    assert exported.status.description is None
+    assert [dict(e.attributes) for e in exported.events] == [
+        {"exception.type": "ValueError"}
+    ]
+
+
+def test_the_span_started_as_current(telemetry: Telemetry) -> None:
+    tracer = _allow_list_tracer(telemetry)
+    with (
+        pytest.raises(ValueError),
+        tracer.start_as_current_span(
+            "chat", attributes={"server.port": 443, UNKNOWN_KEY: SECRET}
+        ) as span,
+    ):
+        assert trace.get_current_span() is span
+        trace.get_current_span().set_attribute(UNKNOWN_KEY, SECRET)
+        raise ValueError(SECRET)
+
+    (exported,) = telemetry.spans()
+    assert dict(exported.attributes) == {"server.port": 443}
     assert exported.status.status_code is StatusCode.ERROR
     assert exported.status.description is None
     assert [dict(e.attributes) for e in exported.events] == [

@@ -23,10 +23,6 @@ from observeinc.util.genai._observe_agent_context import (
     get_ambient_agent_name,
     with_agent_name,
 )
-from observeinc.util.genai._observe_content_allow_list import (
-    allow_list_telemetry,
-    start_span,
-)
 from observeinc.util.genai.completion_hook import (
     CompletionHook,
     _NoOpCompletionHook,
@@ -110,11 +106,6 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             if content_capturing_mode is None
             else content_capturing_mode
         )
-        if self._content_capturing_mode is ContentCapturingMode.ALLOW_LIST:
-            self._instruments, self._logger = allow_list_telemetry(
-                instruments, logger
-            )
-            self._completion_hook = _NoOpCompletionHook()
         self.attributes: dict[str, AttributeValue] = (
             {} if attributes is None else attributes
         )
@@ -146,9 +137,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             GenAI.GEN_AI_OPERATION_NAME: operation_name,
             **(start_attributes or {}),
         }
-        self.span: Span = start_span(
-            self._tracer,
-            self._content_capturing_mode,
+        self.span: Span = self._tracer.start_span(
             name=span_name,
             kind=span_kind,
             attributes=self._start_attributes,

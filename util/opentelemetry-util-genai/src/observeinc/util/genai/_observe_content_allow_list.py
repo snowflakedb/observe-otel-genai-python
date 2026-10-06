@@ -4,7 +4,7 @@
 """The ``ALLOW_LIST`` content capturing mode. Specific to this fork.
 
 Under ``ALLOW_LIST`` nothing is captured, as with ``NO_CONTENT``, and on top of
-that every span, event and metric point an invocation records keeps only the
+that every span, event and metric point a handler records keeps only the
 attributes named in ``_content_allow_list.json``. A key missing from the list,
 including one added in a later release, is dropped.
 
@@ -20,12 +20,11 @@ import copy
 import json
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from functools import cache
 from importlib.resources import files
 from types import TracebackType
 from typing import TypeVar
-from weakref import WeakKeyDictionary
 
 from observeinc.util.genai._instruments import _Instruments
 from observeinc.util.genai.environment_variables import (
@@ -39,8 +38,16 @@ from opentelemetry.metrics import Counter, Histogram
 from opentelemetry.semconv.attributes.exception_attributes import (
     EXCEPTION_TYPE,
 )
-from opentelemetry.trace import Link, Span, SpanContext, SpanKind, Tracer
+from opentelemetry.trace import (
+    Link,
+    Span,
+    SpanContext,
+    SpanKind,
+    Tracer,
+    use_span,
+)
 from opentelemetry.trace.status import Status, StatusCode
+from opentelemetry.util._decorator import _agnosticcontextmanager
 from opentelemetry.util.types import AnyValue, Attributes, AttributeValue
 
 _ALLOW_LIST = json.loads(
@@ -56,44 +63,16 @@ _V = TypeVar("_V")
 _logger = logging.getLogger(__name__)
 
 
-def start_span(
-    tracer: Tracer,
-    mode: ContentCapturingMode,
-    name: str,
-    *,
-    context: Context | None = None,
-    kind: SpanKind = SpanKind.INTERNAL,
-    attributes: Attributes = None,
-    links: Sequence[Link] | None = None,
-) -> Span:
-    """Start a span, filtered by the allowlist when ``mode`` is ``ALLOW_LIST``."""
-    if mode is not ContentCapturingMode.ALLOW_LIST:
-        return tracer.start_span(
-            name=name,
-            context=context,
-            kind=kind,
-            attributes=attributes,
-            links=links,
-        )
-    return _AllowListSpan(
-        tracer.start_span(
-            name=name,
-            context=context,
-            kind=kind,
-            attributes=_keep_allowed(attributes),
-            links=[
-                Link(link.context, _keep_allowed(link.attributes))
-                for link in links or ()
-            ],
-        )
-    )
-
-
 def allow_list_telemetry(
-    instruments: _Instruments, logger: Logger
-) -> tuple[_Instruments, Logger]:
-    """The instruments and logger an ``ALLOW_LIST`` invocation records through."""
-    return _allow_listed_instruments(instruments), _AllowListLogger(logger)
+    tracer: Tracer, instruments: _Instruments, logger: Logger
+) -> tuple[Tracer, _Instruments, Logger]:
+    """The tracer, instruments and logger a handler records through under
+    ``ALLOW_LIST``."""
+    return (
+        _AllowListTracer(tracer),
+        _allow_listed_instruments(instruments),
+        _AllowListLogger(logger),
+    )
 
 
 def allow_list_configured() -> bool:
@@ -113,21 +92,13 @@ def warn_completion_hook_ignored() -> None:
     )
 
 
-_INSTRUMENTS_CACHE: WeakKeyDictionary[_Instruments, _Instruments] = (
-    WeakKeyDictionary()
-)
-
-
 def _allow_listed_instruments(instruments: _Instruments) -> _Instruments:
-    filtered = _INSTRUMENTS_CACHE.get(instruments)
-    if filtered is None:
-        filtered = copy.copy(instruments)
-        for name, instrument in vars(instruments).items():
-            if isinstance(instrument, Histogram):
-                setattr(filtered, name, _AllowListHistogram(instrument))
-            elif isinstance(instrument, Counter):
-                setattr(filtered, name, _AllowListCounter(instrument))
-        _INSTRUMENTS_CACHE[instruments] = filtered
+    filtered = copy.copy(instruments)
+    for name, instrument in vars(instruments).items():
+        if isinstance(instrument, Histogram):
+            setattr(filtered, name, _AllowListHistogram(instrument))
+        elif isinstance(instrument, Counter):
+            setattr(filtered, name, _AllowListCounter(instrument))
     return filtered
 
 
@@ -135,6 +106,69 @@ def _keep_allowed(attributes: Mapping[str, _V] | None) -> dict[str, _V]:
     if not attributes:
         return {}
     return {k: v for k, v in attributes.items() if k in ALLOWED_KEYS}
+
+
+class _AllowListTracer(Tracer):
+    def __init__(self, tracer: Tracer) -> None:
+        self._tracer = tracer
+
+    def start_span(
+        self,
+        name: str,
+        context: Context | None = None,
+        kind: SpanKind = SpanKind.INTERNAL,
+        attributes: Attributes = None,
+        links: Sequence[Link] | None = None,
+        start_time: int | None = None,
+        record_exception: bool = True,
+        set_status_on_exception: bool = True,
+    ) -> Span:
+        return _AllowListSpan(
+            self._tracer.start_span(
+                name,
+                context,
+                kind,
+                _keep_allowed(attributes),
+                [
+                    Link(link.context, _keep_allowed(link.attributes))
+                    for link in links or ()
+                ],
+                start_time,
+                record_exception,
+                set_status_on_exception,
+            )
+        )
+
+    @_agnosticcontextmanager
+    def start_as_current_span(
+        self,
+        name: str,
+        context: Context | None = None,
+        kind: SpanKind = SpanKind.INTERNAL,
+        attributes: Attributes = None,
+        links: Sequence[Link] | None = None,
+        start_time: int | None = None,
+        record_exception: bool = True,
+        set_status_on_exception: bool = True,
+        end_on_exit: bool = True,
+    ) -> Iterator[Span]:
+        span = self.start_span(
+            name=name,
+            context=context,
+            kind=kind,
+            attributes=attributes,
+            links=links,
+            start_time=start_time,
+            record_exception=record_exception,
+            set_status_on_exception=set_status_on_exception,
+        )
+        with use_span(
+            span,
+            end_on_exit=end_on_exit,
+            record_exception=record_exception,
+            set_status_on_exception=set_status_on_exception,
+        ):
+            yield span
 
 
 class _AllowListSpan(Span):
