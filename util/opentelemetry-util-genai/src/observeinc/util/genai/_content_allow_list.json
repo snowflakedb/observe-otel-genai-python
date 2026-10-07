@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "source": "Observe monorepo code/js/packages/server-util/src/redacting-exporter.ts @ 08cbd404fd8 (ALWAYS_KEEP_KEYS incl. COST_KEEP_KEYS, AI_CONTENT_KEYS), limited to keys genai-otel or observe-otel-genai-python emit",
+  "source": "Attributes the Observe backend keeps when it redacts GenAI telemetry, limited to keys that Observe's GenAI SDKs emit",
   "keep": [
     "error.category",
     "error.type",

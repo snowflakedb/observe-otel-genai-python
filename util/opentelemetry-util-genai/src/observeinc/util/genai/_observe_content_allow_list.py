@@ -9,9 +9,8 @@ attributes named in ``_content_allow_list.json``. A key missing from the list,
 including one added in a later release, is dropped.
 
 Only the ``keep`` list in ``_content_allow_list.json`` is enforced; ``content``
-names the keys known to carry content, for tests and docs. Observe's TypeScript
-SDK applies the same ``keep`` list (``src/content/allow-list.ts`` in genai-otel),
-so change both together.
+names the keys known to carry content, for tests and docs. Other Observe SDKs
+apply the same ``keep`` list, so keep them in sync.
 """
 
 from __future__ import annotations

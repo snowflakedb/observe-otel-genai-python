@@ -4,4 +4,5 @@ python-dotenv>=1.2.3
 opentelemetry-sdk~=1.44.0
 opentelemetry-exporter-otlp-proto-grpc~=1.44.0
 opentelemetry-distro~=0.64b0
+observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai
 observe-instrumentation-genai-openai-agents @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai-agents

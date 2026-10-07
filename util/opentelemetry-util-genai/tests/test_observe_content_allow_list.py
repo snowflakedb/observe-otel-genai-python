@@ -82,7 +82,7 @@ NOT_ALLOW_LISTED = {
     "gen_ai.retrieval.query.text",
     "gen_ai.retrieval.documents",
     "gen_ai.prompt.variable.city",
-    # Free text, so left out on purpose, as in the TypeScript exporter.
+    # Free text, so left out on purpose.
     "gen_ai.request.stop_sequences",
     # Metadata pending review.
     "gen_ai.conversation.compacted",
