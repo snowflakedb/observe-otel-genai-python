@@ -23,7 +23,9 @@ for project directories. The host's kernel version and distribution in the
 agents' prose are made generic; streamed deltas are rewritten in place, so their
 count and timing are unchanged. The `SessionStart` hook output is emptied, and
 the `init` message's MCP servers and tools, skills, slash commands and plugins
-are dropped. Nothing else is altered.
+are dropped. Non-empty thinking signatures are replaced with `scrubbed`: decoded,
+they include what looks like a cloud account id, and nothing here verifies them.
+Nothing else is altered.
 
 The content is synthetic — a shell `echo` and prose about it. No private code or
 personal data was recorded.
