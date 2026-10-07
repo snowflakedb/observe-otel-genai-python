@@ -231,10 +231,10 @@ In this mode:
   and the hook named by ``OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK`` is not loaded at all, so
   the ``upload`` hook does not start.
 
-The list is fixed in this version, and Observe's TypeScript SDK applies the same one. Some
-attributes this package records are not on it yet and are dropped, such as
-``gen_ai.request.top_k``, ``gen_ai.usage.cache_write.input_tokens`` and the per-modality token
-counts. ``gen_ai.token.modality`` is one of them, so token metrics are not split by modality.
+The list is fixed in this version. Some attributes this package records are not on it yet
+and are dropped, such as ``gen_ai.request.top_k``, ``gen_ai.usage.cache_write.input_tokens``
+and the per-modality token counts. ``gen_ai.token.modality`` is one of them, so token metrics
+are not split by modality.
 Instrumentation-specific keys are dropped too, such as the OpenAI package's
 ``openai.api.type``, ``openai.request.service_tier``, ``openai.response.service_tier`` and
 ``openai.response.system_fingerprint``.
