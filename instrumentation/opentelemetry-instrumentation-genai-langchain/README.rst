@@ -29,12 +29,16 @@ cannot share an environment with this one.
 Installation
 ------------
 
-This package is not published to PyPI yet. Install it from this repository:
+This package and its ``observe-util-genai`` dependency are not published to
+PyPI yet. Install both from this repository in one command, so pip does not
+look for ``observe-util-genai`` on PyPI:
 
 ::
 
     pip uninstall opentelemetry-instrumentation-genai-langchain opentelemetry-util-genai
-    pip install "observe-instrumentation-genai-langchain @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-langchain"
+    pip install \
+        "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
+        "observe-instrumentation-genai-langchain @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-langchain"
 
 See the `examples <examples>`_ directory for runnable ``workflow``, ``agent``,
 ``tools``, and ``zero-code`` scenarios.
@@ -174,9 +178,10 @@ environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to o
 
 Prompts and completions can instead be uploaded to external storage via a completion hook: set
 ``OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK=upload`` with
-``OTEL_INSTRUMENTATION_GENAI_UPLOAD_BASE_PATH`` (install the ``upload`` extra:
-``pip install observe-util-genai[upload]``), or pass a custom ``CompletionHook``
-programmatically, which takes precedence over the environment variable::
+``OTEL_INSTRUMENTATION_GENAI_UPLOAD_BASE_PATH`` (install the ``upload`` extra by
+changing ``observe-util-genai`` to ``observe-util-genai[upload]`` in the install
+command above), or pass a custom ``CompletionHook`` programmatically, which
+takes precedence over the environment variable::
 
     LangChainInstrumentor().instrument(completion_hook=my_hook)
 

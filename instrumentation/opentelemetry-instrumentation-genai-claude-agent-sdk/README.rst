@@ -13,9 +13,15 @@ same SDK, so every call would be recorded twice.
 Installation
 ------------
 
+This package and its ``observe-util-genai`` dependency are not published to
+PyPI yet. Install both from this repository in one command, so pip does not
+look for either name on PyPI:
+
 ::
 
-    pip install observe-instrumentation-genai-claude-agent-sdk
+    pip install \
+        "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
+        "observe-instrumentation-genai-claude-agent-sdk @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk"
 
 If you don't have a Claude Agent SDK application yet, try our `examples <examples>`_
 which only need a valid Anthropic API key.

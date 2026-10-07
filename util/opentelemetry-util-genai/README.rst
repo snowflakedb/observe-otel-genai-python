@@ -325,13 +325,15 @@ For embedding invocations, the following attributes are set:
 Installation
 ------------
 
+This package is not published to PyPI yet. Install it from this repository:
+
 ::
 
-    pip install observe-util-genai
+    pip install "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai"
 
 For upload support (requires ``fsspec``)::
 
-    pip install observe-util-genai[upload]
+    pip install "observe-util-genai[upload] @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai"
 
 
 Design Document
