@@ -26,8 +26,6 @@ Next, set up a virtual environment like this:
     source .venv/bin/activate
     pip install "python-dotenv[cli]"
     pip install -r requirements.txt
-    pip install observe-instrumentation-genai-langchain
-    pip install util/opentelemetry-util-genai (once opentelemetry-util-genai package is released remove it from here and add dependency in opentelemetry-instrumentation-genai-langchain)
 
 Run
 ---

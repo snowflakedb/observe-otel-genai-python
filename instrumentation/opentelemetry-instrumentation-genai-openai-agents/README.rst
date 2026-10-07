@@ -37,13 +37,19 @@ cannot share an environment with this one.
 Installation
 ------------
 
+This package is not published to PyPI yet. Install it from this repository:
+
 ::
 
     pip uninstall opentelemetry-instrumentation-genai-openai-agents opentelemetry-util-genai
-    pip install observe-instrumentation-genai-openai-agents
+    pip install "observe-instrumentation-genai-openai-agents @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai-agents"
 
-Install ``observe-instrumentation-genai-openai`` as well to also capture
-the underlying LLM calls.
+To also capture the underlying LLM calls, install
+``observe-instrumentation-genai-openai`` the same way:
+
+::
+
+    pip install "observe-instrumentation-genai-openai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
 
 See the `examples <examples>`_ directory for runnable ``manual`` and
 ``zero-code`` scenarios.

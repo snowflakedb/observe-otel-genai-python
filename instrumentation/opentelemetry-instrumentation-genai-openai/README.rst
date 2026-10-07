@@ -47,11 +47,12 @@ Installation
 ------------
 
 If your application is already instrumented with OpenTelemetry, add this
-package to your requirements.
+package to your requirements. It is not published to PyPI yet, so install it
+from this repository:
 ::
 
     pip uninstall opentelemetry-instrumentation-genai-openai opentelemetry-util-genai
-    pip install observe-instrumentation-genai-openai
+    pip install "observe-instrumentation-genai-openai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
 
 If you don't have an OpenAI application, yet, try our `examples <examples>`_
 which only need a valid OpenAI API key.

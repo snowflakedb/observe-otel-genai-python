@@ -29,10 +29,12 @@ cannot share an environment with this one.
 Installation
 ------------
 
+This package is not published to PyPI yet. Install it from this repository:
+
 ::
 
     pip uninstall opentelemetry-instrumentation-genai-langchain opentelemetry-util-genai
-    pip install observe-instrumentation-genai-langchain
+    pip install "observe-instrumentation-genai-langchain @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-langchain"
 
 See the `examples <examples>`_ directory for runnable ``workflow``, ``agent``,
 ``tools``, and ``zero-code`` scenarios.
