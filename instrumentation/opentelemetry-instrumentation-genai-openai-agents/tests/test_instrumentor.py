@@ -190,6 +190,6 @@ async def test_runner_failing_tool_records_span_error(
     assert "execute_tool _failing_tool" in spans
     tool_span = spans["execute_tool _failing_tool"]
     assert tool_span.status.status_code is StatusCode.ERROR
-    assert "database connection failed" in (tool_span.status.description or "")
+    assert tool_span.status.description is None
     assert tool_span.attributes is not None
     assert tool_span.attributes["error.type"] == "_OTHER"

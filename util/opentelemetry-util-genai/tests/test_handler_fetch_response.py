@@ -225,7 +225,7 @@ class TelemetryHandlerFetchResponseTest(_FetchResponseTestBase):
 
         span = self._get_finished_spans()[0]
         self.assertEqual(span.status.status_code, StatusCode.ERROR)
-        self.assertEqual(span.status.description, "not found")
+        self.assertIsNone(span.status.description)
         self.assertEqual(span.attributes["error.type"], "NotFoundError")
 
     def test_fail_with_exception_instance(self) -> None:

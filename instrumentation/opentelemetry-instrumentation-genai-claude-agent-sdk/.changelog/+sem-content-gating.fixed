@@ -5,5 +5,5 @@ reconciliation in payments/ledger.py" — and sat above the guard protecting the
 delegation's prompt. A failed result's error text became the span status
 description, which is exported regardless: an `invalid_request_error` body can
 quote the request that produced it, and the SDK's own docs call only the status
-code safe to log. The status now always keeps the error subtype and `HTTP
-{status}`, which carry no content, and adds the free text only under capture.
+code safe to log. The error subtype stays in `error.type`, and the error text
+stays off spans that carry no content.

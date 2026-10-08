@@ -176,7 +176,7 @@ class TestLocalAgentInvocation(unittest.TestCase):  # pylint: disable=too-many-p
         invocation.fail(RuntimeError("agent crashed"))
 
         span = self.span_exporter.get_finished_spans()[0]
-        assert span.status.description == "agent crashed"
+        assert span.status.description is None
         assert span.attributes.get("error.type") == "RuntimeError"
 
     def test_context_manager_success(self):
@@ -632,7 +632,7 @@ class TestRemoteAgentInvocation(unittest.TestCase):
         invocation.fail(RuntimeError("remote agent crashed"))
 
         span = self.span_exporter.get_finished_spans()[0]
-        assert span.status.description == "remote agent crashed"
+        assert span.status.description is None
         assert span.attributes.get("error.type") == "RuntimeError"
 
     def test_context_manager_success(self):

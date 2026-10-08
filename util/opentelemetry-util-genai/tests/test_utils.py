@@ -1207,7 +1207,7 @@ class TestTelemetryHandler(unittest.TestCase):
 
         span = _get_single_span(self.span_exporter)
         assert span.status.status_code == StatusCode.ERROR
-        assert span.status.description == "boom"
+        assert span.status.description is None
         assert (
             _get_span_attributes(span)[error_attributes.ERROR_TYPE]
             == f"{BoomError.__module__}.{BoomError.__qualname__}"
