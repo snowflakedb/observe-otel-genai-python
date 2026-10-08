@@ -409,7 +409,7 @@ class TelemetryHandlerRetrievalTest(_RetrievalTestBase):  # pylint: disable=too-
 
         spans = self._get_finished_spans()
         self.assertEqual(spans[0].status.status_code, StatusCode.ERROR)
-        self.assertEqual(spans[0].status.description, "timeout")
+        self.assertIsNone(spans[0].status.description)
 
     def test_fail_sets_error_type_attribute(self) -> None:
         invocation = self.handler.retrieval()

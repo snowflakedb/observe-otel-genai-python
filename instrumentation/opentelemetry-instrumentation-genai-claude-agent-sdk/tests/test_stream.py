@@ -683,7 +683,7 @@ async def test_a_spent_receipt_still_waits_one_message_for_the_notification(
 
 @pytest.mark.asyncio
 async def test_killed_task_closes_without_a_notification(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     """A task stopped via TaskStop reports "killed" on task_updated and its
     notification is sometimes suppressed entirely.
@@ -693,7 +693,7 @@ async def test_killed_task_closes_without_a_notification(
     """
     task = ToolUseBlock(id="t1", name="Task", input={})
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(task),
@@ -714,11 +714,11 @@ async def test_killed_task_closes_without_a_notification(
 
 @pytest.mark.asyncio
 async def test_killed_task_with_no_result_at_all_is_closed_at_teardown(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     task = ToolUseBlock(id="t1", name="Task", input={})
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(task),
@@ -751,10 +751,10 @@ async def test_failed_task_marks_the_tool_span(handler, span_exporter):
 
 @pytest.mark.asyncio
 async def test_tool_that_never_returns_is_closed_at_teardown(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     call = ToolUseBlock(id="c1", name="Read", input={})
-    await drive(handler, [init(), assistant(call), result()])
+    await drive(capturing_handler, [init(), assistant(call), result()])
     tool = Spans(span_exporter).one("execute_tool Read")
     assert tool.status.status_code is trace.StatusCode.ERROR
     assert "never returned" in (tool.status.description or "")
@@ -1260,13 +1260,13 @@ async def test_early_stop_result_fails_only_the_agent_span(
 
 @pytest.mark.asyncio
 async def test_api_error_result_fails_the_model_call_too(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     """An API failure keeps subtype "success" and puts the text in result; the
     CLI relays it as a synthetic assistant message, so that call's span is open.
     """
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(TextBlock("API Error: 400")),
@@ -1289,9 +1289,8 @@ async def test_api_error_result_fails_the_model_call_too(
 
 @pytest.mark.asyncio
 async def test_the_clis_error_text_is_content(handler, span_exporter):
-    """The span status is exported whatever the capture setting, and an
-    ``invalid_request_error`` body can quote the request that produced it. The
-    subtype and the HTTP status are content-free, so they stay."""
+    """An ``invalid_request_error`` body can quote the request that produced
+    it, so on a span that carries no content only the subtype stays."""
     await drive(
         handler,
         [
@@ -1306,7 +1305,7 @@ async def test_the_clis_error_text_is_content(handler, span_exporter):
         ],
     )
     agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
-    assert agent.status.description == "HTTP 400"
+    assert agent.status.description is None
     assert agent.attributes["error.type"] == "api_error"
 
 
@@ -3174,7 +3173,7 @@ async def test_a_delegations_result_completes_its_subagents_last_call(
 
 @pytest.mark.asyncio
 async def test_a_subagent_ended_mid_stream_closes_its_own_tools_first(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     """A subagent killed while one of its tools is open ends then and there, not
     at teardown, so its tools have to be closed with it."""
@@ -3182,7 +3181,7 @@ async def test_a_subagent_ended_mid_stream_closes_its_own_tools_first(
         id="call-task", name="Agent", input={"subagent_type": "researcher"}
     )
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(task, message_id="m1"),
@@ -3207,11 +3206,11 @@ async def test_a_subagent_ended_mid_stream_closes_its_own_tools_first(
 
 @pytest.mark.asyncio
 async def test_a_failed_tools_string_result_still_closes_it(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     """The CLI sends a failed tool's detail as a plain string, not a dict."""
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(ToolUseBlock(id="b", name="Bash", input={})),
@@ -3596,12 +3595,12 @@ async def test_a_foreground_delegation_without_its_tool_result_does_not_hold_the
 
 @pytest.mark.asyncio
 async def test_a_stopped_foreground_delegation_reports_that_it_was_stopped(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     """Its tool_result is flagged as an error too, but the notification says
     why."""
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(
@@ -3624,12 +3623,12 @@ async def test_a_stopped_foreground_delegation_reports_that_it_was_stopped(
 
 @pytest.mark.asyncio
 async def test_a_foreground_delegation_inside_a_killed_subagent_never_returned(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     """Only background work outlives the subagent that started it. A
     foreground delegation still waiting on its own subagent never returned."""
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(
@@ -3711,7 +3710,7 @@ async def test_close_leaves_the_callers_span_current(
 
 @pytest.mark.asyncio
 async def test_a_foreground_task_stopped_after_its_turns_result_ends_the_turn(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     """Only the notification arrives, with no task_updated before it."""
     messages = [
@@ -3724,7 +3723,9 @@ async def test_a_foreground_task_stopped_after_its_turns_result_ends_the_turn(
         result(),
         task_notification("agent", status="stopped"),
     ]
-    await drive(handler, messages, multi_turn=True, stop_after=len(messages))
+    await drive(
+        capturing_handler, messages, multi_turn=True, stop_after=len(messages)
+    )
     assert Spans(span_exporter).one("invoke_agent claude-agent-sdk")
     delegation = Spans(span_exporter).one("execute_tool Agent")
     assert delegation.status.description == "task stopped"
@@ -4340,11 +4341,11 @@ async def test_stopping_after_an_error_result_still_fails_the_run(
 
 @pytest.mark.asyncio
 async def test_stopping_does_not_hide_a_task_that_already_failed(
-    handler, span_exporter
+    capturing_handler, span_exporter
 ):
     task = ToolUseBlock(id="t1", name="Agent", input={"subagent_type": "x"})
     await drive(
-        handler,
+        capturing_handler,
         [
             init(),
             assistant(task),

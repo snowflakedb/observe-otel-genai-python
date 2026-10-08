@@ -173,6 +173,11 @@ Set the environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTEN
 - ``ALLOW_LIST``: Do not capture message content, and keep only allowlisted attributes. Specific
   to this fork; see `Allowlist Mode`_.
 
+An error message can quote the prompt, so under ``NO_CONTENT`` and ``EVENT_ONLY``, which put no
+message content on spans, a failed span keeps its ERROR status and ``error.type`` but no status
+description. The ``gen_ai.client.inference.operation.details`` event carries ``error.type`` and
+never the message, in every mode. Specific to this fork.
+
 To control event emission, you can optionally set ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT`` to ``true`` or ``false`` (case-insensitive).
 This variable controls whether to emit ``gen_ai.client.inference.operation.details`` events.
 If not explicitly set, the default value is automatically determined by ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT``:

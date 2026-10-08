@@ -373,7 +373,12 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
 
     def _apply_error_attributes(self, error: Error) -> None:
         """Apply error status and error.type attribute to the span, events, and metrics."""
-        self.span.set_status(Status(StatusCode.ERROR, error.message))
+        # The message can quote the prompt, so it stays off spans that carry
+        # no content.
+        description = (
+            error.message if self._should_capture_content_on_span else None
+        )
+        self.span.set_status(Status(StatusCode.ERROR, description))
         self.attributes[error_attributes.ERROR_TYPE] = error.type
         self.metric_attributes[error_attributes.ERROR_TYPE] = error.type
 

@@ -179,7 +179,7 @@ class TelemetryHandlerWorkflowTest(_WorkflowTestBase):
         spans = self._get_finished_spans()
         self.assertEqual(len(spans), 1)
         self.assertEqual(spans[0].status.status_code, StatusCode.ERROR)
-        self.assertEqual(spans[0].status.description, "something broke")
+        self.assertIsNone(spans[0].status.description)
 
     def test_fail_workflow_sets_error_type_attribute(self) -> None:
         invocation = self.handler.workflow(name="wf")
@@ -341,7 +341,7 @@ class TelemetryHandlerWorkflowSamplingTest(_WorkflowTestBase):
         spans = self._get_finished_spans()
         self.assertEqual(len(spans), 1)
         self.assertEqual(spans[0].status.status_code, StatusCode.ERROR)
-        self.assertEqual(spans[0].status.description, "boom")
+        self.assertIsNone(spans[0].status.description)
         self.assertEqual(spans[0].attributes["error.type"], "ValueError")
 
     def test_workflow_context_manager_success_has_unset_status(self) -> None:

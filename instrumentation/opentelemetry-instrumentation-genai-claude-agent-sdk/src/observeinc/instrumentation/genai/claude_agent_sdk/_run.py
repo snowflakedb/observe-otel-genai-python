@@ -1239,7 +1239,7 @@ class AgentRun:
         self._session_id = msg.session_id or self._session_id
         self._saw_result = True
 
-        error = _result_error(msg, self._handler.should_capture_content())
+        error = _result_error(msg)
         # An API failure is the one result error that belongs on the model call:
         # the CLI relays it as a synthetic assistant message, so that call's
         # span is open and would otherwise close as a success.
@@ -1536,26 +1536,22 @@ def _fold_model_usage(
     return totals
 
 
-def _result_error(msg: ResultMessage, capture_content: bool) -> Error | None:
+def _result_error(msg: ResultMessage) -> Error | None:
     """The error a result reports, if any.
 
     Which field holds the text depends on the subtype, following the rule the
     SDK applies to its own thrown error: on an API failure the subtype is still
     "success" and the text sits in ``result``; the early-stop subtypes put it
-    in ``errors``.
+    in ``errors``. The HTTP status is appended, since it tells a rate limit
+    apart from a bad request.
 
-    That text is whatever the CLI relayed and it goes into the span status, which
-    is exported regardless of the capture setting, so it is gated: an
-    ``invalid_request_error`` body can quote the request fragment that produced
-    it. What survives either way is the subtype and the HTTP status — the SDK's
-    own docstring for ``api_error_status`` calls the status code safe to log —
-    which is what tells a rate limit apart from a bad request.
+    The text is whatever the CLI relayed, and an ``invalid_request_error`` body
+    can quote the request that produced it. It becomes the span's status
+    description, which the util keeps off spans that carry no content.
     """
     if not msg.is_error or msg.terminal_reason in _INTERRUPTED:
         return None
-    if not capture_content:
-        text = ""
-    elif msg.subtype == "success":
+    if msg.subtype == "success":
         text = msg.result if isinstance(msg.result, str) else ""
     else:
         text = "; ".join(e for e in (msg.errors or []) if e.strip())
