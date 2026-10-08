@@ -188,6 +188,21 @@ message content (as dictionaries instead of JSON strings). Note that when using 
 or ``SPAN_AND_EVENT``, the ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT`` environment variable defaults
 to ``true``, so events will be emitted automatically unless explicitly set to ``false``.
 
+Content Length Limit
+^^^^^^^^^^^^^^^^^^^^
+
+Each captured content attribute, such as ``gen_ai.input.messages``, ``gen_ai.tool.call.arguments``
+or ``gen_ai.retrieval.query.text``, is capped at 1,048,576 characters, on spans and on events. Set
+``OBSERVE_GENAI_MAX_CONTENT_LENGTH`` to another number of characters to change the cap, or to ``0``
+to turn it off. Specific to this fork.
+
+A value over the cap stays valid JSON: the text inside messages, tool arguments and results is
+shortened and ends with ``…``, while roles, types, ids, names and finish reasons are kept. Tool
+definitions lose their ``parameters``, then their ``description``. A value that isn't JSON keeps its
+start and end, with ``...[truncated N chars]...`` in between. A trimmed attribute comes with
+``<attribute>.truncated`` set to ``true`` and ``<attribute>.original_size_bytes``. The completion
+hook still gets the full content.
+
 Conversation ID on Metrics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 

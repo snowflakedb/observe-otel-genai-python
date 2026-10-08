@@ -46,6 +46,9 @@ from observeinc.util.genai._observe_content_allow_list import (
     allow_list_telemetry,
     warn_completion_hook_ignored,
 )
+from observeinc.util.genai._observe_content_limit import (
+    limit_content_length,
+)
 from observeinc.util.genai.completion_hook import (
     CompletionHook,
     _NoOpCompletionHook,
@@ -151,6 +154,12 @@ class TelemetryHandler:
                 allow_list_telemetry(
                     self._tracer, self._instruments, self._logger
                 )
+            )
+        elif (
+            self._content_capturing_mode is not ContentCapturingMode.NO_CONTENT
+        ):
+            self._tracer, self._logger = limit_content_length(
+                self._tracer, self._logger
             )
         self._capture_content = (
             self._content_capturing_mode
