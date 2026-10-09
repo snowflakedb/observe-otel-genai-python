@@ -37,8 +37,8 @@ look for ``observe-util-genai`` on PyPI:
 
     pip uninstall opentelemetry-instrumentation-genai-langchain opentelemetry-util-genai
     pip install \
-        "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
-        "observe-instrumentation-genai-langchain @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-langchain"
+        "observe-util-genai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
+        "observe-instrumentation-genai-langchain @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-langchain"
 
 See the `examples <examples>`_ directory for runnable ``workflow``, ``agent``,
 ``tools``, and ``zero-code`` scenarios.

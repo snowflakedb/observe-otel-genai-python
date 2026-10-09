@@ -40,8 +40,8 @@ instruments = ["claude-agent-sdk >= 0.2.157, < 0.3"]
 claude-agent-sdk = "observeinc.instrumentation.genai.claude_agent_sdk:ClaudeAgentSDKInstrumentor"
 
 [project.urls]
-Homepage = "https://github.com/snowflake-eng/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk"
-Repository = "https://github.com/snowflake-eng/observe-otel-genai-python"
+Homepage = "https://github.com/Snowflake-Labs/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk"
+Repository = "https://github.com/Snowflake-Labs/observe-otel-genai-python"
 
 [tool.hatch.version]
 path = "src/observeinc/instrumentation/genai/claude_agent_sdk/version.py"

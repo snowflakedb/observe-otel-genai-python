@@ -36,8 +36,8 @@ instruments = ["openai >= 1.26.0, < 4"]
 openai = "observeinc.instrumentation.genai.openai:OpenAIInstrumentor"
 
 [project.urls]
-Homepage = "https://github.com/snowflake-eng/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai"
-Repository = "https://github.com/snowflake-eng/observe-otel-genai-python"
+Homepage = "https://github.com/Snowflake-Labs/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai"
+Repository = "https://github.com/Snowflake-Labs/observe-otel-genai-python"
 Upstream = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai"
 
 [tool.hatch.version]

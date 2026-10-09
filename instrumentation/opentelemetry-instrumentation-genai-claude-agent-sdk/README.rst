@@ -20,8 +20,8 @@ look for either name on PyPI:
 ::
 
     pip install \
-        "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
-        "observe-instrumentation-genai-claude-agent-sdk @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk"
+        "observe-util-genai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
+        "observe-instrumentation-genai-claude-agent-sdk @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk"
 
 If you don't have a Claude Agent SDK application yet, try our `examples <examples>`_
 which only need a valid Anthropic API key.

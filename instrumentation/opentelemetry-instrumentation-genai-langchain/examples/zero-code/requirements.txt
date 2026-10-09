@@ -4,5 +4,5 @@ opentelemetry-sdk>=1.44.0
 opentelemetry-exporter-otlp-proto-grpc>=1.44.0
 opentelemetry-distro~=0.64b0
 
-observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai
-observe-instrumentation-genai-langchain @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-langchain
+observe-util-genai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai
+observe-instrumentation-genai-langchain @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-langchain
