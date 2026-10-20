@@ -101,7 +101,6 @@ NOT_ALLOW_LISTED = {
     "gen_ai.usage.audio.cache_read.input_tokens",
     "gen_ai.usage.audio.input_tokens",
     "gen_ai.usage.audio.output_tokens",
-    "gen_ai.usage.cache_write.input_tokens",
     "gen_ai.usage.image.cache_read.input_tokens",
     "gen_ai.usage.image.input_tokens",
     "gen_ai.usage.image.output_tokens",
@@ -493,6 +492,14 @@ def test_the_inference_event_is_still_emitted_filtered(
     )
     assert log.log_record.attributes["gen_ai.request.model"] == "gpt-5"
     telemetry.assert_allow_listed()
+
+
+@pytest.mark.usefixtures("allow_list")
+def test_cache_write_tokens_are_kept(telemetry: Telemetry) -> None:
+    _inference(telemetry.handler(), stream=False)
+
+    (span,) = telemetry.spans()
+    assert span.attributes["gen_ai.usage.cache_write.input_tokens"] == 3
 
 
 def test_every_emitted_key_is_classified(

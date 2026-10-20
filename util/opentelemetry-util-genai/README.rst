@@ -252,9 +252,8 @@ In this mode:
   the ``upload`` hook does not start.
 
 The list is fixed in this version. Some attributes this package records are not on it yet
-and are dropped, such as ``gen_ai.request.top_k``, ``gen_ai.usage.cache_write.input_tokens``
-and the per-modality token counts. ``gen_ai.token.modality`` is one of them, so token metrics
-are not split by modality.
+and are dropped, such as ``gen_ai.request.top_k`` and the per-modality token counts.
+``gen_ai.token.modality`` is one of them, so token metrics are not split by modality.
 Instrumentation-specific keys are dropped too, such as the OpenAI package's
 ``openai.api.type``, ``openai.request.service_tier``, ``openai.response.service_tier`` and
 ``openai.response.system_fingerprint``.
