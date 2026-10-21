@@ -1,6 +1,6 @@
-langchain>=1.4.3
-langchain-openai>=1.6.6
-langgraph>=1.2.12
+langchain>=1.4.6
+langchain-openai>=1.7.2
+langgraph>=1.2.16
 opentelemetry-sdk>=1.44.0
 opentelemetry-exporter-otlp-proto-grpc>=1.44.0
 observe-util-genai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai

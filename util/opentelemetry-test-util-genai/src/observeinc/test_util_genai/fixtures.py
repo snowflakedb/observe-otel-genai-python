@@ -63,6 +63,7 @@ from observeinc.util.genai.environment_variables import (
 )
 from observeinc.util.genai.handler import TelemetryHandler
 from observeinc.util.genai.types import ContentCapturingMode
+from opentelemetry.context import attach, detach, get_current
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import (
     InMemoryLogRecordExporter,
@@ -77,6 +78,21 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_context() -> Iterator[None]:
+    """Isolate the active OpenTelemetry context per test.
+
+    Restores the previous context after each test, preventing context
+    attached during a test from leaking into subsequent tests.
+    """
+    token = attach(get_current())
+    try:
+        yield
+    finally:
+        detach(token)
+
 
 # ─── In-memory exporters and providers ──────────────────────────────────────
 

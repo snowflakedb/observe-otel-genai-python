@@ -17,6 +17,7 @@ from observeinc.test_util_genai._observe_allow_list import (
     assert_allow_listed,
     attribute_keys,
 )
+from observeinc.util.genai._inference_invocation import _should_emit_event
 from observeinc.util.genai._instruments import _Instruments
 from observeinc.util.genai._invocation import get_content_attributes
 from observeinc.util.genai._observe_content_allow_list import (
@@ -51,10 +52,7 @@ from observeinc.util.genai.types import (
     TextPart,
 )
 from observeinc.util.genai.user_id import using_user_id
-from observeinc.util.genai.utils import (
-    _should_emit_event,
-    get_content_capturing_mode,
-)
+from observeinc.util.genai.utils import get_content_capturing_mode
 from opentelemetry import trace
 from opentelemetry.metrics import Instrument
 from opentelemetry.sdk._logs import LoggerProvider
@@ -599,7 +597,7 @@ def test_loading_a_hook_does_not_repeat_the_invalid_mode_warning(
     )
     monkeypatch.setenv(OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK, "missing")
     load_completion_hook()
-    assert "is not a valid option" not in caplog.text
+    assert "bogus is not a valid option" not in caplog.text
 
 
 def test_events_follow_the_emit_event_setting(

@@ -4,9 +4,12 @@
 """Tests for OpenAI structured outputs (chat.completions.parse) instrumentation."""
 
 import pytest
+import wrapt
 from openai import NotFoundError
-from openai.resources.chat.completions import Completions
+from openai.resources.chat.completions import AsyncCompletions, Completions
 
+from observeinc.instrumentation.genai.openai import OpenAIInstrumentor
+from observeinc.test_util_genai.instrumentor import instrument
 from observeinc.util.genai.utils import is_experimental_mode
 from opentelemetry.semconv._incubating.attributes import (
     error_attributes as ErrorAttributes,
@@ -180,3 +183,21 @@ def test_structured_output_404(
         "openai.NotFoundError"
         == spans[0].attributes[ErrorAttributes.ERROR_TYPE]
     )
+
+
+def test_uninstrument_from_a_new_instrumentor_call_unwraps_parse(
+    tracer_provider, logger_provider, meter_provider
+):
+    with instrument(
+        OpenAIInstrumentor(),
+        tracer_provider=tracer_provider,
+        logger_provider=logger_provider,
+        meter_provider=meter_provider,
+    ):
+        for cls in (Completions, AsyncCompletions):
+            assert isinstance(cls.__dict__["parse"], wrapt.FunctionWrapper)
+        # OpenAIInstrumentor() returns the same instance but runs __init__ again.
+        OpenAIInstrumentor().uninstrument()
+
+        for cls in (Completions, AsyncCompletions):
+            assert not isinstance(cls.__dict__["parse"], wrapt.FunctionWrapper)

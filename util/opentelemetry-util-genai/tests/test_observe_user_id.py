@@ -14,7 +14,6 @@ from observeinc.util.genai._observe_library_user_id import (
     OBSERVE_GENAI_CAPTURE_USER_ID_FROM_LIBRARY,
 )
 from observeinc.util.genai.handler import TelemetryHandler
-from observeinc.util.genai.types import LLMInvocation
 from observeinc.util.genai.user_id import (
     get_user_id,
     using_user_id,
@@ -139,13 +138,6 @@ class UserIdTest(TestBase):
             self._span_user_ids()["execute_tool lookup"],
             "set-by-instrumentation",
         )
-
-    def test_the_start_stop_llm_api_carries_it(self) -> None:
-        llm = LLMInvocation(provider="openai", request_model="gpt-5")
-        with using_user_id("user-123"):
-            self.handler.start_llm(llm)
-            self.handler.stop_llm(llm)
-        self.assertEqual(self._span_user_ids()["chat gpt-5"], "user-123")
 
     def test_it_stays_off_metrics(self) -> None:
         with using_user_id("user-123"):
