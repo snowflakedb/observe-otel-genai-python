@@ -74,7 +74,7 @@ def raw_assistant(text: str = "4") -> dict[str, Any]:
 
 
 def raw_result(
-    text: str = "4", output_tokens_so_far: int | None = None
+    text: str = "4", output_tokens: int | None = None
 ) -> dict[str, Any]:
     message: dict[str, Any] = {
         "type": "result",
@@ -87,17 +87,8 @@ def raw_result(
         "result": text,
         "stop_reason": "end_turn",
     }
-    if output_tokens_so_far is not None:
-        # The CLI reports usage for the whole session so far, not the turn.
-        message["modelUsage"] = {
-            MODEL: {
-                "inputTokens": 0,
-                "outputTokens": output_tokens_so_far,
-                "cacheReadInputTokens": 0,
-                "cacheCreationInputTokens": 0,
-                "costUSD": 0.0,
-            }
-        }
+    if output_tokens is not None:
+        message["usage"] = {"input_tokens": 0, "output_tokens": output_tokens}
     return message
 
 
@@ -567,8 +558,7 @@ async def test_one_long_lived_receive_reports_each_turns_own_prompt(
 async def test_each_receive_response_reports_only_its_own_turns_usage(
     instrumented, span_exporter
 ):
-    """One receive_response() per turn is the SDK's documented multi-turn loop,
-    while the CLI's usage counters keep growing over the whole connection."""
+    """One receive_response() per turn is the SDK's documented multi-turn loop."""
     client = connected_client(
         [raw_init(), raw_assistant("4"), raw_result("4", 10)]
         + [raw_assistant("6"), raw_result("6", 20)]
@@ -582,8 +572,8 @@ async def test_each_receive_response_reports_only_its_own_turns_usage(
     roots = [s for s in span_exporter.get_finished_spans() if s.name == ROOT]
     assert [r.attributes["gen_ai.usage.output_tokens"] for r in roots] == [
         10,
-        10,
-        10,
+        20,
+        30,
     ]
 
 
@@ -633,18 +623,18 @@ async def test_a_turn_left_waiting_is_still_counted_once(
     starts reading. Both calls read one connection, and count it once."""
     client = connected_client(
         BACKGROUND_TURN
-        + [raw_init(), raw_text("two", message_id="m2"), raw_result("", 30)]
-        + [raw_init(), raw_text("three", message_id="m3"), raw_result("", 60)]
+        + [raw_init(), raw_text("two", message_id="m2"), raw_result("", 20)]
+        + [raw_init(), raw_text("three", message_id="m3"), raw_result("", 30)]
     )
     await read_turns(client, ["one", "two", "three"], collect=collect)
     assert root_output_tokens(span_exporter) == [10, 20, 30]
 
 
 @pytest.mark.asyncio
-async def test_a_reconnected_client_counts_from_zero_again(
+async def test_a_reconnected_client_reports_each_connections_turns(
     instrumented, span_exporter
 ):
-    """connect() starts a new CLI, whose counters start over."""
+    """connect() starts a new CLI process under the same client."""
     client = connected_client(
         [raw_init(), raw_assistant(), raw_result("", 100)]
     )
@@ -674,7 +664,7 @@ async def test_a_background_delegation_stays_in_the_turn_that_started_it(
             raw_task("task_notification", "agent"),
             raw_init(),
             raw_text("it finished", message_id="m2"),
-            raw_result("", 30),
+            raw_result("", 20),
         ]
     )
     await read_turns(client, ["one", "two"])

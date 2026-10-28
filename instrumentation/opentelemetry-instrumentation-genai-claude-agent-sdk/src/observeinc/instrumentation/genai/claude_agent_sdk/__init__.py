@@ -72,8 +72,8 @@ For accurate per-call token counts, stop reasons, and streaming timings, pass
 ``include_partial_messages=True`` in ``ClaudeAgentOptions``. It is off by
 default and is not set for you, because it changes what the caller's own loop
 receives. Without it each ``chat`` span's token counts are a mid-stream
-snapshot and the span is marked ``claude_agent_sdk.usage.is_partial``; the run
-totals on the ``invoke_agent`` span are accurate either way.
+snapshot and the span is marked ``claude_agent_sdk.usage.is_partial``; the
+token counts on the root ``invoke_agent`` span are accurate either way.
 
 API
 ---

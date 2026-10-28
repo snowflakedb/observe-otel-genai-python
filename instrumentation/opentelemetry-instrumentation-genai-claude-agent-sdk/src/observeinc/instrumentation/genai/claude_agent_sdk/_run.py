@@ -47,7 +47,6 @@ from observeinc.instrumentation.genai.claude_agent_sdk._types import (
     StreamEventPayload,
     TaskToolInput,
     Usage,
-    UsageTotals,
 )
 from observeinc.util.genai.handler import TelemetryHandler
 from observeinc.util.genai.invocation import (
@@ -74,7 +73,6 @@ if TYPE_CHECKING:
     # only, so that this module imports without it installed.
     from claude_agent_sdk.types import (
         ClaudeAgentOptions,
-        ModelUsage,
         ResultMessage,
         StreamEvent,
         SystemMessage,
@@ -96,17 +94,14 @@ _MAIN = " main"
 
 # Prefix for the attributes the convention has no key for. One prefix for all of
 # them, and a vendor-scoped one: a custom key under gen_ai.* squats on a name a
-# future semconv cost attribute will claim, and "genai." — which is_partial used
-# to sit under — is one character away from the real namespace.
+# future semconv attribute may claim, and "genai." is one character away from the
+# real namespace.
 _VENDOR = "claude_agent_sdk"
 
 # Non-semconv. Set when a chat span's token counts are a mid-stream snapshot
 # rather than the call's final usage, so a consumer can tell the difference
 # instead of silently trusting an undercount.
 ATTR_USAGE_IS_PARTIAL = f"{_VENDOR}.usage.is_partial"
-
-# Non-semconv. The SDK reports cost and nothing in the convention carries it.
-ATTR_USAGE_COST_USD = f"{_VENDOR}.usage.cost_usd"
 
 # The name util-genai gives cache-creation tokens on inference spans. Written
 # here by hand because LocalAgentInvocation has no field for it, and spelled out
@@ -278,6 +273,51 @@ def _fold_input_tokens(usage: Usage) -> int:
 
 
 @dataclass
+class _AgentUsage:
+    """The token counts of one agent's own model calls, for its ``invoke_agent``
+    span. A subagent's calls count towards the subagent only, as the
+    convention's reference instrumentations do for nested agents."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+    reasoning: int = 0
+    recorded: bool = False
+    # A summed call's output count was its mid-stream snapshot.
+    partial: bool = False
+
+    def add(self, usage: Usage, *, partial: bool = False) -> None:
+        self.recorded = True
+        self.partial = self.partial or partial
+        self.input_tokens += _fold_input_tokens(usage)
+        self.output_tokens += int(usage.get("output_tokens") or 0)
+        self.cache_read += int(usage.get("cache_read_input_tokens") or 0)
+        self.cache_write += int(usage.get("cache_creation_input_tokens") or 0)
+        details = usage.get("output_tokens_details") or {}
+        self.reasoning += int(details.get("thinking_tokens") or 0)
+
+    def apply(self, invocation: LocalAgentInvocation) -> None:
+        if not self.recorded:
+            return
+        invocation.input_tokens = self.input_tokens
+        invocation.output_tokens = self.output_tokens
+        attributes = invocation.attributes
+        if self.cache_read:
+            attributes[GenAI.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = (
+                self.cache_read
+            )
+        if self.cache_write:
+            attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = self.cache_write
+        if self.reasoning:
+            attributes[GenAI.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = (
+                self.reasoning
+            )
+        if self.partial:
+            attributes[ATTR_USAGE_IS_PARTIAL] = True
+
+
+@dataclass
 class _ChatContext:
     """Chat-span state for one agent context: the main thread, or one subagent."""
 
@@ -308,6 +348,9 @@ class _ChatContext:
     launch_prompt: list[InputMessage] = field(
         default_factory=list[InputMessage]
     )
+    # Where this context's calls are added up for its subagent's span. None for
+    # the main thread, whose span takes its counts from the result.
+    agent_usage: _AgentUsage | None = None
 
     def set_final_usage(self, usage: Usage) -> None:
         self.final_usage = usage
@@ -321,6 +364,7 @@ class _ChatContext:
 class _Subagent:
     invocation: LocalAgentInvocation
     output: list[OutputMessage] = field(default_factory=list[OutputMessage])
+    usage: _AgentUsage = field(default_factory=_AgentUsage)
 
 
 @dataclass
@@ -423,18 +467,8 @@ class AgentRun:
         # ended. Anything naming one is dropped, and one closed before it
         # reported back is not a failure.
         self._detached: set[str] = set()
-
-        # The CLI's cumulative counters as of the last result, and their value
-        # when the previous turn ended. See _usage_delta.
-        self._usage_totals: UsageTotals = _zero_usage()
-        self._usage_baseline: UsageTotals = _zero_usage()
-        # A resumed or continued session's counters carry on from the earlier
-        # session's, by an amount the stream never states. Until a turn has set
-        # the baseline from them, a turn's own share is unknown.
-        self._inherits_usage = bool(
-            getattr(sdk_options, "resume", None)
-            or getattr(sdk_options, "continue_conversation", False)
-        )
+        # The root agent's own calls, from the results its turn has seen.
+        self._root_usage = _AgentUsage()
 
         self._session_id: str | None = None
         self._model: str | None = None
@@ -623,6 +657,7 @@ class AgentRun:
             return existing
 
         launch_prompt: list[InputMessage] = []
+        agent_usage: _AgentUsage | None = None
         if parent_tool_use_id:
             subagent = self._live_subagent(parent_tool_use_id)
             parent_context = (
@@ -633,6 +668,7 @@ class AgentRun:
             history: list[InputMessage] = []
             if subagent is not None:
                 launch_prompt = list(subagent.invocation.input_messages)
+                agent_usage = subagent.usage
         else:
             parent_context = self._root_ctx()
             history = list(prompt_to_messages(self._prompt))
@@ -642,6 +678,7 @@ class AgentRun:
             parent_context=parent_context,
             history=history,
             launch_prompt=launch_prompt,
+            agent_usage=agent_usage,
         )
         self._chats[key] = ctx
         return ctx
@@ -708,6 +745,8 @@ class AgentRun:
             invocation.thinking_tokens = ctx.thinking_tokens
         if ctx.final_usage is None:
             invocation.attributes[ATTR_USAGE_IS_PARTIAL] = True
+        if usage and ctx.agent_usage is not None:
+            ctx.agent_usage.add(usage, partial=ctx.final_usage is None)
 
         if ctx.response_model:
             invocation.response_model_name = ctx.response_model
@@ -834,6 +873,7 @@ class AgentRun:
             self._guarded(self._close_chat, ctx)
         if entry.output and self._handler.should_capture_content():
             entry.invocation.output_messages = entry.output
+        entry.usage.apply(entry.invocation)
         entry.invocation.stop()
 
     # --- tool spans -------------------------------------------------------
@@ -941,16 +981,11 @@ class AgentRun:
         """The session's conversation was replaced without the connection
         ending — a ``/clear``, or any other flow that discards the transcript.
 
-        The SDK documents this as zeroing the running totals later results
-        report, so the baseline they are measured against has to go back to zero
-        with them. The transcript it discards is also the one being replayed as
-        each chat span's input, so that goes too — and an empty conversation is
-        not a compacted one.
+        The transcript it discards is the one being replayed as each chat span's
+        input, so that goes too — and an empty conversation is not a compacted
+        one.
         """
         self._session_id = msg.new_conversation_id
-        self._usage_totals = _zero_usage()
-        self._usage_baseline = _zero_usage()
-        self._inherits_usage = False
         self._compacted = False
         for ctx in self._chats.values():
             ctx.history.clear()
@@ -1099,13 +1134,8 @@ class AgentRun:
             tool_use_id = getattr(block, "tool_use_id", None)
             if not tool_use_id:
                 continue
-            # A task waits for its notification; this may only be a receipt.
-            # A failed call launched nothing, so its result is final.
-            call = self._calls.get(tool_use_id)
-            is_error = bool(getattr(block, "is_error", None))
-            if call is not None and call.task_running and not is_error:
-                call.receipt_spent = True
-                continue
+            # Taken before the receipt check: the result can arrive ahead of
+            # the task's notification, and a real receipt carries no usage.
             subagent_chat = self._chats.get(tool_use_id)
             if (
                 usage
@@ -1113,6 +1143,13 @@ class AgentRun:
                 and subagent_chat.invocation is not None
             ):
                 subagent_chat.set_final_usage(usage)
+            # A task waits for its notification; this may only be a receipt.
+            # A failed call launched nothing, so its result is final.
+            call = self._calls.get(tool_use_id)
+            is_error = bool(getattr(block, "is_error", None))
+            if call is not None and call.task_running and not is_error:
+                call.receipt_spent = True
+                continue
             self._close_tool(
                 tool_use_id,
                 getattr(block, "content", None),
@@ -1249,15 +1286,12 @@ class AgentRun:
             self._close_chat(main, api_error)
         self._final_error = error
 
-        if msg.model_usage:
-            totals = _fold_model_usage(msg.model_usage)
-            if not totals["cost_usd"]:
-                totals["cost_usd"] = float(msg.total_cost_usd or 0.0)
-            # A later result supersedes an earlier one rather than adding to it:
-            # the counters are cumulative, so the last one holds the answer.
-            self._usage_totals = totals
-        if not self._inherits_usage:
-            self._record_turn_usage(root)
+        # ``usage`` counts only the main thread's calls since the previous
+        # result, unlike the session-wide ``model_usage``. A turn waiting on
+        # background work can see two results, so they add up.
+        if msg.usage:
+            self._root_usage.add(cast("Usage", msg.usage))
+            self._root_usage.apply(root)
         if msg.stop_reason:
             root.finish_reasons = [msg.stop_reason]
         if (
@@ -1270,27 +1304,6 @@ class AgentRun:
 
         if self._multi_turn:
             self._end_pending = True
-
-    def _record_turn_usage(self, root: LocalAgentInvocation) -> None:
-        turn = _usage_delta(self._usage_totals, self._usage_baseline)
-        if turn["input_tokens"]:
-            root.input_tokens = turn["input_tokens"]
-        if turn["output_tokens"]:
-            root.output_tokens = turn["output_tokens"]
-        if turn["cache_read"]:
-            root.attributes[GenAI.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = turn[
-                "cache_read"
-            ]
-        if turn["cache_write"]:
-            root.attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = turn[
-                "cache_write"
-            ]
-        if turn["reasoning"]:
-            root.attributes[GenAI.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = turn[
-                "reasoning"
-            ]
-        if turn["cost_usd"]:
-            root.attributes[ATTR_USAGE_COST_USD] = turn["cost_usd"]
 
     # --- teardown ---------------------------------------------------------
 
@@ -1371,15 +1384,10 @@ class AgentRun:
             self._detached |= self._calls.keys()
             self._calls.clear()
             self._task_ids.clear()
-            # Where the next turn's cumulative counters are measured from.
-            self._usage_baseline = cast(
-                "UsageTotals", dict(self._usage_totals)
-            )
-            if any(self._usage_totals.values()):
-                self._inherits_usage = False
         finally:
             root, self._root = self._root, None
             self._root_context = None
+            self._root_usage = _AgentUsage()
             # _compacted deliberately survives: compaction is a property of the
             # conversation, not of the turn that triggered it, so a later turn is
             # still working from a compacted context. Only a reset clears it.
@@ -1473,67 +1481,6 @@ def _is_tool_use(block: Any) -> bool:
         and getattr(block, "input", None) is not None
         and not type(block).__name__.startswith("ServerTool")
     )
-
-
-def _zero_usage() -> UsageTotals:
-    return {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read": 0,
-        "cache_write": 0,
-        "reasoning": 0,
-        "cost_usd": 0.0,
-    }
-
-
-def _usage_delta(totals: UsageTotals, baseline: UsageTotals) -> UsageTotals:
-    """One invocation's share of counts the CLI reports cumulatively.
-
-    ``model_usage`` and ``total_cost_usd`` accumulate over the *session*, not the
-    invocation: the CLI documents them that way, a resumed session carries on
-    from the earlier session's totals, and a mid-session ``/clear`` zeroes them.
-    In multi-turn mode a fresh root opens per turn while the counters keep
-    growing, so each turn reports the difference from where the previous one
-    ended.
-
-    Clamped at zero, because a counter reset the stream did not announce would
-    otherwise be reported as a negative token count.
-    """
-    return {
-        "input_tokens": max(
-            totals["input_tokens"] - baseline["input_tokens"], 0
-        ),
-        "output_tokens": max(
-            totals["output_tokens"] - baseline["output_tokens"], 0
-        ),
-        "cache_read": max(totals["cache_read"] - baseline["cache_read"], 0),
-        "cache_write": max(totals["cache_write"] - baseline["cache_write"], 0),
-        "reasoning": max(totals["reasoning"] - baseline["reasoning"], 0),
-        "cost_usd": max(totals["cost_usd"] - baseline["cost_usd"], 0.0),
-    }
-
-
-def _fold_model_usage(
-    model_usage: dict[str, ModelUsage] | None,
-) -> UsageTotals:
-    """Sum per-model usage across models.
-
-    Covers subagents and compaction, which ``result.usage`` does not.
-    """
-    totals = _zero_usage()
-    for usage in (model_usage or {}).values():
-        totals["input_tokens"] += int(usage.get("inputTokens") or 0)
-        totals["output_tokens"] += int(usage.get("outputTokens") or 0)
-        totals["cache_read"] += int(usage.get("cacheReadInputTokens") or 0)
-        totals["cache_write"] += int(
-            usage.get("cacheCreationInputTokens") or 0
-        )
-        # Already counted in outputTokens.
-        totals["reasoning"] += int(usage.get("thinkingTokens") or 0)
-        totals["cost_usd"] += float(usage.get("costUSD") or 0.0)
-    # The convention wants input_tokens to include the cached counts.
-    totals["input_tokens"] += totals["cache_read"] + totals["cache_write"]
-    return totals
 
 
 def _result_error(msg: ResultMessage) -> Error | None:

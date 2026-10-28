@@ -53,7 +53,11 @@ def load(path: Path) -> list[Any]:
 
 
 async def replay(
-    handler: TelemetryHandler, path: Path, *, multi_turn: bool
+    handler: TelemetryHandler,
+    path: Path,
+    *,
+    multi_turn: bool,
+    sdk_options: Any = None,
 ) -> None:
     messages = load(path)
 
@@ -61,7 +65,7 @@ async def replay(
         for message in messages:
             yield message
 
-    run = AgentRun(handler, multi_turn=multi_turn)
+    run = AgentRun(handler, sdk_options=sdk_options, multi_turn=multi_turn)
     run.submit("replay")
     async for _ in run.iterate(stream):
         pass

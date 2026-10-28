@@ -16,7 +16,7 @@ from observeinc.test_util_genai._observe_allow_list import (
 from observeinc.util.genai.handler import TelemetryHandler
 from opentelemetry import trace
 
-from .test_stream import MODEL_USAGE, assistant, drive, init, result
+from .test_stream import USAGE, assistant, drive, init, result
 
 SECRET = "secret-content"
 
@@ -58,7 +58,7 @@ async def test_an_api_error_result(
                 is_error=True,
                 text=f"API Error: 400 {SECRET}",
                 api_error_status=400,
-                model_usage=MODEL_USAGE,
+                usage=USAGE,
             ),
         ],
     )

@@ -25,7 +25,8 @@ class Usage(TypedDict, total=False):
     """Anthropic token counts.
 
     Arrives twice per call: as a mid-stream snapshot on the assistant message,
-    then as the final counts on the ``message_delta`` stream event.
+    then as the final counts on the ``message_delta`` stream event. A result's
+    ``usage`` has the same shape, summed over the main thread's calls.
     """
 
     input_tokens: int
@@ -75,14 +76,3 @@ class TaskToolInput(TypedDict, total=False):
     description: str
     prompt: str
     model: str
-
-
-class UsageTotals(TypedDict):
-    """Per-model usage summed across an invocation by ``_fold_model_usage``."""
-
-    input_tokens: int
-    output_tokens: int
-    cache_read: int
-    cache_write: int
-    reasoning: int
-    cost_usd: float

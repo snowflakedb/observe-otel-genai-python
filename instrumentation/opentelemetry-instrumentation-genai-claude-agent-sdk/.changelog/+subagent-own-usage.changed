@@ -1,0 +1,1 @@
+Each `invoke_agent` span now reports only its own agent's tokens, so the root span no longer includes its subagents' calls. A subagent span adds up its `chat` spans and sets `claude_agent_sdk.usage.is_partial` when any of them was undercounted. No span reports cost.

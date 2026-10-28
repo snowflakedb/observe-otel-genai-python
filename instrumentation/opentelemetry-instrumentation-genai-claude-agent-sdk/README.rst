@@ -99,7 +99,7 @@ environment variable ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`` to o
 
 ``ALLOW_LIST`` captures no content, like ``NO_CONTENT``, and keeps only a fixed list of
 attributes on everything recorded, as described in the ``observe-util-genai`` README. It drops
-this package's ``claude_agent_sdk.*`` attributes, the run cost among them.
+``claude_agent_sdk.usage.is_partial``, so under it you cannot tell which token counts are undercounts.
 
 Any other value is rejected with a warning and falls back to ``NO_CONTENT``.
 
@@ -129,9 +129,9 @@ what the ``chat`` spans need to report a call's final token counts and stop
 reason. Without it, those spans carry the mid-stream usage snapshot instead —
 an undercount, marked on the span so a consumer can tell the difference — and
 no ``gen_ai.client.operation.time_to_first_chunk`` or
-``gen_ai.client.operation.time_per_output_chunk`` timings are recorded. The run
-totals on the ``invoke_agent`` span are accurate either way. Turning it on adds
-``StreamEvent`` messages to the stream your loop iterates.
+``gen_ai.client.operation.time_per_output_chunk`` timings are recorded. The
+token counts on the root ``invoke_agent`` span are accurate either way. Turning
+it on adds ``StreamEvent`` messages to the stream your loop iterates.
 
 A subagent's calls get no stream events even with the option on. When the
 delegation runs in the foreground, its last call still reports final counts,
@@ -148,12 +148,35 @@ subagent never called a tool. Either way the forwarded messages arrive as
 the spawning Agent ``tool_use`` id, so turning the option on adds the
 subagent's own text to your loop.
 
-``resume`` and ``continue_conversation`` pick up an earlier session. Its first
-result already includes the earlier session's token usage and cost, without
-saying how much. For those runs, the ``invoke_agent`` span leaves out token and
-cost totals rather than report inflated ones. With ``ClaudeSDKClient``, later
-turns are measured from the first and report their own totals. The ``chat``
-spans are unaffected.
+Token Usage
+-----------
+
+Each ``invoke_agent`` span reports only the tokens of its own agent's calls. A
+subagent's calls count on the subagent's span, not on the span of the agent that
+delegated to it. To total a run, add up every ``invoke_agent`` span in the trace.
+Don't also add the ``chat`` spans: they cover the same calls, so each call would
+be counted twice.
+
+- **The root agent** takes its counts from the ``usage`` field of each
+  ``ResultMessage``, which counts the root agent's own calls since the previous
+  result, not its subagents'. They are accurate whether or not stream events are
+  on, and for resumed sessions too.
+- **A subagent** gets no total of its own from the CLI, so its span adds up
+  its ``chat`` spans. Input and cache counts are accurate. Output is accurate
+  only for a foreground subagent's last call: the CLI forwards no stream
+  events for a subagent, so each earlier call's output count is the near-zero
+  figure from when that call started. A background subagent has no accurate
+  output count at all. When any of its calls was undercounted, the subagent
+  span carries ``claude_agent_sdk.usage.is_partial`` set to ``true``, as the
+  ``chat`` span of that call does.
+
+Calls the CLI makes for itself, such as the one that shortens a long
+conversation (compaction), are counted on no span. Only the session-wide
+``ResultMessage.model_usage`` includes them.
+
+No span reports cost. ``ResultMessage.total_cost_usd`` covers the whole session
+and every agent in it, so it fits no single span. Read it in your own code if
+you need it.
 
 
 References

@@ -1,1 +1,1 @@
-Report each `ClaudeSDKClient` turn's own tokens and cost rather than the session's running totals, including when each turn is read by its own `receive_response()` call or a result carries no usage.
+Report each `ClaudeSDKClient` turn's own tokens rather than the session's running totals, including when each turn is read by its own `receive_response()` call or a result carries no usage.
