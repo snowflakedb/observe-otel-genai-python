@@ -14,11 +14,11 @@ Add a test here when Observe starts depending on a field, and a
 intentional difference from upstream.
 
 Most of the contract is already exercised incidentally by test_stream.py: the
-conversation id is asserted on every span of several runs, cost comes off
-``modelUsage``, and the span hierarchy is what most of that file is about. What
-nothing there covers is ``gen_ai.agent.name``, because every test finds an agent
-span by matching its *name string* — so dropping the attribute while keeping the
-span-name suffix leaves the whole suite green and Observe showing no agents.
+conversation id is asserted on every span of several runs, and the span
+hierarchy is what most of that file is about. What nothing there covers is
+``gen_ai.agent.name``, because every test finds an agent span by matching its
+*name string* — so dropping the attribute while keeping the span-name suffix
+leaves the whole suite green and Observe showing no agents.
 
 Time to first token is not asserted here: it looks unimplemented rather than
 untested, since ``_run.py`` never reads ``ttft_ms`` off the result message.

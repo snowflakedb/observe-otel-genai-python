@@ -26,7 +26,8 @@ class Usage(TypedDict, total=False):
 
     Arrives twice per call: as a mid-stream snapshot on the assistant message,
     then as the final counts on the ``message_delta`` stream event. A result's
-    ``usage`` has the same shape, summed over the main thread's calls.
+    ``usage`` has the same shape, summed over the main thread's calls since the
+    previous result.
     """
 
     input_tokens: int

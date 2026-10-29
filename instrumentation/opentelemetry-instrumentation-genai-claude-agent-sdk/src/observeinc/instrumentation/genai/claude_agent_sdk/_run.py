@@ -326,7 +326,8 @@ class _ChatContext:
         default_factory=list[InputMessage]
     )
     # Where this context's calls are added up for its subagent's span. None for
-    # the main thread, whose span takes its counts from the result.
+    # the main thread, whose span takes its counts from the result, and for a
+    # subagent message that arrives after its span closed.
     agent_usage: _AgentUsage | None = None
 
     def set_final_usage(self, usage: Usage) -> None:

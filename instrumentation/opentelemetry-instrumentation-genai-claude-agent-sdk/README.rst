@@ -151,9 +151,14 @@ Token Usage
 
 Each ``invoke_agent`` span reports only the tokens of its own agent's calls. A
 subagent's calls count on the subagent's span, not on the span of the agent that
-delegated to it. To total a run, add up every ``invoke_agent`` span in the trace.
-Don't also add the ``chat`` spans: they cover the same calls, so each call would
-be counted twice.
+delegated to it, so adding up the ``invoke_agent`` spans of a run counts each
+call once. Don't also add the ``chat`` spans: they cover the same calls, so each
+call would be counted twice. With ``ClaudeSDKClient`` each turn gets its own root
+``invoke_agent`` span; ``gen_ai.conversation.id`` groups the turns.
+
+That sum falls short of what the run used in three cases, described below: a
+subagent's output, calls the CLI makes for itself, and a turn that ends without
+a result, whose root span then reports no tokens.
 
 Agent spans carry only the two totals, ``gen_ai.usage.input_tokens`` (cache
 reads and writes included) and ``gen_ai.usage.output_tokens``. The cache and
@@ -172,9 +177,13 @@ whole run, add them up from the ``chat`` spans.
   and each of its ``chat`` spans carry ``claude_agent_sdk.usage.is_partial``
   set to ``true``.
 
-Calls the CLI makes for itself, such as the one that shortens a long
-conversation (compaction), are counted on no span. Only the session-wide
+Calls the CLI makes for itself, such as the one that gives a new session its
+title, are counted on no span. Only the session-wide
 ``ResultMessage.model_usage`` includes them.
+
+A turn that ends without a result, because the stream failed or the run was
+closed part-way, leaves its root span without token counts. Its ``chat`` spans
+still carry theirs.
 
 No span reports cost. ``ResultMessage.total_cost_usd`` covers the whole session
 and every agent in it, so it fits no single span. Read it in your own code if
