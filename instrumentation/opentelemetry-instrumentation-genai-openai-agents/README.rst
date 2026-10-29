@@ -48,12 +48,21 @@ look for ``observe-util-genai`` on PyPI:
         "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
         "observe-instrumentation-genai-openai-agents @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai-agents"
 
-To also capture the underlying LLM calls, install
-``observe-instrumentation-genai-openai`` the same way:
+.. note::
+   Model calls (``chat`` spans and their token counts) come from
+   ``observe-instrumentation-genai-openai``, not from this package. If your
+   agents call models through the ``openai`` package, which is the default and
+   includes OpenAI-compatible endpoints set with ``base_url``, install it the
+   same way and call ``OpenAIInstrumentor().instrument()`` next to
+   ``OpenAIAgentsInstrumentor().instrument()``:
 
-::
+   ::
 
-    pip install "observe-instrumentation-genai-openai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
+       pip install "observe-instrumentation-genai-openai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
+
+   With other model clients, such as ``LitellmModel``, no model calls are
+   recorded. To ask for your client to be supported,
+   `open an issue <https://github.com/snowflake-eng/observe-otel-genai-python/issues>`_.
 
 See the `examples <examples>`_ directory for runnable ``manual`` and
 ``zero-code`` scenarios.
