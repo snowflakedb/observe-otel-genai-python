@@ -232,6 +232,15 @@ def result(
     )
 
 
+# Usage breakdowns an in-process agent span must not carry, including the
+# deprecated cache_creation name.
+USAGE_BREAKDOWNS = (
+    "gen_ai.usage.cache_read.input_tokens",
+    "gen_ai.usage.cache_write.input_tokens",
+    "gen_ai.usage.cache_creation.input_tokens",
+    "gen_ai.usage.reasoning.output_tokens",
+)
+
 # A result's usage: the main thread's calls since the previous result.
 USAGE = {
     "input_tokens": 1000,
@@ -1014,13 +1023,9 @@ async def test_cache_counters_fold_into_input_tokens(handler, span_exporter):
 
 
 @pytest.mark.asyncio
-async def test_agent_and_chat_spans_name_the_cache_counters_alike(
+async def test_the_agent_span_carries_totals_and_the_chat_span_breakdowns(
     handler, span_exporter
 ):
-    """The convention renamed cache_creation to cache_write and only the new
-    name is in the registry. util-genai writes the new one on chat spans, so the
-    agent span writing the old one had a trace reporting one quantity under two
-    keys."""
     await drive(
         handler,
         [
@@ -1036,23 +1041,33 @@ async def test_agent_and_chat_spans_name_the_cache_counters_alike(
                         "output_tokens": 5,
                         "cache_read_input_tokens": 50,
                         "cache_creation_input_tokens": 20,
+                        "output_tokens_details": {"thinking_tokens": 3},
                     },
                     "delta": {"stop_reason": "end_turn"},
                 },
             ),
-            result(usage=USAGE),
+            result(
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation_input_tokens": 20,
+                    "output_tokens_details": {"thinking_tokens": 3},
+                }
+            ),
         ],
     )
     spans = Spans(span_exporter)
     agent = spans.one("invoke_agent claude-agent-sdk")
     chat = spans.one("chat claude-sonnet-4-5")
-    for key in (
-        "gen_ai.usage.cache_write.input_tokens",
-        "gen_ai.usage.cache_read.input_tokens",
-    ):
-        assert agent.attributes[key] == chat.attributes[key], key
-    assert agent.attributes["gen_ai.usage.cache_write.input_tokens"] == 20
-    assert "gen_ai.usage.cache_creation.input_tokens" not in agent.attributes
+    # 10 input + 50 cache read + 20 cache write.
+    assert agent.attributes["gen_ai.usage.input_tokens"] == 80
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 5
+    for key in USAGE_BREAKDOWNS:
+        assert key not in agent.attributes, key
+    assert chat.attributes["gen_ai.usage.cache_read.input_tokens"] == 50
+    assert chat.attributes["gen_ai.usage.cache_write.input_tokens"] == 20
+    assert chat.attributes["gen_ai.usage.reasoning.output_tokens"] == 3
 
 
 @pytest.mark.asyncio
@@ -1816,7 +1831,7 @@ async def test_a_delegation_result_ahead_of_its_notification_completes_the_call(
 
 
 @pytest.mark.asyncio
-async def test_a_subagent_and_its_calls_carry_cache_and_reasoning_alike(
+async def test_a_subagent_span_carries_totals_and_its_calls_the_breakdowns(
     handler, span_exporter
 ):
     await drive(
@@ -1855,14 +1870,12 @@ async def test_a_subagent_and_its_calls_carry_cache_and_reasoning_alike(
         c for c in spans.all if c.attributes.get("gen_ai.response.id") == "s1"
     )
     assert subagent.attributes["gen_ai.usage.input_tokens"] == 160
-    for key in (
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.cache_read.input_tokens",
-        "gen_ai.usage.cache_write.input_tokens",
-        "gen_ai.usage.reasoning.output_tokens",
-    ):
-        assert subagent.attributes[key] == chat.attributes[key], key
+    assert subagent.attributes["gen_ai.usage.output_tokens"] == 40
+    for key in USAGE_BREAKDOWNS:
+        assert key not in subagent.attributes, key
+    assert chat.attributes["gen_ai.usage.cache_read.input_tokens"] == 100
+    assert chat.attributes["gen_ai.usage.cache_write.input_tokens"] == 50
+    assert chat.attributes["gen_ai.usage.reasoning.output_tokens"] == 4
 
 
 @pytest.mark.asyncio
@@ -4299,7 +4312,7 @@ async def test_an_error_result_that_was_not_interrupted_still_fails(
 
 
 @pytest.mark.asyncio
-async def test_run_totals_report_the_results_thinking_tokens(
+async def test_the_root_counts_thinking_inside_its_output_total(
     handler, span_exporter
 ):
     """Thinking tokens are a share of ``output_tokens``, not added to it."""
@@ -4318,19 +4331,7 @@ async def test_run_totals_report_the_results_thinking_tokens(
         ],
     )
     agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
-    assert agent.attributes["gen_ai.usage.reasoning.output_tokens"] == 30
     assert agent.attributes["gen_ai.usage.output_tokens"] == 80
-
-
-@pytest.mark.asyncio
-async def test_no_thinking_tokens_reported_when_the_cli_omits_them(
-    handler, span_exporter
-):
-    await drive(
-        handler,
-        [init(), assistant(TextBlock("hi")), result(usage=USAGE)],
-    )
-    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
     assert "gen_ai.usage.reasoning.output_tokens" not in agent.attributes
 
 

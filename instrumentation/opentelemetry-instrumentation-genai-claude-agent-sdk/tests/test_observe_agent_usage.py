@@ -15,14 +15,10 @@ from claude_agent_sdk import ClaudeAgentOptions
 from observeinc.util.genai.handler import TelemetryHandler
 
 from .test_recordings import ATTR_IS_PARTIAL, RECORDINGS, replay
+from .test_stream import USAGE_BREAKDOWNS
 
 ROOT = "invoke_agent claude-agent-sdk"
-COUNTS = (
-    "gen_ai.usage.input_tokens",
-    "gen_ai.usage.output_tokens",
-    "gen_ai.usage.cache_read.input_tokens",
-    "gen_ai.usage.cache_write.input_tokens",
-)
+TOTALS = ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens")
 
 
 @pytest.mark.parametrize(
@@ -58,16 +54,19 @@ async def test_each_agent_reports_the_calls_directly_under_it(
                 key.startswith("gen_ai.usage.") for key in agent.attributes
             ), f"{path.stem}: {agent.name} reports usage without calls"
             continue
-        for key in COUNTS:
-            assert agent.attributes.get(key, 0) == sum(
-                c.attributes.get(key, 0) for c in calls
+        for key in TOTALS:
+            assert agent.attributes[key] == sum(
+                c.attributes[key] for c in calls
             ), f"{path.stem}: {agent.name} {key}"
+        assert set(USAGE_BREAKDOWNS).isdisjoint(agent.attributes), agent.name
         if agent.name == ROOT:
             assert ATTR_IS_PARTIAL not in agent.attributes
             continue
         subagents_checked += 1
         assert agent.attributes.get(ATTR_IS_PARTIAL) is (
-            True if any(c.attributes.get(ATTR_IS_PARTIAL) for c in calls) else None
+            True
+            if any(c.attributes.get(ATTR_IS_PARTIAL) for c in calls)
+            else None
         ), f"{path.stem}: {agent.name} partial flag"
     # bashbg backgrounds a shell command, not a subagent.
     assert subagents_checked or path.stem == "bashbg", path.stem

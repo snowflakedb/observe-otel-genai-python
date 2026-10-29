@@ -157,12 +157,18 @@ delegated to it. To total a run, add up every ``invoke_agent`` span in the trace
 Don't also add the ``chat`` spans: they cover the same calls, so each call would
 be counted twice.
 
+Agent spans carry only the two totals, ``gen_ai.usage.input_tokens`` (cache
+reads and writes included) and ``gen_ai.usage.output_tokens``. The cache and
+reasoning breakdowns are only on the ``chat`` spans, because the GenAI
+conventions define them for model calls, not for agent spans. To get them for a
+whole run, add them up from the ``chat`` spans.
+
 - **The root agent** takes its counts from the ``usage`` field of each
   ``ResultMessage``, which counts the root agent's own calls since the previous
   result, not its subagents'. They are accurate whether or not stream events are
   on, and for resumed sessions too.
 - **A subagent** gets no total of its own from the CLI, so its span adds up
-  its ``chat`` spans. Input and cache counts are accurate. Output is accurate
+  its ``chat`` spans. Input counts are accurate. Output is accurate
   only for a foreground subagent's last call: the CLI forwards no stream
   events for a subagent, so each earlier call's output count is the near-zero
   figure from when that call started. A background subagent has no accurate

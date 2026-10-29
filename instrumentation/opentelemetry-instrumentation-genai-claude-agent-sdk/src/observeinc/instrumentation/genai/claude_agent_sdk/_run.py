@@ -103,14 +103,8 @@ _VENDOR = "claude_agent_sdk"
 # instead of silently trusting an undercount.
 ATTR_USAGE_IS_PARTIAL = f"{_VENDOR}.usage.is_partial"
 
-# The name util-genai gives cache-creation tokens on inference spans. Written
-# here by hand because LocalAgentInvocation has no field for it, and spelled out
-# rather than taken from semconv's GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS so
-# that one trace reports this count under one name on every span.
-ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS = "gen_ai.usage.cache_write.input_tokens"
-
-# Likewise: LocalAgentInvocation has no compaction field, so the agent span
-# writes this key directly while a chat span reaches the same key through
+# LocalAgentInvocation has no compaction field, so the agent span writes this
+# key directly while a chat span reaches the same key through
 # InferenceInvocation.conversation_compacted. One constant for the one path that
 # spells it out, so the two cannot drift silently.
 ATTR_CONVERSATION_COMPACTED = "gen_ai.conversation.compacted"
@@ -274,15 +268,13 @@ def _fold_input_tokens(usage: Usage) -> int:
 
 @dataclass
 class _AgentUsage:
-    """The token counts of one agent's own model calls, for its ``invoke_agent``
-    span. A subagent's calls count towards the subagent only, as the
-    convention's reference instrumentations do for nested agents."""
+    """Token totals of one agent's own model calls, for its ``invoke_agent``
+    span; a subagent's calls count towards the subagent only. The convention
+    defines no cache or reasoning counts on an in-process agent span, so only
+    the chat spans carry them."""
 
     input_tokens: int = 0
     output_tokens: int = 0
-    cache_read: int = 0
-    cache_write: int = 0
-    reasoning: int = 0
     recorded: bool = False
     # A summed call's output count was its mid-stream snapshot.
     partial: bool = False
@@ -292,29 +284,14 @@ class _AgentUsage:
         self.partial = self.partial or partial
         self.input_tokens += _fold_input_tokens(usage)
         self.output_tokens += int(usage.get("output_tokens") or 0)
-        self.cache_read += int(usage.get("cache_read_input_tokens") or 0)
-        self.cache_write += int(usage.get("cache_creation_input_tokens") or 0)
-        details = usage.get("output_tokens_details") or {}
-        self.reasoning += int(details.get("thinking_tokens") or 0)
 
     def apply(self, invocation: LocalAgentInvocation) -> None:
         if not self.recorded:
             return
         invocation.input_tokens = self.input_tokens
         invocation.output_tokens = self.output_tokens
-        attributes = invocation.attributes
-        if self.cache_read:
-            attributes[GenAI.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = (
-                self.cache_read
-            )
-        if self.cache_write:
-            attributes[ATTR_USAGE_CACHE_WRITE_INPUT_TOKENS] = self.cache_write
-        if self.reasoning:
-            attributes[GenAI.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS] = (
-                self.reasoning
-            )
         if self.partial:
-            attributes[ATTR_USAGE_IS_PARTIAL] = True
+            invocation.attributes[ATTR_USAGE_IS_PARTIAL] = True
 
 
 @dataclass

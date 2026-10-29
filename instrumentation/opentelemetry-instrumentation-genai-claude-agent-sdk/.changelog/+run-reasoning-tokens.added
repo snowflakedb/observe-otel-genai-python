@@ -1,1 +1,0 @@
-Report the root agent's reasoning tokens (`gen_ai.usage.reasoning.output_tokens`) on its `invoke_agent` span.

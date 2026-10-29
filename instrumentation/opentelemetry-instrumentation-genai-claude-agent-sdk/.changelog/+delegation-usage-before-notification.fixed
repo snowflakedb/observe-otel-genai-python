@@ -1,0 +1,1 @@
+A subagent's last `chat` span gets its final token counts even when the delegation's result arrives before the task's notification.
