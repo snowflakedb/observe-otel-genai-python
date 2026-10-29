@@ -1,8 +1,5 @@
-Move the two attributes the convention has no key for under one vendor-scoped
-prefix. `genai.usage.is_partial` is now `claude_agent_sdk.usage.is_partial` and
-`gen_ai.usage.cost_usd` is now `claude_agent_sdk.usage.cost_usd`. This is a
-visible output change: a dashboard or query reading either of the old names will
-stop finding it. Neither collided with a real semconv key, but they disagreed with
-each other, a custom key under `gen_ai.*` squats on a name a future semconv cost
-attribute will claim, and `genai.` is one character from the real namespace and
-reads as a typo.
+Rename `genai.usage.is_partial` to `claude_agent_sdk.usage.is_partial`, a
+vendor-scoped prefix for attributes the convention has no key for. This is a
+visible output change: a dashboard or query reading the old name will stop
+finding it. `genai.` is one character from the real namespace and reads as a
+typo.

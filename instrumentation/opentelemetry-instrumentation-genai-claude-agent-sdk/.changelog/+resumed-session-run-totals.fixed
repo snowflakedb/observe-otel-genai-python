@@ -1,1 +1,1 @@
-Resumed and continued sessions no longer report the earlier session's token usage and cost as the run's own. The first run after resuming carries no totals.
+Resumed and continued sessions no longer report the earlier session's token usage as the run's own.

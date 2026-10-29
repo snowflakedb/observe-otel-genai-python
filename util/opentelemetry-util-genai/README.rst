@@ -111,6 +111,99 @@ Cache and reasoning tokens are already included in the input and output totals, 
 counters to the input or output ones.
 
 
+Nested Invocation Suppression and Context Enrichment
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When an operation runs inside an active operation of the same type, nested spans, metrics,
+and events are suppressed to prevent duplicate telemetry. Agent, workflow, and tool invocations are
+exempt because those are usually legitimately nested.
+
+When using ``TelemetryHandler`` directly, you get this behavior for free—the outer invocation
+places its typed dataclass onto the context, inner invocations suppress telemetry and publish
+their attributes into it, and the outer invocation enriches its span and metrics on finish
+(outer values take precedence).
+
+Alternatively, you can manage suppression and enrichment directly using OpenTelemetry's
+context API with the exported context key and dataclass.
+
+**Outer invocation:**
+
+.. code-block:: python
+
+    from opentelemetry import context
+    from observeinc.util.genai.invocation import (
+        CLIENT_INFERENCE_CONTEXT_KEY,
+        InferenceData,
+    )
+
+    data = InferenceData()
+    token = context.attach(context.set_value(CLIENT_INFERENCE_CONTEXT_KEY, data))
+    try:
+        # Inner instrumented call detects data on context, suppresses its span,
+        # and populates attributes onto data
+        execute_operation()
+    finally:
+        context.detach(token)
+
+    # Attributes captured by inner calls are available on data
+    print(data.response_model, data.usage_input_tokens)
+
+**Inner invocation:**
+
+.. code-block:: python
+
+    from opentelemetry import context
+    from observeinc.util.genai.invocation import (
+        CLIENT_INFERENCE_CONTEXT_KEY,
+        InferenceData,
+    )
+
+    data = context.get_value(CLIENT_INFERENCE_CONTEXT_KEY)
+    if isinstance(data, InferenceData):
+        # Outer operation is active: suppress span/metrics and publish into shared dataclass
+        data.response_model = "gpt-4o-mini"
+        data.usage_input_tokens = 10
+    else:
+        # Emit telemetry normally
+        ...
+
+Exported from ``observeinc.util.genai.invocation``:
+
+- Inference: ``CLIENT_INFERENCE_CONTEXT_KEY``, ``InferenceData``
+- Embedding: ``CLIENT_EMBEDDING_CONTEXT_KEY``, ``EmbeddingData``
+- Fetch Response: ``CLIENT_FETCH_RESPONSE_CONTEXT_KEY``, ``FetchResponseData``
+- Retrieval: ``CLIENT_RETRIEVAL_CONTEXT_KEY``, ``RetrievalData``
+
+**Content capture and completion upload controls:**
+
+Context data classes accept two boolean parameters (defaulting to ``False``):
+
+- ``capture_content``: When set to ``True`` on the context data, signals that the outer instrumentation permits inner suppressed invocations to capture content attributes (such as input and output messages, system instructions, and tool definitions) and publish them into context.
+- ``upload_completion``: When set to ``True`` on the context data, signals that the outer instrumentation permits inner suppressed invocations to trigger completion hook uploads.
+
+.. note::
+
+   Setting these parameters only indicates that the outer instrumentation is OK with the inner instrumentation adding content capture attributes or uploading completions. Whether the inner instrumentation actually does so still depends on the user's settings.
+
+
+
+
+Stream execution context
+------------------------
+
+``SyncStreamWrapper`` and ``AsyncStreamWrapper`` scope each stream read and
+cleanup operation with ``_execution_context()``. Context is restored before
+returning a chunk to the consumer. Generator ``send``/``throw`` and
+``asend``/``athrow`` also use this scope when the underlying stream supports them.
+
+For invocation-backed streams, pass the invocation to the base constructor
+(``super().__init__(stream, invocation)``) and call ``invocation.suspend()``
+before returning the stream. The base wrapper then makes the suspended invocation
+current during reads, cleanup and finalization of an abandoned stream, so no
+``_execution_context()`` override is needed.
+Keep finalization in the existing ``_on_stream_end`` and ``_on_stream_error`` hooks.
+
+
 Modalities
 ----------
 
@@ -252,9 +345,8 @@ In this mode:
   the ``upload`` hook does not start.
 
 The list is fixed in this version. Some attributes this package records are not on it yet
-and are dropped, such as ``gen_ai.request.top_k``, ``gen_ai.usage.cache_write.input_tokens``
-and the per-modality token counts. ``gen_ai.token.modality`` is one of them, so token metrics
-are not split by modality.
+and are dropped, such as ``gen_ai.request.top_k`` and the per-modality token counts.
+``gen_ai.token.modality`` is one of them, so token metrics are not split by modality.
 Instrumentation-specific keys are dropped too, such as the OpenAI package's
 ``openai.api.type``, ``openai.request.service_tier``, ``openai.response.service_tier`` and
 ``openai.response.system_fingerprint``.
@@ -340,6 +432,47 @@ For embedding invocations, the following attributes are set:
 
 - ``gen_ai.response.model``: Str(text-embedding-3-small)
 - ``gen_ai.usage.input_tokens``: Int(24)
+
+
+Capturing request iterators
+---------------------------
+
+Use ``IteratorCapture.from_property()`` for a named request property. It replaces
+that property's value in ``kwargs`` and records values as the SDK reads them.
+Disabled captures and missing properties leave ``kwargs`` untouched and return
+``None`` from ``snapshot()``.
+
+.. code-block:: python
+
+    from observeinc.util.genai.iterator_capture import IteratorCapture
+
+    messages_capture = IteratorCapture.from_property(
+        kwargs, "messages", enabled=capture_content
+    )
+    try:
+        response = sdk_call(**kwargs)
+    finally:
+        messages = messages_capture.extract(get_input_messages)
+
+For a bare value, pass ``capture.wrapped`` to the SDK:
+
+.. code-block:: python
+
+    capture = IteratorCapture(messages, enabled=capture_content)
+    try:
+        response = sdk_call(messages=capture.wrapped)
+    finally:
+        messages = capture.extract(get_input_messages)
+
+``extract(extractor)`` calls the instrumentation's extractor with a snapshot,
+using ``()`` for unread iterators and ``None`` for disabled or missing properties.
+The extractor must accept that shape and return the telemetry content.
+``extract()`` logs snapshot or conversion errors and returns ``None``. Use
+``snapshot()`` directly when no conversion is needed.
+
+Nested built-in dictionaries, lists, and tuples are supported. File objects
+pass through unchanged. Snapshots contain only the consumed portion of each
+iterator; async iterators and custom containers are not captured.
 
 
 Installation

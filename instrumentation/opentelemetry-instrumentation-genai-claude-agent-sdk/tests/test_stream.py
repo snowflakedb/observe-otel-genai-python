@@ -207,6 +207,7 @@ def result(
     subtype: str = "success",
     is_error: bool = False,
     text: str | None = "done",
+    usage: dict[str, Any] | None = None,
     model_usage: dict[str, Any] | None = None,
     errors: list[str] | None = None,
     origin: dict[str, Any] | None = None,
@@ -221,6 +222,7 @@ def result(
         num_turns=1,
         session_id=SESSION,
         result=text,
+        usage=usage,
         model_usage=model_usage,
         errors=errors,
         origin=origin,
@@ -230,14 +232,21 @@ def result(
     )
 
 
-MODEL_USAGE = {
-    "claude-sonnet-4-5": {
-        "inputTokens": 1000,
-        "outputTokens": 200,
-        "cacheReadInputTokens": 50,
-        "cacheCreationInputTokens": 20,
-        "costUSD": 0.012,
-    }
+# Usage breakdowns an in-process agent span must not carry, including the
+# deprecated cache_creation name.
+USAGE_BREAKDOWNS = (
+    "gen_ai.usage.cache_read.input_tokens",
+    "gen_ai.usage.cache_write.input_tokens",
+    "gen_ai.usage.cache_creation.input_tokens",
+    "gen_ai.usage.reasoning.output_tokens",
+)
+
+# A result's usage: the main thread's calls since the previous result.
+USAGE = {
+    "input_tokens": 1000,
+    "output_tokens": 200,
+    "cache_read_input_tokens": 50,
+    "cache_creation_input_tokens": 20,
 }
 
 
@@ -388,7 +397,7 @@ async def test_single_call_tree(handler, span_exporter):
         [
             init(),
             assistant(TextBlock("hello")),
-            result(model_usage=MODEL_USAGE),
+            result(usage=USAGE),
         ],
     )
     spans = Spans(span_exporter)
@@ -412,9 +421,8 @@ async def test_single_call_tree(handler, span_exporter):
     # Run totals fold the cache counters into input_tokens.
     assert agent.attributes["gen_ai.usage.input_tokens"] == 1070
     assert agent.attributes["gen_ai.usage.output_tokens"] == 200
-    assert agent.attributes[
-        "claude_agent_sdk.usage.cost_usd"
-    ] == pytest.approx(0.012)
+    assert "claude_agent_sdk.usage.is_partial" not in agent.attributes
+    assert not any("cost" in key for key in agent.attributes)
 
 
 @pytest.mark.asyncio
@@ -512,7 +520,7 @@ async def test_backgrounded_task_closes_on_notification_not_receipt(
             ),
             task_notification("call-task", summary="the subagent report"),
             assistant(TextBlock("final answer"), message_id="msg_2"),
-            result(model_usage=MODEL_USAGE),
+            result(usage=USAGE),
         ],
     )
     spans = Spans(span_exporter)
@@ -1015,13 +1023,9 @@ async def test_cache_counters_fold_into_input_tokens(handler, span_exporter):
 
 
 @pytest.mark.asyncio
-async def test_agent_and_chat_spans_name_the_cache_counters_alike(
+async def test_the_agent_span_carries_totals_and_the_chat_span_breakdowns(
     handler, span_exporter
 ):
-    """The convention renamed cache_creation to cache_write and only the new
-    name is in the registry. util-genai writes the new one on chat spans, so the
-    agent span writing the old one had a trace reporting one quantity under two
-    keys."""
     await drive(
         handler,
         [
@@ -1037,23 +1041,33 @@ async def test_agent_and_chat_spans_name_the_cache_counters_alike(
                         "output_tokens": 5,
                         "cache_read_input_tokens": 50,
                         "cache_creation_input_tokens": 20,
+                        "output_tokens_details": {"thinking_tokens": 3},
                     },
                     "delta": {"stop_reason": "end_turn"},
                 },
             ),
-            result(model_usage=MODEL_USAGE),
+            result(
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation_input_tokens": 20,
+                    "output_tokens_details": {"thinking_tokens": 3},
+                }
+            ),
         ],
     )
     spans = Spans(span_exporter)
     agent = spans.one("invoke_agent claude-agent-sdk")
     chat = spans.one("chat claude-sonnet-4-5")
-    for key in (
-        "gen_ai.usage.cache_write.input_tokens",
-        "gen_ai.usage.cache_read.input_tokens",
-    ):
-        assert agent.attributes[key] == chat.attributes[key], key
-    assert agent.attributes["gen_ai.usage.cache_write.input_tokens"] == 20
-    assert "gen_ai.usage.cache_creation.input_tokens" not in agent.attributes
+    # 10 input + 50 cache read + 20 cache write.
+    assert agent.attributes["gen_ai.usage.input_tokens"] == 80
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 5
+    for key in USAGE_BREAKDOWNS:
+        assert key not in agent.attributes, key
+    assert chat.attributes["gen_ai.usage.cache_read.input_tokens"] == 50
+    assert chat.attributes["gen_ai.usage.cache_write.input_tokens"] == 20
+    assert chat.attributes["gen_ai.usage.reasoning.output_tokens"] == 3
 
 
 @pytest.mark.asyncio
@@ -1067,17 +1081,7 @@ async def test_per_call_tokens_sum_to_the_run_total(handler, span_exporter):
             delta(output_tokens=120, input_tokens=500),
             assistant(TextBlock("two"), message_id="m2"),
             delta(output_tokens=80, input_tokens=570),
-            result(
-                model_usage={
-                    "claude-sonnet-4-5": {
-                        "inputTokens": 1070,
-                        "outputTokens": 200,
-                        "cacheReadInputTokens": 0,
-                        "cacheCreationInputTokens": 0,
-                        "costUSD": 0.01,
-                    }
-                }
-            ),
+            result(usage={"input_tokens": 1070, "output_tokens": 200}),
         ],
     )
     spans = Spans(span_exporter)
@@ -1539,44 +1543,51 @@ async def test_multi_turn_opens_one_agent_span_per_human_result(
         assert chat.context.trace_id == spans.parent_of(chat).context.trace_id
 
 
-def cumulative(
-    input_tokens: int, output_tokens: int, cost: float
+def turn_usage(input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+def session_model_usage(
+    input_tokens: int, output_tokens: int
 ) -> dict[str, Any]:
-    """``model_usage`` as the CLI reports it: totals for the whole session."""
+    """``model_usage`` as the CLI reports it: subagents included, and totals for
+    the whole session."""
     return {
         "claude-sonnet-4-5": {
             "inputTokens": input_tokens,
             "outputTokens": output_tokens,
             "cacheReadInputTokens": 0,
             "cacheCreationInputTokens": 0,
-            "costUSD": cost,
+            "costUSD": 0.5,
         }
     }
 
 
 @pytest.mark.asyncio
 async def test_each_turn_reports_only_its_own_tokens(handler, span_exporter):
-    """``model_usage`` and ``total_cost_usd`` accumulate over the session.
-
-    A fresh root opens per turn while the counters keep growing, so reading them
-    as they stand had turn two report turn one's tokens and cost as well as its
-    own, and turn three all three turns'.
-    """
+    """Each result's ``usage`` covers the calls since the previous result, so
+    a turn reports it as it is; the session-wide ``model_usage`` is not read."""
     await drive(
         handler,
         [
             init(),
             assistant(TextBlock("one"), message_id="m1"),
             result(
-                origin={"kind": "human"}, model_usage=cumulative(100, 10, 0.01)
+                origin={"kind": "human"},
+                usage=turn_usage(100, 10),
+                model_usage=session_model_usage(100, 10),
             ),
             assistant(TextBlock("two"), message_id="m2"),
             result(
-                origin={"kind": "human"}, model_usage=cumulative(350, 25, 0.04)
+                origin={"kind": "human"},
+                usage=turn_usage(250, 15),
+                model_usage=session_model_usage(350, 25),
             ),
             assistant(TextBlock("three"), message_id="m3"),
             result(
-                origin={"kind": "human"}, model_usage=cumulative(900, 60, 0.10)
+                origin={"kind": "human"},
+                usage=turn_usage(550, 35),
+                model_usage=session_model_usage(900, 60),
             ),
         ],
         multi_turn=True,
@@ -1595,45 +1606,236 @@ async def test_each_turn_reports_only_its_own_tokens(handler, span_exporter):
         15,
         35,
     ]
-    assert [
-        a.attributes["claude_agent_sdk.usage.cost_usd"] for a in agents
-    ] == [
-        pytest.approx(0.01),
-        pytest.approx(0.03),
-        pytest.approx(0.06),
-    ]
+    for agent in agents:
+        assert not any("cost" in key for key in agent.attributes)
 
 
 @pytest.mark.asyncio
-async def test_a_conversation_reset_rebases_the_cumulative_counters(
-    handler, span_exporter
-):
-    """``/clear`` zeroes the CLI's running totals, so the baseline the next
-    turn is measured against has to go back to zero with them."""
+async def test_the_root_leaves_out_its_subagents_usage(handler, span_exporter):
+    """Each agent reports its own calls. ``model_usage`` adds the subagent's
+    in, while the result's ``usage`` holds only the main thread's."""
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(
+                ToolUseBlock(id="cA", name="Agent", input={}),
+                message_id="m1",
+                usage={"input_tokens": 300, "output_tokens": 1},
+            ),
+            delta(input_tokens=300, output_tokens=40),
+            task_started("cA"),
+            assistant(
+                TextBlock("sub"),
+                parent="cA",
+                message_id="s1",
+                usage={"input_tokens": 200, "output_tokens": 1},
+            ),
+            task_updated(status="completed"),
+            task_notification("cA"),
+            user(ToolResultBlock(tool_use_id="cA", content="report")),
+            assistant(TextBlock("done"), message_id="m2"),
+            delta(input_tokens=400, output_tokens=60),
+            result(
+                usage=turn_usage(700, 100),
+                model_usage=session_model_usage(900, 190),
+            ),
+        ],
+    )
+    spans = Spans(span_exporter)
+    root = spans.one("invoke_agent claude-agent-sdk")
+    subagent = spans.one("invoke_agent Agent")
+    assert root.attributes["gen_ai.usage.input_tokens"] == 700
+    assert root.attributes["gen_ai.usage.output_tokens"] == 100
+    assert subagent.attributes["gen_ai.usage.input_tokens"] == 200
+    assert subagent.attributes["gen_ai.usage.output_tokens"] == 1
+    assert subagent.attributes["claude_agent_sdk.usage.is_partial"] is True
+
+
+def delegation(tool_use_id: str, subagent_type: str = "helper") -> Any:
+    return ToolUseBlock(
+        id=tool_use_id, name="Agent", input={"subagent_type": subagent_type}
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_results_in_one_turn_add_up(handler, span_exporter):
+    """A turn that waits on background work sees a second result, covering the
+    calls made since the first."""
     await drive(
         handler,
         [
             init(),
             assistant(TextBlock("one"), message_id="m1"),
-            result(
-                origin={"kind": "human"}, model_usage=cumulative(500, 40, 0.05)
-            ),
-            conversation_reset(),
+            result(usage=turn_usage(100, 10)),
             assistant(TextBlock("two"), message_id="m2"),
-            result(
-                origin={"kind": "human"}, model_usage=cumulative(120, 8, 0.01)
-            ),
+            result(usage=turn_usage(30, 3)),
         ],
-        multi_turn=True,
+    )
+    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.attributes["gen_ai.usage.input_tokens"] == 130
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 13
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "multi_turn", [False, True], ids=["one-shot", "multi"]
+)
+async def test_a_subagent_still_running_at_the_end_keeps_its_usage(
+    handler, span_exporter, multi_turn
+):
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(delegation("cA"), message_id="m1"),
+            task_started("cA"),
+            user(ToolResultBlock(tool_use_id="cA", content="launched")),
+            assistant(
+                TextBlock("working"),
+                parent="cA",
+                message_id="s1",
+                usage={"input_tokens": 10, "output_tokens": 3},
+            ),
+            result(usage=turn_usage(100, 5)),
+        ],
+        multi_turn=multi_turn,
     )
     spans = Spans(span_exporter)
-    agents = sorted(
-        spans.named("invoke_agent claude-agent-sdk"), key=lambda s: s.end_time
+    subagent = spans.one("invoke_agent helper")
+    assert subagent.attributes["gen_ai.usage.input_tokens"] == 10
+    assert subagent.attributes["gen_ai.usage.output_tokens"] == 3
+    assert subagent.attributes["claude_agent_sdk.usage.is_partial"] is True
+    root = spans.one("invoke_agent claude-agent-sdk")
+    assert root.attributes["gen_ai.usage.input_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_a_stream_failing_mid_subagent_keeps_its_usage(
+    handler, span_exporter
+):
+    async def failing():
+        yield init()
+        yield assistant(delegation("cA"), message_id="m1")
+        yield task_started("cA")
+        yield assistant(
+            TextBlock("working"),
+            parent="cA",
+            message_id="s1",
+            usage={"input_tokens": 10, "output_tokens": 3},
+        )
+        raise ConnectionError("dropped")
+
+    run = AgentRun(handler)
+    run.submit("hi")
+    with pytest.raises(ConnectionError):
+        async for _ in run.iterate(failing):
+            pass
+    subagent = Spans(span_exporter).one("invoke_agent helper")
+    assert subagent.attributes["gen_ai.usage.input_tokens"] == 10
+    assert subagent.attributes["gen_ai.usage.output_tokens"] == 3
+    assert subagent.attributes["claude_agent_sdk.usage.is_partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_two_subagents_in_one_turn_count_separately(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(delegation("cA", "a"), delegation("cB", "b")),
+            task_started("cA", task_id="t1"),
+            task_started("cB", task_id="t2"),
+            assistant(
+                TextBlock("a"),
+                parent="cA",
+                message_id="sa",
+                usage={"input_tokens": 10, "output_tokens": 7},
+            ),
+            assistant(
+                TextBlock("b"),
+                parent="cB",
+                message_id="sb",
+                usage={"input_tokens": 20, "output_tokens": 9},
+            ),
+            task_notification("cA", task_id="t1"),
+            user(ToolResultBlock(tool_use_id="cA", content="a done")),
+            task_notification("cB", task_id="t2"),
+            user(ToolResultBlock(tool_use_id="cB", content="b done")),
+            result(usage=turn_usage(100, 5)),
+        ],
     )
-    assert [a.attributes["gen_ai.usage.input_tokens"] for a in agents] == [
-        500,
-        120,
-    ]
+    spans = Spans(span_exporter)
+    for name, tokens in (("a", (10, 7)), ("b", (20, 9))):
+        subagent = spans.one(f"invoke_agent {name}")
+        assert (
+            subagent.attributes["gen_ai.usage.input_tokens"],
+            subagent.attributes["gen_ai.usage.output_tokens"],
+        ) == tokens
+        assert subagent.attributes["claude_agent_sdk.usage.is_partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_span_carries_totals_and_its_calls_the_breakdowns(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(delegation("cA"), message_id="m1"),
+            task_started("cA"),
+            assistant(
+                TextBlock("report"),
+                parent="cA",
+                message_id="s1",
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 100,
+                    "cache_creation_input_tokens": 50,
+                },
+            ),
+            task_notification("cA"),
+            user(ToolResultBlock(tool_use_id="cA", content="report")),
+            result(usage=turn_usage(100, 5)),
+        ],
+    )
+    spans = Spans(span_exporter)
+    subagent = spans.one("invoke_agent helper")
+    chat = next(
+        c for c in spans.all if c.attributes.get("gen_ai.response.id") == "s1"
+    )
+    assert subagent.attributes["gen_ai.usage.input_tokens"] == 160
+    assert subagent.attributes["gen_ai.usage.output_tokens"] == 1
+    for key in USAGE_BREAKDOWNS:
+        assert key not in subagent.attributes, key
+    assert chat.attributes["gen_ai.usage.cache_read.input_tokens"] == 100
+    assert chat.attributes["gen_ai.usage.cache_write.input_tokens"] == 50
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_whose_calls_report_no_usage_reports_none(
+    handler, span_exporter
+):
+    await drive(
+        handler,
+        [
+            init(),
+            assistant(delegation("cA"), message_id="m1"),
+            task_started("cA"),
+            assistant(TextBlock("report"), parent="cA", message_id="s1"),
+            task_notification("cA"),
+            user(ToolResultBlock(tool_use_id="cA", content="report")),
+            result(usage=turn_usage(100, 5)),
+        ],
+    )
+    subagent = Spans(span_exporter).one("invoke_agent helper")
+    assert not any(
+        key.startswith("gen_ai.usage.") for key in subagent.attributes
+    )
 
 
 @pytest.mark.asyncio
@@ -1800,20 +2002,20 @@ async def test_a_turn_the_cli_injects_is_its_own_invocation(
     handler, span_exporter
 ):
     """A finished background task makes the CLI run a turn of its own, with its
-    own model calls and its own share of the session's usage."""
+    own model calls and its own result."""
     await drive(
         handler,
         [
             init(),
             assistant(TextBlock("one"), message_id="m1"),
-            result(model_usage=cumulative(100, 10, 0.1)),
+            result(usage=turn_usage(100, 10)),
             assistant(TextBlock("task finished"), message_id="m2"),
             result(
                 origin={"kind": "task-notification"},
-                model_usage=cumulative(200, 20, 0.2),
+                usage=turn_usage(100, 20),
             ),
             assistant(TextBlock("two"), message_id="m3"),
-            result(model_usage=cumulative(300, 30, 0.3)),
+            result(usage=turn_usage(100, 30)),
         ],
         multi_turn=True,
     )
@@ -1821,8 +2023,8 @@ async def test_a_turn_the_cli_injects_is_its_own_invocation(
     agents = spans.named("invoke_agent claude-agent-sdk")
     assert [a.attributes["gen_ai.usage.output_tokens"] for a in agents] == [
         10,
-        10,
-        10,
+        20,
+        30,
     ]
     parents = {
         chat.attributes["gen_ai.response.id"]: spans.parent_of(chat)
@@ -1846,13 +2048,13 @@ async def test_a_turn_waiting_on_background_work_ends_when_the_next_begins(
             ),
             task_started("bg", task_type="local_bash"),
             user(ToolResultBlock(tool_use_id="bg", content="started")),
-            result(model_usage=cumulative(100, 10, 0.1)),
+            result(usage=turn_usage(100, 10)),
             init(),
             assistant(TextBlock("two"), message_id="m2"),
-            result(model_usage=cumulative(200, 20, 0.2)),
+            result(usage=turn_usage(100, 20)),
             init(),
             assistant(TextBlock("three"), message_id="m3"),
-            result(model_usage=cumulative(300, 30, 0.3)),
+            result(usage=turn_usage(100, 30)),
         ],
         multi_turn=True,
     )
@@ -1860,8 +2062,8 @@ async def test_a_turn_waiting_on_background_work_ends_when_the_next_begins(
     agents = spans.named("invoke_agent claude-agent-sdk")
     assert [a.attributes["gen_ai.usage.output_tokens"] for a in agents] == [
         10,
-        10,
-        10,
+        20,
+        30,
     ]
     tool = spans.one("execute_tool Bash")
     assert spans.parent_of(tool) is agents[0]
@@ -3021,7 +3223,7 @@ async def test_a_delegation_tool_named_agent_names_its_subagent(
             user(
                 ToolResultBlock(tool_use_id="call-agent", content="the report")
             ),
-            result(model_usage=MODEL_USAGE),
+            result(usage=USAGE),
         ],
     )
     spans = Spans(span_exporter)
@@ -3045,7 +3247,7 @@ async def test_a_caller_that_stops_reading_after_the_result_is_not_an_error(
     """
     await drive(
         handler,
-        [init(), assistant(TextBlock("hi")), result(model_usage=MODEL_USAGE)],
+        [init(), assistant(TextBlock("hi")), result(usage=USAGE)],
         stop_after=3,
     )
     spans = Spans(span_exporter)
@@ -3083,7 +3285,7 @@ async def test_a_subagent_named_after_its_tool_span_closed_keeps_its_identity(
             user(ToolResultBlock(tool_use_id="cA", content="done")),
             # Only now does anything name the subagent.
             assistant(TextBlock("late"), parent="cA", message_id="msg_sub"),
-            result(model_usage=MODEL_USAGE),
+            result(usage=USAGE),
         ],
     )
     subagent = Spans(span_exporter).one("invoke_agent archivist")
@@ -3115,15 +3317,10 @@ async def test_a_foreground_delegation_closes_on_its_tool_result(
 
 
 @pytest.mark.asyncio
-async def test_a_delegations_result_completes_its_subagents_last_call(
-    handler, span_exporter
-):
-    """A subagent's calls get no stream events, so none of them sees its final
-    usage — except the last, whose usage the delegation's tool_result carries.
-
-    It is that one call's usage, not the subagent's total: recorded sessions
-    where the subagent made two calls match the second call exactly.
-    """
+async def test_every_subagent_call_keeps_its_snapshot(handler, span_exporter):
+    """A subagent's calls get no stream events, so each keeps the usage it
+    started with. The delegation's tool_result carries its last call's final
+    usage, which is left unread so every subagent call is undercounted alike."""
     await drive(
         handler,
         [
@@ -3162,13 +3359,14 @@ async def test_a_delegations_result_completes_its_subagents_last_call(
         for c in spans.all
         if c.name.startswith("chat ")
     }
-    assert calls["s2"].attributes["gen_ai.usage.output_tokens"] == 479
-    assert "claude_agent_sdk.usage.is_partial" not in calls["s2"].attributes
-    assert calls["s1"].attributes["claude_agent_sdk.usage.is_partial"] is True
-    # A total for the subagent would need every call's usage, which only the
-    # last one has.
+    for call_id, output in (("s1", 6), ("s2", 1)):
+        attributes = calls[call_id].attributes
+        assert attributes["gen_ai.usage.output_tokens"] == output
+        assert attributes["claude_agent_sdk.usage.is_partial"] is True
     agent = spans.one("invoke_agent Agent")
-    assert "gen_ai.usage.output_tokens" not in agent.attributes
+    assert agent.attributes["gen_ai.usage.input_tokens"] == 22
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 7
+    assert agent.attributes["claude_agent_sdk.usage.is_partial"] is True
 
 
 @pytest.mark.asyncio
@@ -3237,7 +3435,7 @@ def _backgrounded_delegation() -> list[Any]:
         ),
         task_started("outer", task_id="t-outer"),
         user(ToolResultBlock(tool_use_id="outer", content="launched")),
-        result(model_usage=cumulative(100, 10, 0.1)),
+        result(usage=turn_usage(100, 10)),
     ]
 
 
@@ -3263,7 +3461,7 @@ async def test_a_task_started_by_detached_work_does_not_hold_the_next_turn(
             message_id="s1",
         ),
         task_started("bash", task_id="t-bash", task_type="local_bash"),
-        result(model_usage=cumulative(200, 20, 0.2)),
+        result(usage=turn_usage(100, 10)),
     ]
 
     ended_at_result = await roots_ended_at_each_result(
@@ -3288,7 +3486,7 @@ async def test_a_delegation_launched_by_detached_work_is_dropped(
             ),
             task_started("inner", task_id="t-inner"),
             assistant(TextBlock("nested"), parent="inner", message_id="n1"),
-            result(model_usage=cumulative(200, 20, 0.2)),
+            result(usage=turn_usage(100, 10)),
         ],
         multi_turn=True,
     )
@@ -3339,21 +3537,18 @@ async def test_the_next_turns_replayed_prompt_opens_the_next_turn(
 
 
 @pytest.mark.asyncio
-async def test_a_result_without_usage_does_not_reset_the_count(
-    handler, span_exporter
-):
-    """The counters are cumulative, so a result that reports none has not
-    zeroed them: the next turn is still measured from the last real count."""
+async def test_a_result_without_usage_reports_none(handler, span_exporter):
+    """No usage is not zero usage, and it leaves the next turn's count alone."""
     await drive(
         handler,
         [
             init(),
             assistant(TextBlock("one"), message_id="m1"),
-            result(model_usage=cumulative(100, 10, 0.1)),
+            result(usage=turn_usage(100, 10)),
             assistant(TextBlock("two"), message_id="m2"),
-            result(model_usage=None),
+            result(usage=None),
             assistant(TextBlock("three"), message_id="m3"),
-            result(model_usage=cumulative(300, 30, 0.3)),
+            result(usage=turn_usage(200, 20)),
         ],
         multi_turn=True,
     )
@@ -3381,7 +3576,7 @@ async def test_a_tool_running_inside_detached_work_is_not_a_failure(
                 message_id="s1",
             ),
             init(),
-            result(model_usage=cumulative(200, 20, 0.2)),
+            result(usage=turn_usage(100, 10)),
         ],
         multi_turn=True,
     )
@@ -3408,7 +3603,7 @@ async def test_a_delegation_launched_before_its_turn_ended_is_detached_with_its_
             task_started("inner", task_id="t-inner"),
             assistant(TextBlock("nested"), parent="inner", message_id="n1"),
             assistant(TextBlock("two"), message_id="m2"),
-            result(model_usage=cumulative(200, 20, 0.2)),
+            result(usage=turn_usage(100, 10)),
         ],
         multi_turn=True,
     )
@@ -3971,114 +4166,27 @@ async def test_a_subagent_that_owns_its_own_launcher_still_closes(
     ],
     ids=["resume", "continue"],
 )
-async def test_a_resumed_session_reports_no_run_totals(
+async def test_a_resumed_session_reports_only_its_own_usage(
     handler, span_exporter, options
 ):
-    """The first result of a resumed session already carries the earlier
-    session's usage, by an amount the stream never states."""
+    """A resumed session's ``model_usage`` carries on from the earlier
+    session's, while ``usage`` covers this run's calls alone (CLI 2.1.235,
+    2.1.277 and 2.1.312)."""
     await drive(
         handler,
         [
             init(),
-            assistant(TextBlock("hi"), usage={"input_tokens": 12}),
-            result(model_usage=MODEL_USAGE),
+            assistant(TextBlock("hi")),
+            result(
+                usage=turn_usage(120, 8),
+                model_usage=session_model_usage(5120, 408),
+            ),
         ],
         sdk_options=options,
     )
-    spans = Spans(span_exporter)
-    agent = spans.one("invoke_agent claude-agent-sdk")
-    for key in (
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.cache_read.input_tokens",
-        "gen_ai.usage.cache_write.input_tokens",
-        "claude_agent_sdk.usage.cost_usd",
-    ):
-        assert key not in agent.attributes
-    # Per-call counts are not cumulative, so they stay.
-    chat = spans.one("chat claude-sonnet-4-5")
-    assert chat.attributes["gen_ai.usage.input_tokens"] == 12
-
-
-@pytest.mark.asyncio
-async def test_a_resumed_client_measures_later_turns_from_the_first(
-    handler, span_exporter
-):
-    await drive(
-        handler,
-        [
-            init(),
-            assistant(TextBlock("one"), message_id="m1"),
-            result(model_usage=cumulative(5000, 400, 0.5)),
-            init(),
-            assistant(TextBlock("two"), message_id="m2"),
-            result(model_usage=cumulative(5300, 425, 0.53)),
-        ],
-        multi_turn=True,
-        sdk_options=ClaudeAgentOptions(resume="earlier-session"),
-    )
-    agents = sorted(
-        Spans(span_exporter).named("invoke_agent claude-agent-sdk"),
-        key=lambda s: s.end_time,
-    )
-    assert "gen_ai.usage.input_tokens" not in agents[0].attributes
-    assert agents[1].attributes["gen_ai.usage.input_tokens"] == 300
-    assert agents[1].attributes["gen_ai.usage.output_tokens"] == 25
-    assert agents[1].attributes[
-        "claude_agent_sdk.usage.cost_usd"
-    ] == pytest.approx(0.03)
-
-
-@pytest.mark.asyncio
-async def test_a_resumed_turn_that_ends_without_usage_sets_no_baseline(
-    handler, span_exporter
-):
-    """A turn that never saw the session's totals leaves the baseline at zero,
-    so the next turn's totals would still include the earlier session's."""
-    run = AgentRun(
-        handler,
-        sdk_options=ClaudeAgentOptions(resume="earlier-session"),
-        multi_turn=True,
-    )
-
-    async def failing_read():
-        yield init()
-        yield assistant(TextBlock("one"), message_id="m1")
-        raise ConnectionError("dropped")
-
-    async def next_read():
-        yield init()
-        yield assistant(TextBlock("two"), message_id="m2")
-        yield result(model_usage=cumulative(5300, 425, 0.53))
-
-    with pytest.raises(ConnectionError):
-        async for _ in run.iterate(failing_read):
-            pass
-    async for _ in run.iterate(next_read):
-        pass
-
-    agents = Spans(span_exporter).named("invoke_agent claude-agent-sdk")
-    assert len(agents) == 2
-    for agent in agents:
-        assert "gen_ai.usage.input_tokens" not in agent.attributes
-
-
-@pytest.mark.asyncio
-async def test_a_reset_after_resuming_starts_the_totals_fresh(
-    handler, span_exporter
-):
-    await drive(
-        handler,
-        [
-            init(),
-            conversation_reset(),
-            assistant(TextBlock("hi")),
-            result(model_usage=cumulative(120, 8, 0.01)),
-        ],
-        sdk_options=ClaudeAgentOptions(resume="earlier-session"),
-    )
     agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
     assert agent.attributes["gen_ai.usage.input_tokens"] == 120
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 8
 
 
 # ─── interrupts ─────────────────────────────────────────────────────────────
@@ -4136,42 +4244,26 @@ async def test_an_error_result_that_was_not_interrupted_still_fails(
 
 
 @pytest.mark.asyncio
-async def test_run_totals_sum_thinking_tokens_across_models(
+async def test_the_root_counts_thinking_inside_its_output_total(
     handler, span_exporter
 ):
-    """``thinkingTokens`` is a share of ``outputTokens``, not added to it."""
-    model_usage = {
-        "claude-sonnet-4-5": {
-            "inputTokens": 100,
-            "outputTokens": 80,
-            "thinkingTokens": 30,
-            "costUSD": 0.01,
-        },
-        "claude-haiku-4-5": {
-            "inputTokens": 50,
-            "outputTokens": 20,
-            "thinkingTokens": 5,
-            "costUSD": 0.001,
-        },
-    }
+    """Thinking tokens are a share of ``output_tokens``, not added to it."""
     await drive(
         handler,
-        [init(), assistant(TextBlock("hi")), result(model_usage=model_usage)],
+        [
+            init(),
+            assistant(TextBlock("hi")),
+            result(
+                usage={
+                    "input_tokens": 100,
+                    "output_tokens": 80,
+                    "output_tokens_details": {"thinking_tokens": 30},
+                }
+            ),
+        ],
     )
     agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
-    assert agent.attributes["gen_ai.usage.reasoning.output_tokens"] == 35
-    assert agent.attributes["gen_ai.usage.output_tokens"] == 100
-
-
-@pytest.mark.asyncio
-async def test_no_thinking_tokens_reported_when_the_cli_omits_them(
-    handler, span_exporter
-):
-    await drive(
-        handler,
-        [init(), assistant(TextBlock("hi")), result(model_usage=MODEL_USAGE)],
-    )
-    agent = Spans(span_exporter).one("invoke_agent claude-agent-sdk")
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 80
     assert "gen_ai.usage.reasoning.output_tokens" not in agent.attributes
 
 

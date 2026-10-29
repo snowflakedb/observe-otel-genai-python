@@ -10,7 +10,6 @@ import os
 from unittest import mock
 
 from observeinc.util.genai.handler import TelemetryHandler
-from observeinc.util.genai.types import LLMInvocation
 from observeinc.util.genai.user_id import using_user_id
 from opentelemetry.semconv._incubating.attributes.user_attributes import (
     USER_ID,
@@ -118,17 +117,6 @@ class MetricUserIdTest(TestBase):
             )
             chat.metric_attributes = {"custom": "x"}
             chat.stop()
-        self.assertEqual(
-            self._user_ids()["gen_ai.client.operation.duration"],
-            {"user-123"},
-        )
-
-    def test_the_start_stop_llm_api_carries_it(self) -> None:
-        handler = self._handler("true")
-        llm = LLMInvocation(provider="openai", request_model="gpt-5")
-        with using_user_id("user-123"):
-            handler.start_llm(llm)
-            handler.stop_llm(llm)
         self.assertEqual(
             self._user_ids()["gen_ai.client.operation.duration"],
             {"user-123"},

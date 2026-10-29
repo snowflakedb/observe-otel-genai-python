@@ -53,7 +53,11 @@ def load(path: Path) -> list[Any]:
 
 
 async def replay(
-    handler: TelemetryHandler, path: Path, *, multi_turn: bool
+    handler: TelemetryHandler,
+    path: Path,
+    *,
+    multi_turn: bool,
+    sdk_options: Any = None,
 ) -> None:
     messages = load(path)
 
@@ -61,7 +65,7 @@ async def replay(
         for message in messages:
             yield message
 
-    run = AgentRun(handler, multi_turn=multi_turn)
+    run = AgentRun(handler, sdk_options=sdk_options, multi_turn=multi_turn)
     run.submit("replay")
     async for _ in run.iterate(stream):
         pass
@@ -116,8 +120,7 @@ async def test_a_recorded_main_thread_call_with_final_usage_is_timed(
 ):
     """A main-thread call's final usage and its chunk timings both come from
     stream events, so a call reporting final usage must be timed too. Subagent
-    calls are left out: their last one takes its final usage from the
-    delegation's result, and none of them is streamed."""
+    calls are left out: none of them is streamed."""
     assert_recordings_exist()
     await replay(handler, path, multi_turn=False)
     spans = list(span_exporter.get_finished_spans())

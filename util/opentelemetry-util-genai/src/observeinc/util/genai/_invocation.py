@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import timeit
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import Token
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field, fields
 from types import TracebackType
 from typing import Any, Final, TypeAlias, cast
 
@@ -26,6 +26,7 @@ from observeinc.util.genai._observe_agent_context import (
 from observeinc.util.genai.completion_hook import (
     CompletionHook,
     _NoOpCompletionHook,
+    _SafeCompletionHook,
 )
 from observeinc.util.genai.types import (
     Error,
@@ -41,9 +42,16 @@ from observeinc.util.genai.utils import (
     ContentCapturingMode,
     gen_ai_json_dumps,
     get_content_capturing_mode,
+    object_to_any_value,
 )
 from opentelemetry._logs import Logger, LogRecord
-from opentelemetry.context import Context, attach, detach, get_current
+from opentelemetry.context import (
+    Context,
+    attach,
+    detach,
+    get_current,
+    set_value,
+)
 from opentelemetry.metrics import Counter, Histogram
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
@@ -52,7 +60,13 @@ from opentelemetry.semconv._incubating.attributes.user_attributes import (
     USER_ID,
 )
 from opentelemetry.semconv.attributes import error_attributes
-from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
+from opentelemetry.trace import (
+    Span,
+    SpanKind,
+    Tracer,
+    get_current_span,
+    set_span_in_context,
+)
 from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util.types import AttributeValue
 
@@ -62,6 +76,122 @@ _UNKNOWN_TOKEN_MODALITY: Final = "unknown"
 
 
 ContextToken: TypeAlias = Token[Context]
+
+__all__ = [
+    "ContextToken",
+    "GenAIInvocation",
+    "_ContextData",
+    "_resolve_suppressed_content_and_hook",
+    "get_content_attributes",
+]
+
+
+@dataclass
+class _ContextData:
+    """Base class for invocation context data containers."""
+
+    capture_content: bool = False
+    upload_completion: bool = False
+    attributes: dict[str, AttributeValue] = field(
+        default_factory=dict[str, AttributeValue]
+    )
+    metric_attributes: dict[str, AttributeValue] = field(
+        default_factory=dict[str, AttributeValue]
+    )
+
+    def merge(self: Self, other: Self, *, overwrite: bool = True) -> None:
+        """Merge another context data instance into this one.
+
+        Args:
+            other: The context data to merge from.
+            overwrite: If True, values from ``other`` overwrite existing values
+                (used when inner invocations publish to context). If False,
+                existing non-None values in ``self`` are preserved (used when
+                the root invocation enriches from context).
+        """
+        for f in fields(cast(Any, self)):
+            if f.name in (
+                "attributes",
+                "metric_attributes",
+                "capture_content",
+                "upload_completion",
+            ):
+                continue
+            val = getattr(other, f.name)
+            if val is not None and (
+                overwrite or getattr(self, f.name) is None
+            ):
+                setattr(self, f.name, val)
+
+        if overwrite:
+            self.attributes.update(other.attributes)
+            self.metric_attributes.update(other.metric_attributes)
+        else:
+            for k, v in other.attributes.items():
+                self.attributes.setdefault(k, v)
+            for k, v in other.metric_attributes.items():
+                self.metric_attributes.setdefault(k, v)
+
+
+def _is_active_completion_hook(hook: CompletionHook | None) -> bool:
+    if hook is None:
+        return False
+    if isinstance(hook, _NoOpCompletionHook):
+        return False
+    if isinstance(hook, _SafeCompletionHook) and isinstance(
+        hook._wrapped, _NoOpCompletionHook
+    ):
+        return False
+    return True
+
+
+def _resolve_suppressed_content_and_hook(
+    context_data: object | None,
+    content_capturing_mode: ContentCapturingMode | None,
+    completion_hook: CompletionHook | None,
+) -> tuple[bool, bool, ContentCapturingMode, CompletionHook]:
+    """Resolve content capturing and completion hook behavior for suppressed invocations.
+
+    Returns:
+        A tuple of:
+        - capture_content_to_context (bool): Whether inner content can be published to context.
+        - upload_completion (bool): Whether inner completion hook upload should be executed.
+        - effective_content_mode (ContentCapturingMode): Effective mode passed to super().__init__.
+        - effective_completion_hook (CompletionHook): Effective hook passed to super().__init__.
+    """
+    resolved_content_mode = (
+        get_content_capturing_mode()
+        if content_capturing_mode is None
+        else content_capturing_mode
+    )
+    is_context_data = isinstance(context_data, _ContextData)
+    allow_content_capture = is_context_data and context_data.capture_content
+    env_allows_content_capture = (
+        resolved_content_mode != ContentCapturingMode.NO_CONTENT
+    )
+    capture_content_to_context = (
+        allow_content_capture and env_allows_content_capture
+    )
+    allow_upload = is_context_data and context_data.upload_completion
+    env_allows_upload = _is_active_completion_hook(completion_hook)
+    upload_completion = allow_upload and env_allows_upload
+
+    effective_content_mode = (
+        resolved_content_mode
+        if capture_content_to_context
+        else ContentCapturingMode.NO_CONTENT
+    )
+    effective_completion_hook: CompletionHook = (
+        completion_hook
+        if upload_completion and completion_hook is not None
+        else _NoOpCompletionHook()
+    )
+    return (
+        capture_content_to_context,
+        upload_completion,
+        effective_content_mode,
+        effective_completion_hook,
+    )
 
 
 class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
@@ -94,7 +224,14 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         conversation_id: str | None = None,
         agent_name: str | None = None,
         content_capturing_mode: ContentCapturingMode | None = None,
+        start_span: bool = True,
+        context_key: str | None = None,
+        dataclass_class_object: Callable[[], _ContextData] | None = None,
     ) -> None:
+        self._context_key: str | None = context_key
+        self._dataclass_class_object: Callable[[], _ContextData] | None = (
+            dataclass_class_object
+        )
         self._tracer = tracer
         self._instruments: _Instruments = instruments
         self._logger = logger
@@ -137,16 +274,36 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             GenAI.GEN_AI_OPERATION_NAME: operation_name,
             **(start_attributes or {}),
         }
-        self.span: Span = self._tracer.start_span(
-            name=span_name,
-            kind=span_kind,
-            attributes=self._start_attributes,
-            context=context,
-        )
-        self._span_context: Context = set_span_in_context(self.span, context)
-        self._context_token: ContextToken | None = (
-            attach(self._span_context) if _attach_to_context else None
-        )
+        self._start_span: bool = start_span
+        if start_span:
+            self.span: Span = self._tracer.start_span(
+                name=span_name,
+                kind=span_kind,
+                attributes=self._start_attributes,
+                context=context,
+            )
+            ctx = set_span_in_context(self.span, context)
+            if (
+                self._context_key is not None
+                and self._dataclass_class_object is not None
+            ):
+                ctx = set_value(
+                    self._context_key,
+                    self._dataclass_class_object(),
+                    context=ctx,
+                )
+            self._span_context: Context = ctx
+            self._attach_to_context = _attach_to_context
+            self._context_token: ContextToken | None = (
+                attach(self._span_context) if _attach_to_context else None
+            )
+        else:
+            ctx = get_current() if context is None else context
+            self.span = get_current_span(context=ctx)
+            self._span_context = ctx
+            # Never attached, so never treated as suspended by the stream wrappers.
+            self._attach_to_context = False
+            self._context_token = None
         self._monotonic_start_s: float = timeit.default_timer()
         # Streaming state, set when the invocation is handed to a stream
         # wrapper. ``_request_stream`` marks the request as streamed
@@ -208,6 +365,19 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
     def context(self) -> Context:
         """The OpenTelemetry Context containing this invocation's span."""
         return self._span_context
+
+    @property
+    def _suspended(self) -> bool:
+        """True when this invocation attached itself to the context and ``suspend`` has since run.
+
+        Describes the original attachment only: it stays true during a
+        temporary ``activate`` and after the invocation has finished. The
+        stream wrappers activate such an invocation around each read. An
+        invocation that is still attached is left alone: its original
+        attachment is outstanding, and activating it around the read that
+        finishes it would reinstate the ended span after ``stop`` detached it.
+        """
+        return self._attach_to_context and self._context_token is None
 
     def suspend(self) -> None:
         """Restore the context that was current before this invocation started.
@@ -291,9 +461,15 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
 
         self._stream_last_chunk_at = chunk_at
         delta = max(chunk_at - last_chunk_at, 0.0)
-        attributes = self._get_metric_attributes()
-        if self._ttfc_seconds is None:
+        is_first_chunk = self._ttfc_seconds is None
+        if is_first_chunk:
             self._ttfc_seconds = delta
+
+        if not self._start_span:
+            return
+
+        attributes = self._get_metric_attributes()
+        if is_first_chunk:
             self._instruments.time_to_first_chunk.record(
                 delta,
                 attributes=attributes,
@@ -437,6 +613,10 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
         finally:
             self.suspend()
             self.span.end()
+            if self._context_key is not None:
+                self._span_context = set_value(
+                    self._context_key, None, context=self._span_context
+                )
 
     def stop(self) -> None:
         """Finalize the invocation successfully and end its span."""
@@ -461,6 +641,20 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             self.fail(exc_value)
         else:
             self.stop()
+
+
+def _json_dumps_unless_str(value: object) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        return gen_ai_json_dumps(value, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        pass
+    # Callers may set objects (e.g. models) that weren't converted to AnyValue.
+    converted = object_to_any_value(value)
+    if converted is None or isinstance(converted, str):
+        return converted
+    return gen_ai_json_dumps(converted)
 
 
 def get_content_attributes(
@@ -532,7 +726,7 @@ def get_content_attributes(
     result = {key: value for key, value in optional_attrs if value is not None}
     if prompt_variables:
         for k, v in prompt_variables.items():
-            result[f"{_GEN_AI_PROMPT_VARIABLE_PREFIX}{k}"] = (
-                v if isinstance(v, str) else gen_ai_json_dumps(v)
-            )
+            serialized = _json_dumps_unless_str(v)
+            if serialized is not None:
+                result[f"{_GEN_AI_PROMPT_VARIABLE_PREFIX}{k}"] = serialized
     return result

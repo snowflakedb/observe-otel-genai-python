@@ -43,6 +43,11 @@ class GenericPart:
 
     This model is specified as part of semconv in `GenAI messages Python models - GenericPart
     <https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py>`__.
+
+    .. deprecated:: 1.3b0
+        Semconv defines ``GenericPart`` so the schema accepts future and custom
+        part types. Instrumentations should use a specific part type or drop
+        the content.
     """
 
     type: str
@@ -316,7 +321,7 @@ MessagePart = Union[
     UriPart,
     ReasoningPart,
     CompactionPart,
-    GenericPart,  # For provider-specific types; prefer standard types above
+    GenericPart,  # Deprecated, kept for backwards compatibility.
 ]
 
 
@@ -333,6 +338,7 @@ class Role(str, Enum):
     TOOL = "tool"
 
 
+# GenericPart is deprecated, kept for backwards compatibility.
 SystemInstructionPart = Union[TextPart, GenericPart]
 
 
@@ -393,6 +399,8 @@ class Error:
         )
 
         error_type = type_resolver(exception) if type_resolver else None
+        if error_type is None and hasattr(exception, "_gen_ai_error_type"):
+            error_type = getattr(exception, "_gen_ai_error_type")
         return cls(
             message=str(exception),
             type=error_type or fq_exception_type(exception),

@@ -30,11 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 0.2.157 bundles CLI 2.1.277, the first whose resumed sessions carry the
-# earlier session's usage forward; the run totals are read on that basis.
-# Capped below the next minor: before 1.0 a minor release can change the
-# message stream.
-instruments = ["claude-agent-sdk >= 0.2.157, < 0.3"]
+# Every message type and field the instrumentation reads exists from 0.2.137;
+# 0.2.140 adds the forward_subagent_text option the README recommends. Capped
+# below the next minor: before 1.0 a minor release can change the message
+# stream.
+instruments = ["claude-agent-sdk >= 0.2.140, < 0.3"]
 
 [project.entry-points.opentelemetry_instrumentor]
 claude-agent-sdk = "observeinc.instrumentation.genai.claude_agent_sdk:ClaudeAgentSDKInstrumentor"

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from observeinc.util.genai.handler import TelemetryHandler
-from observeinc.util.genai.types import Error, LLMInvocation
+from observeinc.util.genai.types import Error
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAI,
 )
@@ -240,18 +240,6 @@ class AgentNameFromContextTest(TestBase):
 
         self.assertNotIn(AGENT, self._span("chat gpt-5").attributes)
         self.assertNotIn(AGENT, self._span("execute_tool lookup").attributes)
-
-    def test_the_deprecated_start_llm_api_records_it(self) -> None:
-        agent = self.handler.invoke_local_agent(agent_name="support-bot")
-        invocation = LLMInvocation(request_model="legacy-model")
-        self.handler.start_llm(invocation)
-        self.handler.stop_llm(invocation)
-        agent.stop()
-
-        span = self._span("chat legacy-model")
-        self.assertEqual(span.attributes[AGENT], "support-bot")
-        point = self._points("gen_ai.client.operation.duration")[0]
-        self.assertEqual(point.attributes[AGENT], "support-bot")
 
     def test_an_explicit_agent_name_overrides_the_enclosing_one(self) -> None:
         agent = self.handler.invoke_local_agent(agent_name="support-bot")
