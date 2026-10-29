@@ -93,6 +93,11 @@ _GEN_AI_CLIENT_INFERENCE_OPERATION_OUTPUT_TOKENS: Final = (
 _GEN_AI_CLIENT_INFERENCE_OPERATION_TOKENS_BUCKETS: Final = (
     _GEN_AI_CLIENT_TOKEN_USAGE_BUCKETS
 )
+_GEN_AI_INVOKE_AGENT_INFERENCE_CALLS: Final = (
+    "gen_ai.invoke_agent.inference_calls"
+)
+_GEN_AI_INVOKE_AGENT_TOOL_CALLS: Final = "gen_ai.invoke_agent.tool_calls"
+_GEN_AI_INVOKE_AGENT_CALLS_BUCKETS: Final = [1, 2, 4, 8, 16, 32, 64, 128]
 _GEN_AI_INVOKE_AGENT_DURATION_BUCKETS: Final = [
     0.1,
     0.2,
@@ -195,6 +200,24 @@ class _Instruments:
         )
         self.include_conversation_id: bool = metrics_include_conversation_id()
         self.include_user_id: bool = metrics_include_user_id()
+        self.invoke_agent_inference_calls: Histogram = meter.create_histogram(
+            name=_GEN_AI_INVOKE_AGENT_INFERENCE_CALLS,
+            description=(
+                "The number of inference (model) calls a GenAI agent makes"
+                " during a single invocation."
+            ),
+            unit="{inference_call}",
+            explicit_bucket_boundaries_advisory=_GEN_AI_INVOKE_AGENT_CALLS_BUCKETS,
+        )
+        self.invoke_agent_tool_calls: Histogram = meter.create_histogram(
+            name=_GEN_AI_INVOKE_AGENT_TOOL_CALLS,
+            description=(
+                "The number of tool calls a GenAI agent makes during a single"
+                " invocation."
+            ),
+            unit="{tool_call}",
+            explicit_bucket_boundaries_advisory=_GEN_AI_INVOKE_AGENT_CALLS_BUCKETS,
+        )
 
 
 __all__ = ["_Instruments"]
