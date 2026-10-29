@@ -21,7 +21,10 @@ from observeinc.instrumentation.genai.langchain.callback_handler import (
     OpenTelemetryLangChainCallbackHandler,
 )
 from observeinc.test_util_genai.instrumentor import instrument
-from observeinc.test_util_genai.vcr import scrub_response_headers_overwrite
+from observeinc.test_util_genai.vcr import (
+    scrub_response_headers,
+    scrub_response_headers_overwrite,
+)
 from observeinc.util.genai.types import ContentCapturingMode
 from opentelemetry.instrumentation._semconv import (
     _OpenTelemetrySemanticConventionStability,
@@ -266,6 +269,24 @@ def reset_semconv_stability(monkeypatch: pytest.MonkeyPatch):
     )
 
 
+_overwrite_response_headers = scrub_response_headers_overwrite(
+    {
+        "openai-organization": "test_openai_org_id",
+        "openai-project": "test_openai_project_id",
+        "Set-Cookie": "test_set_cookie",
+    }
+)
+# Dropped rather than overwritten: the overwrite helper adds absent headers to
+# every response, and too many of them break replay of other providers.
+_drop_response_headers = scrub_response_headers(
+    ["anthropic-organization-id", "anthropic-workspace-id"]
+)
+
+
+def _scrub_response(response):
+    return _drop_response_headers(_overwrite_response_headers(response))
+
+
 @pytest.fixture(scope="module")
 def vcr_config():
     return {
@@ -274,15 +295,10 @@ def vcr_config():
             ("authorization", "Bearer test_openai_api_key"),
             ("openai-organization", "test_openai_org_id"),
             ("openai-project", "test_openai_project_id"),
+            ("x-api-key", "test_key"),
         ],
         "decode_compressed_response": True,
-        "before_record_response": scrub_response_headers_overwrite(
-            {
-                "openai-organization": "test_openai_org_id",
-                "openai-project": "test_openai_project_id",
-                "Set-Cookie": "test_set_cookie",
-            }
-        ),
+        "before_record_response": _scrub_response,
         "match_on": ["method", "scheme", "host", "port", "path", "body"],
         "ignore_hosts": ["169.254.169.254"],
     }

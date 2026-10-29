@@ -94,8 +94,8 @@ Run the environment for the package you changed (`-oldest` and `-latest` pick up
 `tests/requirements.{oldest,latest}.txt`):
 
 ```sh
-uv run tox -e py310-test-instrumentation-genai-claude-agent-sdk-latest
-uv run tox -e py310-test-util-genai
+uv run tox -e py311-test-instrumentation-genai-claude-agent-sdk-latest
+uv run tox -e py311-test-util-genai
 ```
 
 Type check the workspace:

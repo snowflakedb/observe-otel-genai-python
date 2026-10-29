@@ -66,6 +66,8 @@ PRUNED_PATHS=(
   .github/scripts
   .github/renovate.json5
   .github/copilot-instructions.md
+  # Type-checks only crewai and weaviate-client, which this fork does not carry.
+  pyrightconfig.py314.json
 )
 
 old_dir="$(mktemp -d -t sync-upstream.XXXXXX)"

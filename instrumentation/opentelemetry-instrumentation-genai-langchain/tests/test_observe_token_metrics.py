@@ -105,10 +105,28 @@ def test_chat_anthropic_cache_tokens(
     chat_anthropic_claude_sonnet,
     vcr,
 ):
+    # The cassette upstream recorded for its cache test: a long cached system
+    # prompt sent twice, so one call writes the cache and the next reads it.
+    llm = chat_anthropic_claude_sonnet.model_copy(
+        update={"model": "claude-sonnet-5-5", "temperature": None}
+    )
+    messages = [
+        SystemMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": "You are a helpful assistant! " * 500,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        ),
+        HumanMessage(content="What is the capital of France?"),
+    ]
     with vcr.use_cassette(
         "test_chat_anthropic_claude_sonnet_cache_token_details.yaml"
     ):
-        chat_anthropic_claude_sonnet.invoke(MESSAGES)
+        llm.invoke(messages)
+        llm.invoke(messages)
     usage = assert_token_metrics_match_spans(span_exporter, metric_reader)
     assert usage["cache_read.input_tokens"]
     assert usage["cache_write.input_tokens"]

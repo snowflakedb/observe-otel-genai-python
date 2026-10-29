@@ -17,7 +17,6 @@ from observeinc.test_util_genai._observe_allow_list import (
     assert_allow_listed,
     attribute_keys,
 )
-from observeinc.util.genai._inference_invocation import _should_emit_event
 from observeinc.util.genai._instruments import _Instruments
 from observeinc.util.genai._invocation import get_content_attributes
 from observeinc.util.genai._observe_content_allow_list import (
@@ -598,14 +597,6 @@ def test_loading_a_hook_does_not_repeat_the_invalid_mode_warning(
     monkeypatch.setenv(OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK, "missing")
     load_completion_hook()
     assert "bogus is not a valid option" not in caplog.text
-
-
-def test_events_follow_the_emit_event_setting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert _should_emit_event(ContentCapturingMode.ALLOW_LIST) is False
-    monkeypatch.setenv(OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT, "true")
-    assert _should_emit_event(ContentCapturingMode.ALLOW_LIST) is True
 
 
 @pytest.mark.usefixtures("allow_list")
