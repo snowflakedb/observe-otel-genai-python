@@ -4170,8 +4170,8 @@ async def test_a_resumed_session_reports_only_its_own_usage(
     handler, span_exporter, options
 ):
     """A resumed session's ``model_usage`` carries on from the earlier
-    session's, while ``usage`` covers this run's calls alone (CLI 2.1.277 and
-    2.1.312)."""
+    session's, while ``usage`` covers this run's calls alone (CLI 2.1.235,
+    2.1.277 and 2.1.312)."""
     await drive(
         handler,
         [

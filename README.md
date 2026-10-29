@@ -8,7 +8,7 @@ shape Observe expects.
 
 | Package | Import path | Instruments |
 | --- | --- | --- |
-| [`observe-instrumentation-genai-claude-agent-sdk`](instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk/README.rst) | `observeinc.instrumentation.genai.claude_agent_sdk` | `claude-agent-sdk >= 0.2.157, < 0.3` |
+| [`observe-instrumentation-genai-claude-agent-sdk`](instrumentation/opentelemetry-instrumentation-genai-claude-agent-sdk/README.rst) | `observeinc.instrumentation.genai.claude_agent_sdk` | `claude-agent-sdk >= 0.2.140, < 0.3` |
 | [`observe-instrumentation-genai-langchain`](instrumentation/opentelemetry-instrumentation-genai-langchain/README.rst) | `observeinc.instrumentation.genai.langchain` | `langchain >= 0.3.22, < 2` |
 | [`observe-instrumentation-genai-openai`](instrumentation/opentelemetry-instrumentation-genai-openai/README.rst) | `observeinc.instrumentation.genai.openai` | `openai >= 1.26.0, < 4` |
 | [`observe-instrumentation-genai-openai-agents`](instrumentation/opentelemetry-instrumentation-genai-openai-agents/README.rst) | `observeinc.instrumentation.genai.openai_agents` | `openai-agents >= 0.3.3, < 1` |
