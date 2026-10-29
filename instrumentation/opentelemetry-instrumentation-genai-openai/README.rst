@@ -54,8 +54,8 @@ command, so pip does not look for ``observe-util-genai`` on PyPI:
 
     pip uninstall opentelemetry-instrumentation-genai-openai opentelemetry-util-genai
     pip install \
-        "observe-util-genai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
-        "observe-instrumentation-genai-openai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
+        "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
+        "observe-instrumentation-genai-openai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
 
 If you don't have an OpenAI application, yet, try our `examples <examples>`_
 which only need a valid OpenAI API key.
@@ -134,7 +134,7 @@ To enable the built-in upload hook, set:
 
 Install the ``upload`` extra to pull in ``fsspec``::
 
-    pip install "observe-util-genai[upload] @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai"
+    pip install "observe-util-genai[upload] @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai"
 
 See the `opentelemetry-util-genai
 <https://github.com/open-telemetry/opentelemetry-python-contrib/blob/main/util/opentelemetry-util-genai/README.rst>`_

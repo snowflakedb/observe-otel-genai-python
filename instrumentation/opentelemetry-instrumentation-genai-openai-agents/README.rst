@@ -45,15 +45,15 @@ look for ``observe-util-genai`` on PyPI:
 
     pip uninstall opentelemetry-instrumentation-genai-openai-agents opentelemetry-util-genai
     pip install \
-        "observe-util-genai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
-        "observe-instrumentation-genai-openai-agents @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai-agents"
+        "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
+        "observe-instrumentation-genai-openai-agents @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai-agents"
 
 To also capture the underlying LLM calls, install
 ``observe-instrumentation-genai-openai`` the same way:
 
 ::
 
-    pip install "observe-instrumentation-genai-openai @ git+https://github.com/Snowflake-Labs/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
+    pip install "observe-instrumentation-genai-openai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
 
 See the `examples <examples>`_ directory for runnable ``manual`` and
 ``zero-code`` scenarios.

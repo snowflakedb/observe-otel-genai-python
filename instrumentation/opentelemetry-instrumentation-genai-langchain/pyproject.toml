@@ -36,8 +36,8 @@ instruments = [
 langchain = "observeinc.instrumentation.genai.langchain:LangChainInstrumentor"
 
 [project.urls]
-Homepage = "https://github.com/Snowflake-Labs/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-langchain"
-Repository = "https://github.com/Snowflake-Labs/observe-otel-genai-python"
+Homepage = "https://github.com/snowflake-eng/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-langchain"
+Repository = "https://github.com/snowflake-eng/observe-otel-genai-python"
 Upstream = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-langchain"
 
 [tool.hatch.version]

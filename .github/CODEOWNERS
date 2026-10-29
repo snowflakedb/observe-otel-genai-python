@@ -1,4 +1,4 @@
 # Learn about CODEOWNERS file format:
 # https://help.github.com/en/articles/about-code-owners
 
-* @Snowflake-Labs/observe-otel-genai-python-maintainers
+* @snowflake-eng/observe-agent-team
