@@ -1101,25 +1101,10 @@ class AgentRun:
         else:
             self._close_chat(ctx)
 
-        # A subagent's calls get no stream events, but its delegation's
-        # tool_result carries the final usage of its last call, which is still
-        # open. A failed tool's detail is a plain string.
-        detail = msg.tool_use_result
-        usage = detail.get("usage") if isinstance(detail, dict) else None
-
         for block in blocks:
             tool_use_id = getattr(block, "tool_use_id", None)
             if not tool_use_id:
                 continue
-            # Taken before the receipt check: the result can arrive ahead of
-            # the task's notification, and a real receipt carries no usage.
-            subagent_chat = self._chats.get(tool_use_id)
-            if (
-                usage
-                and subagent_chat is not None
-                and subagent_chat.invocation is not None
-            ):
-                subagent_chat.set_final_usage(usage)
             # A task waits for its notification; this may only be a receipt.
             # A failed call launched nothing, so its result is final.
             call = self._calls.get(tool_use_id)

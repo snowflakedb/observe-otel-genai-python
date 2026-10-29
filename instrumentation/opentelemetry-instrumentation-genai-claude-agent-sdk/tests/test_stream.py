@@ -1633,12 +1633,7 @@ async def test_the_root_leaves_out_its_subagents_usage(handler, span_exporter):
             ),
             task_updated(status="completed"),
             task_notification("cA"),
-            user(
-                ToolResultBlock(tool_use_id="cA", content="report"),
-                tool_use_result={
-                    "usage": {"input_tokens": 200, "output_tokens": 90}
-                },
-            ),
+            user(ToolResultBlock(tool_use_id="cA", content="report")),
             assistant(TextBlock("done"), message_id="m2"),
             delta(input_tokens=400, output_tokens=60),
             result(
@@ -1653,8 +1648,8 @@ async def test_the_root_leaves_out_its_subagents_usage(handler, span_exporter):
     assert root.attributes["gen_ai.usage.input_tokens"] == 700
     assert root.attributes["gen_ai.usage.output_tokens"] == 100
     assert subagent.attributes["gen_ai.usage.input_tokens"] == 200
-    assert subagent.attributes["gen_ai.usage.output_tokens"] == 90
-    assert "claude_agent_sdk.usage.is_partial" not in subagent.attributes
+    assert subagent.attributes["gen_ai.usage.output_tokens"] == 1
+    assert subagent.attributes["claude_agent_sdk.usage.is_partial"] is True
 
 
 def delegation(tool_use_id: str, subagent_type: str = "helper") -> Any:
@@ -1757,28 +1752,18 @@ async def test_two_subagents_in_one_turn_count_separately(
                 TextBlock("a"),
                 parent="cA",
                 message_id="sa",
-                usage={"input_tokens": 10, "output_tokens": 1},
+                usage={"input_tokens": 10, "output_tokens": 7},
             ),
             assistant(
                 TextBlock("b"),
                 parent="cB",
                 message_id="sb",
-                usage={"input_tokens": 20, "output_tokens": 1},
+                usage={"input_tokens": 20, "output_tokens": 9},
             ),
             task_notification("cA", task_id="t1"),
-            user(
-                ToolResultBlock(tool_use_id="cA", content="a done"),
-                tool_use_result={
-                    "usage": {"input_tokens": 10, "output_tokens": 7}
-                },
-            ),
+            user(ToolResultBlock(tool_use_id="cA", content="a done")),
             task_notification("cB", task_id="t2"),
-            user(
-                ToolResultBlock(tool_use_id="cB", content="b done"),
-                tool_use_result={
-                    "usage": {"input_tokens": 20, "output_tokens": 9}
-                },
-            ),
+            user(ToolResultBlock(tool_use_id="cB", content="b done")),
             result(usage=turn_usage(100, 5)),
         ],
     )
@@ -1789,45 +1774,7 @@ async def test_two_subagents_in_one_turn_count_separately(
             subagent.attributes["gen_ai.usage.input_tokens"],
             subagent.attributes["gen_ai.usage.output_tokens"],
         ) == tokens
-        assert "claude_agent_sdk.usage.is_partial" not in subagent.attributes
-
-
-@pytest.mark.asyncio
-async def test_a_delegation_result_ahead_of_its_notification_completes_the_call(
-    handler, span_exporter
-):
-    """The result is held as a receipt until the notification arrives, but the
-    final usage it carries still belongs to the subagent's last call."""
-    await drive(
-        handler,
-        [
-            init(),
-            assistant(delegation("cA"), message_id="m1"),
-            task_started("cA"),
-            assistant(
-                TextBlock("report"),
-                parent="cA",
-                message_id="s1",
-                usage={"input_tokens": 10, "output_tokens": 1},
-            ),
-            user(
-                ToolResultBlock(tool_use_id="cA", content="report"),
-                tool_use_result={
-                    "usage": {"input_tokens": 10, "output_tokens": 40}
-                },
-            ),
-            task_notification("cA"),
-            result(usage=turn_usage(100, 5)),
-        ],
-    )
-    spans = Spans(span_exporter)
-    subagent = spans.one("invoke_agent helper")
-    assert subagent.attributes["gen_ai.usage.output_tokens"] == 40
-    assert "claude_agent_sdk.usage.is_partial" not in subagent.attributes
-    chat = next(
-        c for c in spans.all if c.attributes.get("gen_ai.response.id") == "s1"
-    )
-    assert chat.attributes["gen_ai.usage.output_tokens"] == 40
+        assert subagent.attributes["claude_agent_sdk.usage.is_partial"] is True
 
 
 @pytest.mark.asyncio
@@ -1852,15 +1799,7 @@ async def test_a_subagent_span_carries_totals_and_its_calls_the_breakdowns(
                 },
             ),
             task_notification("cA"),
-            user(
-                ToolResultBlock(tool_use_id="cA", content="report"),
-                tool_use_result={
-                    "usage": {
-                        "output_tokens": 40,
-                        "output_tokens_details": {"thinking_tokens": 4},
-                    }
-                },
-            ),
+            user(ToolResultBlock(tool_use_id="cA", content="report")),
             result(usage=turn_usage(100, 5)),
         ],
     )
@@ -1870,12 +1809,11 @@ async def test_a_subagent_span_carries_totals_and_its_calls_the_breakdowns(
         c for c in spans.all if c.attributes.get("gen_ai.response.id") == "s1"
     )
     assert subagent.attributes["gen_ai.usage.input_tokens"] == 160
-    assert subagent.attributes["gen_ai.usage.output_tokens"] == 40
+    assert subagent.attributes["gen_ai.usage.output_tokens"] == 1
     for key in USAGE_BREAKDOWNS:
         assert key not in subagent.attributes, key
     assert chat.attributes["gen_ai.usage.cache_read.input_tokens"] == 100
     assert chat.attributes["gen_ai.usage.cache_write.input_tokens"] == 50
-    assert chat.attributes["gen_ai.usage.reasoning.output_tokens"] == 4
 
 
 @pytest.mark.asyncio
@@ -3379,15 +3317,10 @@ async def test_a_foreground_delegation_closes_on_its_tool_result(
 
 
 @pytest.mark.asyncio
-async def test_a_delegations_result_completes_its_subagents_last_call(
-    handler, span_exporter
-):
-    """A subagent's calls get no stream events, so none of them sees its final
-    usage — except the last, whose usage the delegation's tool_result carries.
-
-    It is that one call's usage, not the subagent's total: recorded sessions
-    where the subagent made two calls match the second call exactly.
-    """
+async def test_every_subagent_call_keeps_its_snapshot(handler, span_exporter):
+    """A subagent's calls get no stream events, so each keeps the usage it
+    started with. The delegation's tool_result carries its last call's final
+    usage, which is left unread so every subagent call is undercounted alike."""
     await drive(
         handler,
         [
@@ -3426,14 +3359,13 @@ async def test_a_delegations_result_completes_its_subagents_last_call(
         for c in spans.all
         if c.name.startswith("chat ")
     }
-    assert calls["s2"].attributes["gen_ai.usage.output_tokens"] == 479
-    assert "claude_agent_sdk.usage.is_partial" not in calls["s2"].attributes
-    assert calls["s1"].attributes["claude_agent_sdk.usage.is_partial"] is True
-    # The subagent sums its own calls, and the first one's output is only its
-    # snapshot.
+    for call_id, output in (("s1", 6), ("s2", 1)):
+        attributes = calls[call_id].attributes
+        assert attributes["gen_ai.usage.output_tokens"] == output
+        assert attributes["claude_agent_sdk.usage.is_partial"] is True
     agent = spans.one("invoke_agent Agent")
     assert agent.attributes["gen_ai.usage.input_tokens"] == 22
-    assert agent.attributes["gen_ai.usage.output_tokens"] == 485
+    assert agent.attributes["gen_ai.usage.output_tokens"] == 7
     assert agent.attributes["claude_agent_sdk.usage.is_partial"] is True
 
 

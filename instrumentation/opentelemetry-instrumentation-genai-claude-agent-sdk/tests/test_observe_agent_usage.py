@@ -63,11 +63,11 @@ async def test_each_agent_reports_the_calls_directly_under_it(
             assert ATTR_IS_PARTIAL not in agent.attributes
             continue
         subagents_checked += 1
-        assert agent.attributes.get(ATTR_IS_PARTIAL) is (
-            True
-            if any(c.attributes.get(ATTR_IS_PARTIAL) for c in calls)
-            else None
-        ), f"{path.stem}: {agent.name} partial flag"
+        # A subagent's calls get no stream events, so none has final usage.
+        assert agent.attributes.get(ATTR_IS_PARTIAL) is True, agent.name
+        assert all(c.attributes.get(ATTR_IS_PARTIAL) is True for c in calls), (
+            f"{path.stem}: {agent.name} has a call with final usage"
+        )
     # bashbg backgrounds a shell command, not a subagent.
     assert subagents_checked or path.stem == "bashbg", path.stem
 

@@ -133,10 +133,8 @@ no ``gen_ai.client.operation.time_to_first_chunk`` or
 token counts on the root ``invoke_agent`` span are accurate either way. Turning
 it on adds ``StreamEvent`` messages to the stream your loop iterates.
 
-A subagent's calls get no stream events even with the option on. When the
-delegation runs in the foreground, its last call still reports final counts,
-taken from the delegation's result; every other subagent call stays marked as
-a snapshot.
+A subagent's calls get no stream events even with the option on, so every one
+of them reports the usage it started with and is marked as a snapshot.
 
 ``forward_subagent_text=True`` makes the CLI forward the text and thinking
 blocks of a subagent spawned through the Agent tool. By default it forwards
@@ -168,13 +166,11 @@ whole run, add them up from the ``chat`` spans.
   result, not its subagents'. They are accurate whether or not stream events are
   on, and for resumed sessions too.
 - **A subagent** gets no total of its own from the CLI, so its span adds up
-  its ``chat`` spans. Input counts are accurate. Output is accurate
-  only for a foreground subagent's last call: the CLI forwards no stream
-  events for a subagent, so each earlier call's output count is the near-zero
-  figure from when that call started. A background subagent has no accurate
-  output count at all. When any of its calls was undercounted, the subagent
-  span carries ``claude_agent_sdk.usage.is_partial`` set to ``true``, as the
-  ``chat`` span of that call does.
+  its ``chat`` spans. Input counts are accurate; output counts are not. The
+  CLI forwards no stream events for a subagent, so each of its calls reports
+  the near-zero output figure from when the call started. The subagent span
+  and each of its ``chat`` spans carry ``claude_agent_sdk.usage.is_partial``
+  set to ``true``.
 
 Calls the CLI makes for itself, such as the one that shortens a long
 conversation (compaction), are counted on no span. Only the session-wide
