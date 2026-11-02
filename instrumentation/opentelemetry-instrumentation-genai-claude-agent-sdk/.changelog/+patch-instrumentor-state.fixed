@@ -1,5 +1,0 @@
-Keep the telemetry handler of a live instrumentation when a second
-`ClaudeAgentSDKInstrumentor()` is constructed. The base class returns the one
-live instance from `__new__` but still runs `__init__` on it, so constructing an
-instrumentor anywhere in the process reset the handler of the instrumentation
-already in flight while it still reported itself as instrumented.

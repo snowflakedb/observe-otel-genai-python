@@ -1,1 +1,0 @@
-Cap each captured content attribute at 1,048,576 characters by default, keeping JSON values valid. Set `OBSERVE_GENAI_MAX_CONTENT_LENGTH` to change the cap, or to `0` to turn it off.

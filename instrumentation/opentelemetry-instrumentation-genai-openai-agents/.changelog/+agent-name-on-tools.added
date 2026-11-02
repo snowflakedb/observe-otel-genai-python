@@ -1,1 +1,0 @@
-Tool spans now carry the agent they run under as `gen_ai.agent.name`, taken from util-genai's agent context.

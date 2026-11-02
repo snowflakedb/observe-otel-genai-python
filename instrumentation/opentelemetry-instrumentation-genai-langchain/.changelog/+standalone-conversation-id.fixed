@@ -1,1 +1,0 @@
-Set `gen_ai.conversation.id` on retrieval and execute_tool spans from a standalone retriever or tool call's `thread_id`, `session_id` or `conversation_id` metadata.

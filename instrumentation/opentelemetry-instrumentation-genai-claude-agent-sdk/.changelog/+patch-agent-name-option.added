@@ -1,4 +1,0 @@
-Accept `ClaudeAgentSDKInstrumentor().instrument(agent_name="...")` to name the
-root `invoke_agent` span, for a caller whose own application is the agent being
-invoked rather than the SDK. It defaults to `claude-agent-sdk` and is never
-inferred from the caller's options.

@@ -1,1 +1,0 @@
-Failed spans have no status description under `NO_CONTENT` and `EVENT_ONLY`, so the HTTP status and descriptions such as "task killed" appear only when content is captured on spans. `error.type` still names the failure.

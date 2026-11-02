@@ -71,8 +71,8 @@ own `pyproject.toml` and `tests/`. The util package follows the equivalent layou
 - Instrumentation packages are named `opentelemetry-instrumentation-genai-{lib}` and import as
   `observeinc.instrumentation.genai.{lib}` — e.g. `opentelemetry-instrumentation-genai-anthropic`
   imports `observeinc.instrumentation.genai.anthropic`. 
-- Packages use the OpenTelemetry beta versioning format `MAJOR.MINORbN` (e.g. `1.0b0`). `version.py` carries a `.dev`
-  suffix during development (`1.0b0.dev`); the release workflow drops it.
+- All published packages share one version, our own and not upstream's (e.g. `0.1.0`). `version.py` holds the
+  next release version with no `.dev` suffix. See "Releasing" in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Dependency versioning and compatibility
 

@@ -165,8 +165,8 @@ New instrumentations must ship a minimal example under the package's `examples/`
 - Instrumentation packages must be named `opentelemetry-instrumentation-genai-{lib}` and import
   as `observeinc.instrumentation.genai.{lib}` (`opentelemetry-instrumentation-google-genai`
   is a pre-existing exception that keeps its historical name).
-- Versions use the OpenTelemetry beta versioning format `MAJOR.MINORbN` (e.g. `1.0b0`);
-  `version.py` carries a `.dev` suffix during development.
+- All published packages share one version, our own and not upstream's (e.g. `0.1.0`);
+  `version.py` has no `.dev` suffix.
 
 ## 11. Dependency versioning and compatibility
 

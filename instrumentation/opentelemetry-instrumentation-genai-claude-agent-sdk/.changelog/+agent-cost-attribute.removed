@@ -1,1 +1,0 @@
-Stop reporting `claude_agent_sdk.usage.cost_usd` on the root `invoke_agent` span. `ResultMessage.total_cost_usd` covers the whole session and every agent in it, so it fits no single span; read it in your own code if you need it.

@@ -37,8 +37,8 @@ test = ["pytest>=7.0.0"]
 upload = ["fsspec>=2026.6.0"]
 
 [project.urls]
-Homepage = "https://github.com/snowflake-eng/observe-otel-genai-python/tree/main/util/opentelemetry-util-genai"
-Repository = "https://github.com/snowflake-eng/observe-otel-genai-python"
+Homepage = "https://github.com/snowflakedb/observe-otel-genai-python/tree/main/util/opentelemetry-util-genai"
+Repository = "https://github.com/snowflakedb/observe-otel-genai-python"
 Upstream = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/util/opentelemetry-util-genai"
 
 [tool.hatch.version]

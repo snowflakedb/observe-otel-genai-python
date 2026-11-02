@@ -1,1 +1,0 @@
-Leave the status description off failed spans under `NO_CONTENT` and `EVENT_ONLY`, since the error message can quote the prompt. The span keeps its ERROR status and `error.type`.

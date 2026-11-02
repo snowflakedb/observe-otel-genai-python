@@ -1,1 +1,0 @@
-Report each `ClaudeSDKClient` turn's own prompt as `gen_ai.input.messages` and open its span under the span active when `query()` sent it, and report the caller's `session_id` as the conversation id unless it is the SDK's `"default"` placeholder.

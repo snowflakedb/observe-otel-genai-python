@@ -71,8 +71,8 @@ environment variables, entry point groups, and directory names are upstream's,
 unchanged. Don't rename anything else: every extra difference is a conflict on
 the next sync.
 
-Package versions still match upstream's. We plan to move to our own version
-line, shared by all packages, before the first release.
+All published packages share one version, which is our own and not upstream's.
+See [Releasing](#releasing).
 
 ## Making a change
 
@@ -176,6 +176,25 @@ The header of `scripts/sync_upstream.sh` explains the conflicts to expect.
 
 Don't cherry-pick individual upstream commits. Merging keeps the shared history
 that makes the next sync cheap.
+
+Upstream's version bumps conflict with ours in `eachdist.ini` and every
+`version.py`. Keep our version.
+
+## Releasing
+
+All published packages are released together under one version. `version.py`
+always holds the version the next release will publish, with no `.dev` suffix.
+
+1. Open a PR that sets the new version in `eachdist.ini` and every
+   `version.py`. For a patch release,
+   `python scripts/version_utils.py bump --patch` does both. Raise the
+   `observe-util-genai` floor in an instrumentation only if it needs the new
+   util.
+2. After it merges, run the **Build release artifacts** workflow on `main` from
+   the Actions tab. It builds a wheel and an sdist for every published package
+   and uploads them as the `dist` artifact. It fails if the packages don't
+   share one release version. The artifact expires after 90 days, so publish
+   within that window or run the workflow again.
 
 ## Skills
 

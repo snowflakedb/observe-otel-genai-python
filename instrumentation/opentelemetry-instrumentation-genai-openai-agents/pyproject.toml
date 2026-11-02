@@ -26,7 +26,7 @@ dependencies = [
   "opentelemetry-api ~= 1.45",
   "opentelemetry-instrumentation >= 0.64b0, <1",
   "opentelemetry-semantic-conventions >= 0.64b0, <1",
-  "observe-util-genai >= 1.4b0.dev, <2",
+  "observe-util-genai >= 0.1.0, <1",
 ]
 
 [project.optional-dependencies]
@@ -38,8 +38,8 @@ instruments = [
 openai_agents = "observeinc.instrumentation.genai.openai_agents:OpenAIAgentsInstrumentor"
 
 [project.urls]
-Homepage = "https://github.com/snowflake-eng/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai-agents"
-Repository = "https://github.com/snowflake-eng/observe-otel-genai-python"
+Homepage = "https://github.com/snowflakedb/observe-otel-genai-python/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai-agents"
+Repository = "https://github.com/snowflakedb/observe-otel-genai-python"
 Upstream = "https://github.com/open-telemetry/opentelemetry-python-genai/tree/main/instrumentation/opentelemetry-instrumentation-genai-openai-agents"
 
 [tool.hatch.version]

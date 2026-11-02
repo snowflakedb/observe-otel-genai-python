@@ -1,1 +1,0 @@
-Record a cancelled agent run as cancelled, instead of as a stream that ended without a result.
