@@ -1,0 +1,3 @@
+Declare the `wrapt` dependency the patching layer imports directly. It resolved
+only transitively through `opentelemetry-instrumentation`, so an environment that
+stopped shipping it there would have failed at import.

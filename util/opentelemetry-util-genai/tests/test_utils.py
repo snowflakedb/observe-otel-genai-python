@@ -1,0 +1,2197 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+import base64
+import json
+import os
+import unittest
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from enum import Enum
+from pathlib import PurePosixPath
+from typing import Any, cast
+from unittest.mock import MagicMock, patch
+from uuid import UUID
+
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.types import (
+    Blob,
+    BlobPart,
+    ContentCapturingMode,
+    File,
+    FilePart,
+    GenericPart,
+    InputMessage,
+    MessagePart,
+    Modality,
+    OutputMessage,
+    Reasoning,
+    ReasoningPart,
+    Role,
+    SystemInstructionPart,
+    Text,
+    TextPart,
+    Uri,
+    UriPart,
+)
+from observeinc.util.genai.utils import (
+    bind_arguments,
+    decode_base64,
+    gen_ai_json_dumps,
+    get_argument,
+    get_content_capturing_mode,
+    get_signature,
+    image_from_url,
+    object_to_any_value,
+    tool_arguments_to_any_value,
+)
+from opentelemetry import trace
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import (
+    InMemoryLogRecordExporter,
+    SimpleLogRecordProcessor,
+)
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.sdk.trace.sampling import Decision, SamplingResult
+from opentelemetry.semconv._incubating.attributes import (
+    gen_ai_attributes as GenAI,
+)
+from opentelemetry.semconv.attributes import (
+    error_attributes,
+    server_attributes,
+)
+from opentelemetry.semconv.schemas import Schemas
+from opentelemetry.trace.status import StatusCode
+
+
+def _create_input_message(
+    content: str = "hello world", role: str = "Human"
+) -> InputMessage:
+    return InputMessage(role=role, parts=[TextPart(content=content)])
+
+
+def _create_output_message(
+    content: str = "hello back", finish_reason: str = "stop", role: str = "AI"
+) -> OutputMessage:
+    return OutputMessage(
+        role=role,
+        parts=[TextPart(content=content)],
+        finish_reason=finish_reason,
+    )
+
+
+def _create_system_instruction(
+    content: str = "You are a helpful assistant.",
+) -> list[MessagePart]:
+    return [TextPart(content=content)]
+
+
+def _get_single_span(span_exporter: InMemorySpanExporter) -> ReadableSpan:
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    return spans[0]
+
+
+def _assert_span_time_order(span: ReadableSpan) -> None:
+    assert span.start_time is not None
+    assert span.end_time is not None
+    assert span.end_time >= span.start_time
+
+
+def _get_span_attributes(span: ReadableSpan) -> Mapping[str, Any]:
+    attrs = span.attributes
+    assert attrs is not None
+    return attrs
+
+
+def _assert_span_attributes(
+    span_attrs: Mapping[str, Any], expected_values: Mapping[str, Any]
+) -> None:
+    for key, value in expected_values.items():
+        assert span_attrs.get(key) == value
+    assert len(span_attrs) == len(expected_values), (
+        f"Actual {span_attrs} are different than expected {expected_values}"
+    )
+
+
+def _get_messages_from_attr(
+    span_attrs: Mapping[str, Any], attribute_name: str
+) -> list[dict[str, Any]]:
+    payload = span_attrs.get(attribute_name)
+    assert payload is not None
+    assert isinstance(payload, str)
+    return json.loads(payload)
+
+
+def _get_single_message(
+    span_attrs: Mapping[str, Any], attribute_name: str
+) -> dict[str, Any]:
+    messages = _get_messages_from_attr(span_attrs, attribute_name)
+    assert len(messages) == 1
+    return messages[0]
+
+
+def _assert_text_message(
+    message: Mapping[str, Any],
+    role: str,
+    content: str,
+    finish_reason: str | None = None,
+) -> None:
+    assert message.get("role") == role
+    parts = message.get("parts")
+    assert isinstance(parts, list) and parts
+    assert parts[0].get("content") == content
+    if finish_reason is not None:
+        assert message.get("finish_reason") == finish_reason
+
+
+def _normalize_to_list(value: Any) -> list[Any]:
+    """Normalize tuple or list to list for OpenTelemetry compatibility."""
+    return list(value) if isinstance(value, tuple) else value
+
+
+def _normalize_to_dict(value: Any) -> dict[str, Any]:
+    """Normalize tuple or dict to dict for OpenTelemetry compatibility."""
+    return dict(value) if isinstance(value, tuple) else value
+
+
+class TestDeprecatedMessagePartNames(unittest.TestCase):
+    def test_deprecated_names_are_aliases(self):
+        self.assertIs(Text, TextPart)
+        self.assertIs(Reasoning, ReasoningPart)
+        self.assertIs(Blob, BlobPart)
+        self.assertIs(File, FilePart)
+        self.assertIs(Uri, UriPart)
+
+    def test_parts_compare_equal_across_names(self):
+        self.assertEqual(Text(content="hello"), TextPart(content="hello"))
+        self.assertIsInstance(TextPart(content="hello"), Text)
+
+
+class TestShouldCaptureContent(unittest.TestCase):
+    def test_get_content_capturing_mode(self):  # pylint: disable=no-self-use
+        for content_capture, expected_content_capturing in [
+            ("NO_CONTENT", ContentCapturingMode.NO_CONTENT),
+            ("EVENT_ONLY", ContentCapturingMode.EVENT_ONLY),
+            ("SPAN_ONLY", ContentCapturingMode.SPAN_ONLY),
+            ("SPAN_AND_EVENT", ContentCapturingMode.SPAN_AND_EVENT),
+            ("", ContentCapturingMode.NO_CONTENT),
+        ]:
+            with patch.dict(
+                os.environ,
+                {
+                    "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": content_capture,
+                },
+            ):
+                assert (
+                    get_content_capturing_mode() == expected_content_capturing
+                )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "INVALID_VALUE",
+        },
+    )
+    def test_get_content_capturing_mode_with_invalid_envvar_value(
+        self,
+    ):  # pylint: disable=no-self-use
+        with self.assertLogs(level="WARNING") as cm:
+            assert (
+                get_content_capturing_mode() == ContentCapturingMode.NO_CONTENT
+            )
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("INVALID_VALUE is not a valid option for ", cm.output[0])
+
+
+class TestTelemetryHandler(unittest.TestCase):
+    def setUp(self):
+        self.span_exporter = InMemorySpanExporter()
+        self.tracer_provider = TracerProvider()
+        self.tracer_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        self.log_exporter = InMemoryLogRecordExporter()
+        self.logger_provider = LoggerProvider()
+        self.logger_provider.add_log_record_processor(
+            SimpleLogRecordProcessor(self.log_exporter)
+        )
+        self.telemetry_handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            logger_provider=self.logger_provider,
+        )
+
+    def tearDown(self):
+        # Clear spans and reset the singleton telemetry handler so each test starts clean
+        self.span_exporter.clear()
+        self.log_exporter.clear()
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+        },
+    )
+    def test_llm_start_and_stop_creates_span(self):  # pylint: disable=no-self-use
+        message = _create_input_message("hello world")
+        chat_generation = _create_output_message("hello back")
+        system_instruction = _create_system_instruction()
+
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        with handler.inference(
+            "test-provider",
+            request_model="test-model",
+            server_address="custom.server.com",
+            server_port=42,
+        ) as invocation:
+            invocation.input_messages = [message]
+            invocation.system_instruction = system_instruction
+            invocation.attributes = {"custom_attr": "value"}
+            invocation.temperature = 0.5
+            invocation.top_p = 0.9
+            invocation.top_k = 40
+            invocation.stop_sequences = ["stop"]
+            invocation.finish_reasons = ["stop"]
+            invocation.response_model_name = "test-response-model"
+            invocation.response_id = "response-id"
+            invocation.input_tokens = 321
+            invocation.output_tokens = 654
+            assert invocation.span is not None
+            invocation.output_messages = [chat_generation]
+            invocation.attributes.update({"extra": "info"})
+            invocation.metric_attributes = {"should not be on span": "value"}
+
+        span = _get_single_span(self.span_exporter)
+        self.assertEqual(span.name, "chat test-model")
+        self.assertEqual(span.kind, trace.SpanKind.CLIENT)
+        _assert_span_time_order(span)
+
+        span_attrs = _get_span_attributes(span)
+        _assert_span_attributes(
+            span_attrs,
+            {
+                GenAI.GEN_AI_OPERATION_NAME: "chat",
+                GenAI.GEN_AI_REQUEST_MODEL: "test-model",
+                GenAI.GEN_AI_PROVIDER_NAME: "test-provider",
+                GenAI.GEN_AI_INPUT_MESSAGES: AnyNonNone(),
+                GenAI.GEN_AI_OUTPUT_MESSAGES: AnyNonNone(),
+                GenAI.GEN_AI_SYSTEM_INSTRUCTIONS: AnyNonNone(),
+                GenAI.GEN_AI_REQUEST_TEMPERATURE: 0.5,
+                GenAI.GEN_AI_REQUEST_TOP_P: 0.9,
+                GenAI.GEN_AI_REQUEST_TOP_K: 40,
+                GenAI.GEN_AI_REQUEST_STOP_SEQUENCES: ("stop",),
+                GenAI.GEN_AI_RESPONSE_FINISH_REASONS: ("stop",),
+                GenAI.GEN_AI_RESPONSE_MODEL: "test-response-model",
+                GenAI.GEN_AI_RESPONSE_ID: "response-id",
+                GenAI.GEN_AI_USAGE_INPUT_TOKENS: 321,
+                GenAI.GEN_AI_USAGE_OUTPUT_TOKENS: 654,
+                server_attributes.SERVER_ADDRESS: "custom.server.com",
+                server_attributes.SERVER_PORT: 42,
+                "extra": "info",
+                "custom_attr": "value",
+            },
+        )
+        self.assertIsInstance(span_attrs[GenAI.GEN_AI_REQUEST_TOP_K], int)
+
+        input_message = _get_single_message(
+            span_attrs, "gen_ai.input.messages"
+        )
+        output_message = _get_single_message(
+            span_attrs, "gen_ai.output.messages"
+        )
+        _assert_text_message(input_message, "Human", "hello world")
+        _assert_text_message(output_message, "AI", "hello back", "stop")
+        self.assertEqual(invocation.attributes.get("custom_attr"), "value")
+        self.assertEqual(invocation.attributes.get("extra"), "info")
+
+        # Verify system instruction is present in span as JSON string
+        self.assertIn(GenAI.GEN_AI_SYSTEM_INSTRUCTIONS, span_attrs)
+        span_system = json.loads(span_attrs[GenAI.GEN_AI_SYSTEM_INSTRUCTIONS])
+        self.assertIsInstance(span_system, list)
+        self.assertEqual(
+            span_system[0]["content"], "You are a helpful assistant."
+        )
+        self.assertEqual(span_system[0]["type"], "text")
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+        },
+    )
+    def test_system_instruction_generic_part_on_span(self):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        with handler.inference("test-provider") as invocation:
+            invocation.system_instruction = [
+                TextPart(content="You are helpful"),
+                GenericPart(type="custom"),
+            ]
+
+        span = _get_single_span(self.span_exporter)
+        span_attrs = _get_span_attributes(span)
+        self.assertIn(GenAI.GEN_AI_SYSTEM_INSTRUCTIONS, span_attrs)
+        instructions = json.loads(span_attrs[GenAI.GEN_AI_SYSTEM_INSTRUCTIONS])
+        self.assertEqual(
+            instructions,
+            [
+                {"type": "text", "content": "You are helpful"},
+                {"type": "custom"},
+            ],
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+        },
+    )
+    def test_llm_manual_start_and_stop_creates_span(self):
+        message = _create_input_message("hi")
+        chat_generation = _create_output_message("ok")
+
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        invocation = handler.inference(
+            "test-provider", request_model="manual-model"
+        )
+        invocation.input_messages = [message]
+        invocation.attributes["manual"] = True
+        assert invocation.span is not None
+        invocation.output_messages = [chat_generation]
+        invocation.attributes.update({"extra_manual": "yes"})
+        invocation.stop()
+
+        span = _get_single_span(self.span_exporter)
+        assert span.name == "chat manual-model"
+        assert span.kind == trace.SpanKind.CLIENT
+        _assert_span_time_order(span)
+
+        attrs = _get_span_attributes(span)
+        _assert_span_attributes(
+            attrs,
+            {
+                GenAI.GEN_AI_OPERATION_NAME: "chat",
+                GenAI.GEN_AI_REQUEST_MODEL: "manual-model",
+                GenAI.GEN_AI_PROVIDER_NAME: "test-provider",
+                GenAI.GEN_AI_INPUT_MESSAGES: AnyNonNone(),
+                GenAI.GEN_AI_OUTPUT_MESSAGES: AnyNonNone(),
+                GenAI.GEN_AI_RESPONSE_FINISH_REASONS: ("stop",),
+                "manual": True,
+                "extra_manual": "yes",
+            },
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "EVENT_ONLY",
+        },
+    )
+    def test_inference_messages_omitted_from_span_in_event_only_mode(self):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        with handler.inference(
+            "test-provider", request_model="test-model"
+        ) as inv:
+            inv.input_messages = [_create_input_message("hi")]
+            inv.output_messages = [_create_output_message("hello")]
+
+        span = _get_single_span(self.span_exporter)
+        attrs = _get_span_attributes(span)
+        assert GenAI.GEN_AI_INPUT_MESSAGES not in attrs
+        assert GenAI.GEN_AI_OUTPUT_MESSAGES not in attrs
+
+    def test_inference_passes_sampling_attributes_at_span_creation(self):
+        """Verify that sampling-relevant attributes are available at start_span() time."""
+        captured_attributes = {}
+
+        class AttributeCapturingSampler:  # pylint: disable=no-self-use
+            """A sampler that records the attributes passed to should_sample."""
+
+            def should_sample(
+                self,
+                parent_context,
+                trace_id,
+                name,
+                kind=None,
+                attributes=None,
+                links=None,
+            ):
+                captured_attributes.update(attributes or {})
+
+                return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes)
+
+            def get_description(self):
+                return "AttributeCapturingSampler"
+
+        sampler_provider = TracerProvider(sampler=AttributeCapturingSampler())
+        sampler_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+
+        handler = TelemetryHandler(tracer_provider=sampler_provider)
+
+        invocation = handler.inference(
+            "test-provider",
+            request_model="sampler-model",
+            server_address="api.example.com",
+            server_port=8080,
+        )
+        invocation.stop()
+
+        assert captured_attributes[GenAI.GEN_AI_OPERATION_NAME] == "chat"
+        assert (
+            captured_attributes[GenAI.GEN_AI_REQUEST_MODEL] == "sampler-model"
+        )
+        assert (
+            captured_attributes[GenAI.GEN_AI_PROVIDER_NAME] == "test-provider"
+        )
+        assert (
+            captured_attributes[server_attributes.SERVER_ADDRESS]
+            == "api.example.com"
+        )
+        assert captured_attributes[server_attributes.SERVER_PORT] == 8080
+
+    def test_inference_conversation_id_on_span_but_not_metrics(self):
+        """conversation id is high cardinality, so it must stay off metrics.
+
+        `_get_metric_attributes()` builds on `_start_attributes`, so
+        setting it at span creation would make it a dimension on the duration
+        and token histograms.
+        """
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.conversation_id = "conv-1"
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_CONVERSATION_ID] == "conv-1"
+        assert (
+            GenAI.GEN_AI_CONVERSATION_ID
+            not in invocation._get_metric_attributes()
+        )
+
+    def test_inference_omits_conversation_id_when_not_set(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_CONVERSATION_ID not in attrs
+
+    def test_inference_sampler_can_drop_span_based_on_attributes(self):
+        """Verify that a sampler can reject spans based on attributes passed at creation time."""
+
+        class ModelRejectingSampler:  # pylint: disable=no-self-use
+            """Drops spans whose gen_ai.request.model matches the reject list."""
+
+            def __init__(self, reject_models):
+                self._reject_models = reject_models
+
+            def should_sample(
+                self,
+                parent_context,
+                trace_id,
+                name,
+                kind=None,
+                attributes=None,
+                links=None,
+            ):
+                model = (attributes or {}).get(GenAI.GEN_AI_REQUEST_MODEL)
+                if model in self._reject_models:
+                    return SamplingResult(Decision.DROP)
+                return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes)
+
+            def get_description(self):
+                return "ModelRejectingSampler"
+
+        sampler_provider = TracerProvider(
+            sampler=ModelRejectingSampler(reject_models={"rejected-model"})
+        )
+        sampler_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+
+        handler = TelemetryHandler(tracer_provider=sampler_provider)
+
+        # This invocation should be dropped
+        invocation = handler.inference(
+            "test-provider", request_model="rejected-model"
+        )
+        invocation.stop()
+
+        # This invocation should be recorded
+        invocation = handler.inference(
+            "test-provider", request_model="accepted-model"
+        )
+        invocation.stop()
+
+        spans = self.span_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].name == "chat accepted-model"
+
+    def test_embedding_passes_sampling_attributes_at_span_creation(self):
+        """Verify that sampling-relevant attributes are available at start_span() time for embeddings."""
+        captured_attributes = {}
+
+        class AttributeCapturingSampler:  # pylint: disable=no-self-use
+            def should_sample(
+                self,
+                parent_context,
+                trace_id,
+                name,
+                kind=None,
+                attributes=None,
+                links=None,
+            ):
+                captured_attributes.update(attributes or {})
+                return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes)
+
+            def get_description(self):
+                return "AttributeCapturingSampler"
+
+        sampler_provider = TracerProvider(sampler=AttributeCapturingSampler())
+        sampler_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        handler = TelemetryHandler(tracer_provider=sampler_provider)
+
+        invocation = handler.embedding(
+            "test-provider",
+            request_model="embed-model",
+            server_address="embed.example.com",
+            server_port=443,
+        )
+        invocation.stop()
+
+        assert captured_attributes[GenAI.GEN_AI_OPERATION_NAME] == "embeddings"
+        assert captured_attributes[GenAI.GEN_AI_REQUEST_MODEL] == "embed-model"
+        assert (
+            captured_attributes[GenAI.GEN_AI_PROVIDER_NAME] == "test-provider"
+        )
+        assert (
+            captured_attributes[server_attributes.SERVER_ADDRESS]
+            == "embed.example.com"
+        )
+        assert captured_attributes[server_attributes.SERVER_PORT] == 443
+
+    def test_start_attributes_initialized_in_init(self):
+        """Verify that start attributes are initialized upon construction."""
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        assert invocation.span.is_recording()
+        assert invocation.context is not None
+
+        assert (
+            invocation._start_attributes[GenAI.GEN_AI_OPERATION_NAME]
+            == GenAI.GenAiOperationNameValues.CHAT.value
+        )
+        assert (
+            invocation._start_attributes[GenAI.GEN_AI_PROVIDER_NAME]
+            == "test-provider"
+        )
+        assert (
+            invocation._start_attributes[GenAI.GEN_AI_REQUEST_MODEL]
+            == "test-model"
+        )
+        invocation.stop()
+
+    def test_llm_span_finish_reasons_without_output_messages(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="model-without-output"
+        )
+        invocation.finish_reasons = ["length"]
+        invocation.response_model_name = "alt-model"
+        invocation.response_id = "resp-001"
+        invocation.input_tokens = 12
+        invocation.output_tokens = 34
+        assert invocation.span is not None
+        invocation.stop()
+
+        span = _get_single_span(self.span_exporter)
+        _assert_span_time_order(span)
+        attrs = _get_span_attributes(span)
+        _assert_span_attributes(
+            attrs,
+            {
+                GenAI.GEN_AI_OPERATION_NAME: "chat",
+                GenAI.GEN_AI_REQUEST_MODEL: "model-without-output",
+                GenAI.GEN_AI_PROVIDER_NAME: "test-provider",
+                GenAI.GEN_AI_RESPONSE_FINISH_REASONS: ("length",),
+                GenAI.GEN_AI_RESPONSE_MODEL: "alt-model",
+                GenAI.GEN_AI_RESPONSE_ID: "resp-001",
+                GenAI.GEN_AI_USAGE_INPUT_TOKENS: 12,
+                GenAI.GEN_AI_USAGE_OUTPUT_TOKENS: 34,
+            },
+        )
+
+    def test_llm_span_finish_reasons_from_invocation(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="model-reasons"
+        )
+        invocation.finish_reasons = ["stop", "length", "stop"]
+        assert invocation.span is not None
+        invocation.stop()
+
+        span = _get_single_span(self.span_exporter)
+        attrs = _get_span_attributes(span)
+        self.assertEqual(
+            attrs[GenAI.GEN_AI_RESPONSE_FINISH_REASONS],
+            ("stop", "length", "stop"),
+        )
+
+    def test_llm_span_finish_reasons_from_output_messages(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="model-output-reasons"
+        )
+        assert invocation.span is not None
+        invocation.output_messages = [
+            _create_output_message("response-1", finish_reason="stop"),
+            _create_output_message("response-2", finish_reason="length"),
+            _create_output_message("response-3", finish_reason="stop"),
+        ]
+        invocation.stop()
+
+        span = _get_single_span(self.span_exporter)
+        attrs = _get_span_attributes(span)
+        self.assertEqual(
+            attrs[GenAI.GEN_AI_RESPONSE_FINISH_REASONS],
+            ("stop", "length", "stop"),
+        )
+
+    def test_llm_span_uses_expected_schema_url(self):
+        invocation = self.telemetry_handler.inference(
+            "schema-provider", request_model="schema-model"
+        )
+        assert invocation.span is not None
+        invocation.stop()
+
+        span = _get_single_span(self.span_exporter)
+        instrumentation = getattr(span, "instrumentation_scope", None)
+        if instrumentation is None:
+            instrumentation = getattr(span, "instrumentation_info", None)
+
+        assert instrumentation is not None
+        assert (
+            getattr(instrumentation, "schema_url", None)
+            == Schemas.V1_37_0.value
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "EVENT_ONLY",
+        },
+    )
+    def test_llm_log_uses_expected_schema_url(self):
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            logger_provider=self.logger_provider,
+        )
+        invocation = handler.inference(
+            "schema-provider", request_model="schema-model"
+        )
+        invocation.output_messages = [_create_output_message()]
+        invocation.stop()
+
+        logs = self.log_exporter.get_finished_logs()
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(
+            logs[0].instrumentation_scope.schema_url, Schemas.V1_37_0.value
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+        },
+    )
+    def test_parent_child_span_relationship(self):
+        message = _create_input_message("hi")
+        chat_generation = _create_output_message("ok")
+
+        with self.telemetry_handler.workflow(name="parent-workflow"):
+            with self.telemetry_handler.inference(
+                "test-provider", request_model="child-model"
+            ) as child_invocation:
+                child_invocation.input_messages = [message]
+                # Stop child first by exiting inner context
+                child_invocation.output_messages = [chat_generation]
+
+        spans = self.span_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        # Identify spans irrespective of export order
+        child_span = next(s for s in spans if s.name == "chat child-model")
+        parent_span = next(
+            s for s in spans if s.name == "invoke_workflow parent-workflow"
+        )
+
+        # Same trace
+        assert child_span.context.trace_id == parent_span.context.trace_id
+        # Child has parent set to parent's span id
+        assert child_span.parent is not None
+        assert child_span.parent.span_id == parent_span.context.span_id
+        # Parent should not have a parent (root)
+        assert parent_span.parent is None
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+        },
+    )
+    def test_embedding_parent_child_span_relationship(self):
+        with self.telemetry_handler.workflow(name="parent-workflow"):
+            child_invocation = self.telemetry_handler.embedding(
+                "test-provider", request_model="embed-child-model"
+            )
+            child_invocation.input_tokens = 5
+            assert child_invocation.span is not None
+            child_invocation.stop()
+
+        spans = self.span_exporter.get_finished_spans()
+        assert len(spans) == 2
+        child_span = next(
+            s for s in spans if s.name == "embeddings embed-child-model"
+        )
+        parent_span = next(
+            s for s in spans if s.name == "invoke_workflow parent-workflow"
+        )
+
+        assert child_span.context.trace_id == parent_span.context.trace_id
+        assert child_span.parent is not None
+        assert child_span.parent.span_id == parent_span.context.span_id
+        assert parent_span.parent is None
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+        },
+    )
+    def test_llm_parent_embedding_child_span_relationship(self):
+        message = _create_input_message("hi")
+        chat_generation = _create_output_message("ok")
+
+        with self.telemetry_handler.inference(
+            "test-provider", request_model="parent-model"
+        ) as parent_invocation:
+            parent_invocation.input_messages = [message]
+            child_invocation = self.telemetry_handler.embedding(
+                "test-provider", request_model="embed-child-model"
+            )
+            child_invocation.input_tokens = 3
+            assert child_invocation.span is not None
+            child_invocation.stop()
+            parent_invocation.output_messages = [chat_generation]
+
+        spans = self.span_exporter.get_finished_spans()
+        assert len(spans) == 2
+        child_span = next(
+            s for s in spans if s.name == "embeddings embed-child-model"
+        )
+        parent_span = next(s for s in spans if s.name == "chat parent-model")
+
+        assert child_span.context.trace_id == parent_span.context.trace_id
+        assert child_span.parent is not None
+        assert child_span.parent.span_id == parent_span.context.span_id
+        assert parent_span.parent is None
+
+    def test_inference_with_explicit_context(self):
+        parent_inv = self.telemetry_handler.inference(
+            "test-provider", request_model="parent-model"
+        )
+        parent_inv.stop()
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            child_inv = self.telemetry_handler.inference(
+                "test-provider",
+                request_model="child-model",
+                context=parent_inv.context,
+            )
+            child_inv.stop()
+
+        spans = self.span_exporter.get_finished_spans()
+        child_span = next(s for s in spans if s.name == "chat child-model")
+        parent_span = next(s for s in spans if s.name == "chat parent-model")
+        assert child_span.parent is not None
+        assert child_span.parent.span_id == parent_span.context.span_id
+        assert (
+            child_span.parent.span_id
+            != ambient_span.get_span_context().span_id
+        )
+        assert child_span.context.trace_id == parent_span.context.trace_id
+
+    def test_inference_with_attach_to_context_false(self):
+        from opentelemetry.trace import get_current_span
+
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            inv = self.telemetry_handler.inference(
+                "test-provider",
+                request_model="detached-model",
+                _attach_to_context=False,
+            )
+            # Ambient context should not have changed
+            assert get_current_span() == ambient_span
+            inv.stop()
+            assert get_current_span() == ambient_span
+
+        spans = self.span_exporter.get_finished_spans()
+        detached_span = next(
+            s for s in spans if s.name == "chat detached-model"
+        )
+        # Should still parent to ambient span because context was not passed
+        assert detached_span.parent is not None
+        assert (
+            detached_span.parent.span_id
+            == ambient_span.get_span_context().span_id
+        )
+
+    def test_embedding_with_explicit_context(self):
+        parent_inv = self.telemetry_handler.embedding(
+            "test-provider", request_model="parent-model"
+        )
+        parent_inv.stop()
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            child_inv = self.telemetry_handler.embedding(
+                "test-provider",
+                request_model="child-model",
+                context=parent_inv.context,
+            )
+            child_inv.stop()
+
+        spans = self.span_exporter.get_finished_spans()
+        child_span = next(
+            s for s in spans if s.name == "embeddings child-model"
+        )
+        parent_span = next(
+            s for s in spans if s.name == "embeddings parent-model"
+        )
+        assert child_span.parent is not None
+        assert child_span.parent.span_id == parent_span.context.span_id
+        assert (
+            child_span.parent.span_id
+            != ambient_span.get_span_context().span_id
+        )
+        assert child_span.context.trace_id == parent_span.context.trace_id
+
+    def test_embedding_with_attach_to_context_false(self):
+        from opentelemetry.trace import get_current_span
+
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            inv = self.telemetry_handler.embedding(
+                "test-provider",
+                request_model="detached-embed-model",
+                _attach_to_context=False,
+            )
+            assert get_current_span() == ambient_span
+            inv.stop()
+            assert get_current_span() == ambient_span
+
+        spans = self.span_exporter.get_finished_spans()
+        detached_span = next(
+            s for s in spans if s.name == "embeddings detached-embed-model"
+        )
+        assert detached_span.parent is not None
+        assert (
+            detached_span.parent.span_id
+            == ambient_span.get_span_context().span_id
+        )
+
+    def test_llm_context_manager_error_path_records_error_status_and_attrs(
+        self,
+    ):
+        class BoomError(RuntimeError):
+            pass
+
+        message = _create_input_message("hi", role="user")
+
+        with self.assertRaises(BoomError):
+            with self.telemetry_handler.inference(
+                "test-provider", request_model="test-model"
+            ) as invocation:
+                invocation.input_messages = [message]
+                for attr, value in {
+                    "max_tokens": 128,
+                    "seed": 123,
+                    "finish_reasons": ["error"],
+                    "response_model_name": "error-model",
+                    "response_id": "error-response",
+                    "input_tokens": 11,
+                    "output_tokens": 22,
+                }.items():
+                    setattr(invocation, attr, value)
+                raise BoomError("boom")
+
+        span = _get_single_span(self.span_exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        _assert_span_time_order(span)
+        span_attrs = _get_span_attributes(span)
+        _assert_span_attributes(
+            span_attrs,
+            {
+                GenAI.GEN_AI_OPERATION_NAME: "chat",
+                GenAI.GEN_AI_REQUEST_MODEL: "test-model",
+                GenAI.GEN_AI_PROVIDER_NAME: "test-provider",
+                GenAI.GEN_AI_REQUEST_MAX_TOKENS: 128,
+                GenAI.GEN_AI_REQUEST_SEED: 123,
+                GenAI.GEN_AI_RESPONSE_FINISH_REASONS: ("error",),
+                GenAI.GEN_AI_RESPONSE_MODEL: "error-model",
+                GenAI.GEN_AI_RESPONSE_ID: "error-response",
+                GenAI.GEN_AI_USAGE_INPUT_TOKENS: 11,
+                GenAI.GEN_AI_USAGE_OUTPUT_TOKENS: 22,
+                error_attributes.ERROR_TYPE: f"{BoomError.__module__}.{BoomError.__qualname__}",
+            },
+        )
+
+    def test_embedding_context_manager_error_path_records_error_status_and_attrs(
+        self,
+    ):
+        class BoomError(RuntimeError):
+            pass
+
+        with self.assertRaises(BoomError):
+            with self.telemetry_handler.embedding(
+                "test-provider",
+                request_model="embed-model",
+                server_address="embed.example.com",
+                server_port=443,
+            ) as invocation:
+                invocation.dimension_count = 1536
+                invocation.input_tokens = 7
+                invocation.attributes["custom_embed_attr"] = "value"
+                invocation.response_model_name = "embed-response-model"
+                raise BoomError("embedding boom")
+
+        span = _get_single_span(self.span_exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        _assert_span_time_order(span)
+        span_attrs = _get_span_attributes(span)
+        _assert_span_attributes(
+            span_attrs,
+            {
+                GenAI.GEN_AI_OPERATION_NAME: "embeddings",
+                GenAI.GEN_AI_REQUEST_MODEL: "embed-model",
+                GenAI.GEN_AI_PROVIDER_NAME: "test-provider",
+                GenAI.GEN_AI_EMBEDDINGS_DIMENSION_COUNT: 1536,
+                GenAI.GEN_AI_USAGE_INPUT_TOKENS: 7,
+                GenAI.GEN_AI_RESPONSE_MODEL: "embed-response-model",
+                server_attributes.SERVER_ADDRESS: "embed.example.com",
+                server_attributes.SERVER_PORT: 443,
+                "custom_embed_attr": "value",
+                error_attributes.ERROR_TYPE: f"{BoomError.__module__}.{BoomError.__qualname__}",
+            },
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+        },
+    )
+    def test_embedding_manual_start_and_stop_creates_span(self):
+        invocation = self.telemetry_handler.embedding(
+            "test-provider",
+            request_model="embed-model",
+            server_address="custom.server.com",
+            server_port=42,
+        )
+        invocation.dimension_count = 1536
+        invocation.encoding_formats = ["float"]
+        invocation.input_tokens = 123
+        invocation.attributes["custom_embed_attr"] = "value"
+        assert invocation.span is not None
+        invocation.attributes.update({"extra_embed": "info"})
+        invocation.metric_attributes = {"should not be on span": "value"}
+        invocation.stop()
+
+        span = _get_single_span(self.span_exporter)
+        self.assertEqual(span.name, "embeddings embed-model")
+        self.assertEqual(span.kind, trace.SpanKind.CLIENT)
+        _assert_span_time_order(span)
+
+        attrs = _get_span_attributes(span)
+        _assert_span_attributes(
+            attrs,
+            {
+                GenAI.GEN_AI_OPERATION_NAME: "embeddings",
+                GenAI.GEN_AI_REQUEST_MODEL: "embed-model",
+                GenAI.GEN_AI_PROVIDER_NAME: "test-provider",
+                GenAI.GEN_AI_EMBEDDINGS_DIMENSION_COUNT: 1536,
+                GenAI.GEN_AI_REQUEST_ENCODING_FORMATS: ("float",),
+                GenAI.GEN_AI_USAGE_INPUT_TOKENS: 123,
+                server_attributes.SERVER_ADDRESS: "custom.server.com",
+                server_attributes.SERVER_PORT: 42,
+                "custom_embed_attr": "value",
+                "extra_embed": "info",
+            },
+        )
+
+    def test_fail_with_exception_sets_error_status_and_type(self):
+        class BoomError(RuntimeError):
+            pass
+
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.fail(BoomError("boom"))
+
+        span = _get_single_span(self.span_exporter)
+        assert span.status.status_code == StatusCode.ERROR
+        assert span.status.description is None
+        assert (
+            _get_span_attributes(span)[error_attributes.ERROR_TYPE]
+            == f"{BoomError.__module__}.{BoomError.__qualname__}"
+        )
+
+    def test_inference_finish_does_not_duplicate_start_attributes(self):
+        mock_span = MagicMock()
+        with patch.object(
+            self.telemetry_handler._tracer,
+            "start_span",
+            return_value=mock_span,
+        ):
+            invocation = self.telemetry_handler.inference(
+                "test-provider",
+                request_model="test-model",
+                server_address="custom.server.com",
+                server_port=42,
+            )
+            mock_span.set_attributes.reset_mock()
+            mock_span.set_attribute.reset_mock()
+
+            invocation.stop()
+
+            # Inspect what was set on finish
+            if mock_span.set_attributes.call_args_list:
+                for call in mock_span.set_attributes.call_args_list:
+                    attrs = call[0][0]
+                    self.assertNotIn(GenAI.GEN_AI_OPERATION_NAME, attrs)
+                    self.assertNotIn(GenAI.GEN_AI_REQUEST_MODEL, attrs)
+                    self.assertNotIn(GenAI.GEN_AI_PROVIDER_NAME, attrs)
+                    self.assertNotIn(server_attributes.SERVER_ADDRESS, attrs)
+                    self.assertNotIn(server_attributes.SERVER_PORT, attrs)
+
+            if mock_span.set_attribute.call_args_list:
+                for call in mock_span.set_attribute.call_args_list:
+                    key = call[0][0]
+                    self.assertNotEqual(key, GenAI.GEN_AI_OPERATION_NAME)
+                    self.assertNotEqual(key, GenAI.GEN_AI_REQUEST_MODEL)
+                    self.assertNotEqual(key, GenAI.GEN_AI_PROVIDER_NAME)
+                    self.assertNotEqual(key, server_attributes.SERVER_ADDRESS)
+                    self.assertNotEqual(key, server_attributes.SERVER_PORT)
+
+    def test_inference_cache_write_input_tokens(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.cache_write_input_tokens = 42
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.cache_write.input_tokens"] == 42
+
+    def test_inference_cache_creation_input_tokens_backward_compatibility(
+        self,
+    ):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.cache_creation_input_tokens = 42
+        assert invocation.cache_write_input_tokens == 42
+        assert invocation.cache_creation_input_tokens == 42
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.cache_write.input_tokens"] == 42
+
+    def test_inference_modality_tokens(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.text_input_tokens = 10
+        invocation.image_input_tokens = 20
+        invocation.audio_input_tokens = 30
+        invocation.text_output_tokens = 40
+        invocation.image_output_tokens = 50
+        invocation.audio_output_tokens = 60
+        invocation.text_cache_read_input_tokens = 5
+        invocation.image_cache_read_input_tokens = 6
+        invocation.audio_cache_read_input_tokens = 7
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.text.input_tokens"] == 10
+        assert attrs["gen_ai.usage.image.input_tokens"] == 20
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 30
+        assert attrs["gen_ai.usage.text.output_tokens"] == 40
+        assert attrs["gen_ai.usage.image.output_tokens"] == 50
+        assert attrs["gen_ai.usage.audio.output_tokens"] == 60
+        assert attrs["gen_ai.usage.text.cache_read.input_tokens"] == 5
+        assert attrs["gen_ai.usage.image.cache_read.input_tokens"] == 6
+        assert attrs["gen_ai.usage.audio.cache_read.input_tokens"] == 7
+
+    def test_set_modality_tokens_records_each_bucket(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [("text", 10), ("image", 20), ("audio", 30)]
+        )
+        invocation.set_output_tokens(
+            [("text", 40), ("image", 50), ("audio", 60)]
+        )
+        invocation.set_cache_read_input_tokens(
+            [("text", 5), ("image", 6), ("audio", 7)]
+        )
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key, value in (
+            ("gen_ai.usage.text.input_tokens", 10),
+            ("gen_ai.usage.image.input_tokens", 20),
+            ("gen_ai.usage.audio.input_tokens", 30),
+            ("gen_ai.usage.text.output_tokens", 40),
+            ("gen_ai.usage.image.output_tokens", 50),
+            ("gen_ai.usage.audio.output_tokens", 60),
+            ("gen_ai.usage.text.cache_read.input_tokens", 5),
+            ("gen_ai.usage.image.cache_read.input_tokens", 6),
+            ("gen_ai.usage.audio.cache_read.input_tokens", 7),
+        ):
+            assert isinstance(attrs[key], int)
+            assert attrs[key] == value
+
+    def test_set_modality_tokens_accepts_enum_valued_modality(self):
+        class _Modality(Enum):
+            AUDIO = "AUDIO"
+
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([(_Modality.AUDIO, 11)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 11
+
+    def test_set_modality_tokens_accepts_standard_enums(self) -> None:
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        entries = [
+            (Modality.TEXT, 10),
+            (Modality.IMAGE, 20),
+            (Modality.AUDIO, 30),
+            (Modality.VIDEO, 40),
+            (Modality.DOCUMENT, 50),
+            ("vendor_custom", 60),
+        ]
+        invocation.set_input_tokens(entries)
+        invocation.set_output_tokens(entries)
+        invocation.set_cache_read_input_tokens(entries)
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        usage = {
+            key: value
+            for key, value in attrs.items()
+            if key.startswith("gen_ai.usage.")
+        }
+        assert usage == {
+            f"gen_ai.usage.{modality}.{bucket}": count
+            for modality, count in (("text", 10), ("image", 20), ("audio", 30))
+            for bucket in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read.input_tokens",
+            )
+        }
+        assert all(type(value) is int for value in usage.values())
+
+    @patch.dict(
+        os.environ,
+        {
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_AND_EVENT",
+        },
+    )
+    def test_modality_content_on_spans_and_events(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            logger_provider=self.logger_provider,
+        )
+        modalities = [*Modality, "image", "vendor_custom"]
+        parts = [
+            part
+            for modality in modalities
+            for part in (
+                BlobPart(
+                    mime_type=None, modality=modality, content=b"content"
+                ),
+                FilePart(mime_type=None, modality=modality, file_id="file-id"),
+                UriPart(
+                    mime_type=None,
+                    modality=modality,
+                    uri="https://example.com/content",
+                ),
+            )
+        ]
+        with handler.inference(
+            "test-provider", request_model="test-model"
+        ) as invocation:
+            invocation.input_messages = [
+                InputMessage(role=Role.USER, parts=parts)
+            ]
+            invocation.output_messages = [
+                OutputMessage(role=Role.ASSISTANT, parts=parts)
+            ]
+
+        span_attrs = self.span_exporter.get_finished_spans()[0].attributes
+        event_attrs = self.log_exporter.get_finished_logs()[
+            0
+        ].log_record.attributes
+        expected = [
+            modality
+            for modality in (
+                "text",
+                "image",
+                "video",
+                "audio",
+                "document",
+                "image",
+                "vendor_custom",
+            )
+            for _ in range(3)
+        ]
+        for key in (
+            GenAI.GEN_AI_INPUT_MESSAGES,
+            GenAI.GEN_AI_OUTPUT_MESSAGES,
+        ):
+            with self.subTest(key=key):
+                span_parts = json.loads(span_attrs[key])[0]["parts"]
+                event_parts = event_attrs[key][0]["parts"]
+                for recorded_parts in (span_parts, event_parts):
+                    values = [part["modality"] for part in recorded_parts]
+                    assert values == expected
+                    assert all(isinstance(value, str) for value in values)
+
+    def test_set_modality_tokens_replaces_rather_than_merges(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("text", 10), ("audio", 90)])
+        invocation.set_input_tokens([("text", 12)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.text.input_tokens"] == 12
+        assert "gen_ai.usage.audio.input_tokens" not in attrs
+
+    def test_set_modality_tokens_empty_iterable_clears_the_bucket(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("audio", 90)])
+        invocation.set_input_tokens([])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert "gen_ai.usage.audio.input_tokens" not in attrs
+
+    def test_set_modality_tokens_none_leaves_values_alone(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens([("audio", 90)])
+        invocation.set_input_tokens(None)
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.usage.audio.input_tokens"] == 90
+
+    def test_set_modality_tokens_drops_invalid_counts(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [
+                ("text", True),
+                ("image", -5),
+                ("audio", None),
+            ]
+        )
+        invocation.set_output_tokens([("text", "10"), ("audio", 1.5)])
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in (
+            "gen_ai.usage.text.input_tokens",
+            "gen_ai.usage.image.input_tokens",
+            "gen_ai.usage.audio.input_tokens",
+            "gen_ai.usage.text.output_tokens",
+            "gen_ai.usage.audio.output_tokens",
+        ):
+            assert key not in attrs
+
+    def test_set_modality_tokens_drops_unmapped_modalities(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.set_input_tokens(
+            [
+                ("video", 7),
+                ("document", 8),
+                ("MODALITY_UNSPECIFIED", 9),
+                ("", 10),
+            ]
+        )
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in attrs:
+            assert not key.startswith("gen_ai.usage.video")
+            assert not key.startswith("gen_ai.usage.document")
+        assert "gen_ai.usage.text.input_tokens" not in attrs
+
+    def test_inference_modality_and_cache_tokens_omitted_when_zero(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.cache_write_input_tokens = 0
+        invocation.cache_read_input_tokens = 0
+        invocation.thinking_tokens = 0
+        invocation.text_input_tokens = 0
+        invocation.image_input_tokens = 0
+        invocation.audio_input_tokens = 0
+        invocation.text_output_tokens = 0
+        invocation.image_output_tokens = 0
+        invocation.audio_output_tokens = 0
+        invocation.text_cache_read_input_tokens = 0
+        invocation.image_cache_read_input_tokens = 0
+        invocation.audio_cache_read_input_tokens = 0
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        for key in (
+            "gen_ai.usage.cache_write.input_tokens",
+            "gen_ai.usage.cache_read.input_tokens",
+            "gen_ai.usage.reasoning.output_tokens",
+            "gen_ai.usage.text.input_tokens",
+            "gen_ai.usage.image.input_tokens",
+            "gen_ai.usage.audio.input_tokens",
+            "gen_ai.usage.text.output_tokens",
+            "gen_ai.usage.image.output_tokens",
+            "gen_ai.usage.audio.output_tokens",
+            "gen_ai.usage.text.cache_read.input_tokens",
+            "gen_ai.usage.image.cache_read.input_tokens",
+            "gen_ai.usage.audio.cache_read.input_tokens",
+        ):
+            assert key not in attrs
+
+    def test_inference_reasoning_and_continuation_and_compaction(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.reasoning_level = "high"
+        invocation.previous_response_id = "resp_123"
+        invocation.conversation_compacted = True
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs["gen_ai.request.reasoning.level"] == "high"
+        assert attrs["gen_ai.request.previous_response.id"] == "resp_123"
+        assert attrs["gen_ai.conversation.compacted"] is True
+
+    def test_inference_prompt_template_attributes(self):
+        invocation = self.telemetry_handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.prompt_name = "chat_prompt"
+        invocation.prompt_version = "1.0.0"
+        invocation.prompt_variables = {"user": "Alice", "style": "formal"}
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_PROMPT_NAME] == "chat_prompt"
+        assert attrs["gen_ai.prompt.version"] == "1.0.0"
+        # Prompt variables are gated by content capturing
+        assert "gen_ai.prompt.variable.user" not in attrs
+        assert "gen_ai.prompt.variable.style" not in attrs
+
+        with patch.dict(
+            os.environ,
+            {
+                "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_AND_EVENT",
+            },
+        ):
+            handler = TelemetryHandler(
+                tracer_provider=self.tracer_provider,
+                logger_provider=self.logger_provider,
+            )
+            invocation = handler.inference(
+                "test-provider", request_model="test-model"
+            )
+            invocation.prompt_name = "chat_prompt"
+            invocation.prompt_version = "1.0.0"
+            invocation.prompt_variables = {
+                "user": "Alice",
+                "style": "formal",
+                "tags": ["a", "b"],
+            }
+            invocation.stop()
+
+            attrs = self.span_exporter.get_finished_spans()[-1].attributes
+            assert attrs[GenAI.GEN_AI_PROMPT_NAME] == "chat_prompt"
+            assert attrs["gen_ai.prompt.version"] == "1.0.0"
+            assert attrs["gen_ai.prompt.variable.user"] == "Alice"
+            assert attrs["gen_ai.prompt.variable.style"] == "formal"
+            assert attrs["gen_ai.prompt.variable.tags"] == '["a","b"]'
+
+            event_attrs = self.log_exporter.get_finished_logs()[
+                -1
+            ].log_record.attributes
+            assert event_attrs[GenAI.GEN_AI_PROMPT_NAME] == "chat_prompt"
+            assert event_attrs["gen_ai.prompt.version"] == "1.0.0"
+            assert event_attrs["gen_ai.prompt.variable.user"] == "Alice"
+            assert event_attrs["gen_ai.prompt.variable.style"] == "formal"
+            assert event_attrs["gen_ai.prompt.variable.tags"] == '["a","b"]'
+
+    def test_inference_prompt_variables_safe_serialization(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY",
+            },
+        ):
+            handler = TelemetryHandler(
+                tracer_provider=self.tracer_provider,
+                logger_provider=self.logger_provider,
+            )
+            invocation = handler.inference(
+                "test-provider", request_model="test-model"
+            )
+
+            invocation.prompt_variables = {
+                "plain_str": "hello",
+                "int_val": 42,
+                "none_val": None,
+                "valid_dict": {"clean": "data", "bad_leaf": object()},
+                "bad_obj": object(),
+            }
+            invocation.stop()
+
+            attrs = self.span_exporter.get_finished_spans()[-1].attributes
+            assert attrs["gen_ai.prompt.variable.plain_str"] == "hello"
+            assert attrs["gen_ai.prompt.variable.int_val"] == "42"
+            assert "gen_ai.prompt.variable.none_val" not in attrs
+            assert (
+                attrs["gen_ai.prompt.variable.valid_dict"]
+                == '{"clean":"data"}'
+            )
+            assert "gen_ai.prompt.variable.bad_obj" not in attrs
+
+    @patch.dict(
+        os.environ,
+        {"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "SPAN_ONLY"},
+    )
+    def test_inference_prompt_variables_self_referential_dataclass(self):
+        @dataclass
+        class Node:
+            name: str
+            parent: object = None
+
+        node = Node(name="root")
+        node.parent = node
+
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            logger_provider=self.logger_provider,
+        )
+        invocation = handler.inference(
+            "test-provider", request_model="test-model"
+        )
+        invocation.prompt_variables = {"node": node}
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[-1].attributes
+        assert attrs["gen_ai.prompt.variable.node"] == '{"name":"root"}'
+
+
+class AnyNonNone:
+    def __eq__(self, other):
+        return other is not None
+
+
+class TestRole(unittest.TestCase):
+    def test_values_match_semantic_conventions(self):
+        self.assertEqual(
+            {role.value for role in Role},
+            {"system", "user", "assistant", "tool"},
+        )
+
+    def test_serializes_as_a_bare_string(self):
+        """A member set on a message must reach the wire as its value."""
+        message = OutputMessage(
+            role=Role.ASSISTANT,
+            parts=[TextPart(content="hi")],
+            finish_reason="stop",
+        )
+
+        serialized = json.loads(gen_ai_json_dumps(asdict(message)))
+
+        self.assertEqual(serialized["role"], "assistant")
+
+
+class TestModality(unittest.TestCase):
+    def test_values(self) -> None:
+        self.assertEqual(
+            {modality.name: modality.value for modality in Modality},
+            {
+                "TEXT": "text",
+                "IMAGE": "image",
+                "VIDEO": "video",
+                "AUDIO": "audio",
+                "DOCUMENT": "document",
+            },
+        )
+
+    def test_members_behave_as_strings(self) -> None:
+        for modality in Modality:
+            with self.subTest(modality=modality):
+                self.assertIsInstance(modality, str)
+                self.assertEqual(modality, modality.value)
+                self.assertEqual(hash(modality), hash(modality.value))
+                self.assertEqual(str(modality), modality.value)
+                self.assertEqual(
+                    f"{modality}_tokens", f"{modality.value}_tokens"
+                )
+                self.assertEqual(
+                    json.loads(gen_ai_json_dumps(modality)), modality.value
+                )
+
+
+class TestMessageModels(unittest.TestCase):
+    def test_output_message_optional_finish_reason(self):
+        message = OutputMessage(
+            role=Role.ASSISTANT,
+            parts=[TextPart(content="streamed")],
+        )
+        self.assertIsNone(message.finish_reason)
+        self.assertIsNone(message.name)
+        serialized = json.loads(gen_ai_json_dumps(asdict(message)))
+        self.assertEqual(serialized["role"], "assistant")
+        self.assertIsNone(serialized["finish_reason"])
+
+    def test_messages_with_name(self):
+        in_msg = InputMessage(
+            role=Role.USER,
+            parts=[TextPart(content="hi")],
+            name="alice",
+        )
+        self.assertEqual(in_msg.name, "alice")
+        serialized_in = json.loads(gen_ai_json_dumps(asdict(in_msg)))
+        self.assertEqual(serialized_in["name"], "alice")
+
+        out_msg = OutputMessage(
+            role=Role.ASSISTANT,
+            parts=[TextPart(content="hello")],
+            finish_reason="stop",
+            name="bot",
+        )
+        self.assertEqual(out_msg.name, "bot")
+        serialized_out = json.loads(gen_ai_json_dumps(asdict(out_msg)))
+        self.assertEqual(serialized_out["name"], "bot")
+
+    def test_system_instruction_part(self):
+        text_part: SystemInstructionPart = TextPart(content="You are helpful")
+        generic_part: SystemInstructionPart = GenericPart(type="custom")
+        self.assertEqual(text_part.content, "You are helpful")
+        self.assertEqual(generic_part.type, "custom")
+        self.assertEqual(
+            json.loads(gen_ai_json_dumps(asdict(text_part))),
+            {"type": "text", "content": "You are helpful"},
+        )
+        self.assertEqual(
+            json.loads(gen_ai_json_dumps(asdict(generic_part))),
+            {"type": "custom"},
+        )
+
+    def test_gen_ai_json_dumps_dataclass(self):
+        text_part = TextPart(content="hello")
+        self.assertEqual(
+            json.loads(gen_ai_json_dumps(text_part)),
+            {"type": "text", "content": "hello"},
+        )
+
+
+_REAL_PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00"
+    b"\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc"
+    b"\xf8\xcf\xc0\xf0\x1f\x00\x05\x05\x02\x00\xa1\r\xf7\xdf\x00\x00\x00"
+    b"\x00IEND\xaeB`\x82"
+)
+_REAL_PNG_B64 = base64.b64encode(_REAL_PNG_BYTES).decode("ascii")
+
+
+class TestMediaHelpers(unittest.TestCase):
+    """Tests for the shared ``decode_base64`` / ``image_from_url`` helpers.
+
+    Both helpers unconditionally decode the payload they are given; callers are
+    expected to check whether content capture is enabled and skip calling them
+    when it is not.
+    """
+
+    # -- image_from_url --------------------------------------------------
+
+    def test_image_from_url_data_uri_returns_blob(self):
+        part = image_from_url("data:image/jpeg;base64,QUJD")
+        self.assertIsInstance(part, BlobPart)
+        self.assertEqual(part.mime_type, "image/jpeg")
+        self.assertEqual(part.modality, "image")
+        self.assertEqual(part.content, b"ABC")
+
+    def test_image_from_url_http_returns_uri(self):
+        part = image_from_url("https://example.com/cat.png")
+        self.assertIsInstance(part, UriPart)
+        self.assertEqual(part.uri, "https://example.com/cat.png")
+        self.assertEqual(part.modality, "image")
+
+    def test_image_from_url_data_uri_without_base64_decodes_payload(self):
+        part = image_from_url("data:text/plain,hello")
+        self.assertIsInstance(part, BlobPart)
+        self.assertEqual(part.mime_type, "text/plain")
+        self.assertEqual(part.content, b"hello")
+
+    def test_image_from_url_data_uri_no_mime_type(self):
+        part = image_from_url("data:;base64,QUJD")
+        self.assertIsInstance(part, BlobPart)
+        self.assertIsNone(part.mime_type)
+        self.assertEqual(part.content, b"ABC")
+
+    def test_image_from_url_data_uri_malformed_base64_returns_none(self):
+        part = image_from_url("data:image/png;base64,not!valid!base64!")
+        self.assertIsNone(part)
+
+    def test_image_from_url_data_uri_uppercase_base64_marker(self):
+        part = image_from_url("data:image/jpeg;BASE64,QUJD")
+        self.assertIsInstance(part, BlobPart)
+        self.assertEqual(part.content, b"ABC")
+
+    def test_image_from_url_honours_modality_override(self):
+        part = image_from_url("data:audio/mp3;base64,QUJD", modality="audio")
+        self.assertIsInstance(part, BlobPart)
+        self.assertEqual(part.modality, "audio")
+        uri_part = image_from_url(
+            "https://example.com/a.mp3", modality="audio"
+        )
+        self.assertIsInstance(uri_part, UriPart)
+        self.assertEqual(uri_part.modality, "audio")
+
+    def test_image_from_url_accepts_enum_and_custom_modalities(self) -> None:
+        for modality in (Modality.AUDIO, "vendor_custom"):
+            for url in (
+                "data:application/octet-stream;base64,QUJD",
+                "https://example.com/content",
+            ):
+                with self.subTest(modality=modality, url=url):
+                    part = image_from_url(url, modality=modality)
+                    self.assertEqual(part.modality, modality)
+                    self.assertEqual(
+                        json.loads(gen_ai_json_dumps(part))["modality"],
+                        str(modality),
+                    )
+
+    def test_image_from_url_percent_encoded_data_url(self):
+        part = image_from_url("data:image/svg+xml,%3Csvg%2F%3E")
+        self.assertIsInstance(part, BlobPart)
+        self.assertEqual(part.mime_type, "image/svg+xml")
+        self.assertEqual(part.content, b"<svg/>")
+
+    def test_image_from_url_percent_encoded_non_ascii_data_url(self):
+        part = image_from_url("data:text/plain,%C3%A9%E2%82%AC")
+        self.assertIsInstance(part, BlobPart)
+        self.assertEqual(part.content, "é€".encode())
+
+    # -- decode_base64 ---------------------------------------------------
+
+    def test_decode_base64_valid_returns_bytes(self):
+        self.assertEqual(decode_base64("QUJD"), b"ABC")
+
+    def test_decode_base64_valid_with_padding(self):
+        self.assertEqual(decode_base64("R0lGODlh"), b"GIF89a")
+
+    def test_decode_base64_strips_whitespace_and_newlines(self):
+        self.assertEqual(decode_base64("QU\nJD"), b"ABC")
+        self.assertEqual(decode_base64("  QUJD  "), b"ABC")
+        self.assertEqual(decode_base64("QU JD"), b"ABC")
+
+    def test_decode_base64_malformed_returns_none(self):
+        self.assertIsNone(decode_base64("not!valid!base64!"))
+        self.assertIsNone(decode_base64("@@@@"))
+        self.assertIsNone(decode_base64("****"))
+
+    def test_decode_base64_wrong_padding_returns_none(self):
+        # Correct base64 alphabet but invalid length/padding.
+        self.assertIsNone(decode_base64("QUJ"))
+        self.assertIsNone(decode_base64("QQ"))
+
+    def test_decode_base64_empty_returns_empty_bytes(self):
+        self.assertEqual(decode_base64(""), b"")
+
+    def test_decode_base64_real_image_round_trips(self):
+        self.assertEqual(decode_base64(_REAL_PNG_B64), _REAL_PNG_BYTES)
+
+    @patch.dict(
+        os.environ,
+        {"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "NO_CONTENT"},
+    )
+    def test_decode_base64_ignores_content_capture_env(self):
+        # Gating is the caller's responsibility, so the helper never reads the
+        # content-capture environment variable itself.
+        self.assertEqual(decode_base64("QUJD"), b"ABC")
+        self.assertEqual(decode_base64(_REAL_PNG_B64), _REAL_PNG_BYTES)
+
+    def test_image_from_url_real_png_data_uri_returns_blob(self):
+        part = image_from_url(f"data:image/png;base64,{_REAL_PNG_B64}")
+        self.assertIsInstance(part, BlobPart)
+        self.assertEqual(part.mime_type, "image/png")
+        self.assertEqual(part.content, _REAL_PNG_BYTES)
+
+    def test_image_from_url_real_png_truncated_base64_returns_none(self):
+        corrupted = _REAL_PNG_B64[:-4] + "!!!!"
+        part = image_from_url(f"data:image/png;base64,{corrupted}")
+        self.assertIsNone(part)
+
+
+class _SampleService:
+    def execute(self, task: str):
+        pass
+
+
+class TestArgumentBinding(unittest.TestCase):
+    def test_bind_arguments_positional_and_keyword(self):
+        def sample_func(
+            a: int, b: str, c: bool = False, *extra: int, **kw: str
+        ):
+            pass
+
+        bound = bind_arguments(
+            sample_func, (1, "foo"), {"c": True, "custom": "val"}
+        )
+        self.assertEqual(bound["a"], 1)
+        self.assertEqual(bound["b"], "foo")
+        self.assertEqual(bound["c"], True)
+        self.assertEqual(bound["kw"], {"custom": "val"})
+
+    def test_bind_arguments_with_defaults(self):
+        def sample_func(x: int, y: str = "default_y", z: bool = True):
+            pass
+
+        bound_without_defaults = bind_arguments(sample_func, (42,), {})
+        self.assertEqual(bound_without_defaults, {"x": 42})
+
+        bound_with_defaults = bind_arguments(
+            sample_func, (42,), {}, apply_defaults=True
+        )
+        self.assertEqual(
+            bound_with_defaults, {"x": 42, "y": "default_y", "z": True}
+        )
+
+    def test_bind_arguments_bound_method(self):
+        class Greeter:
+            def greet(self, name: str, greeting: str = "Hello"):
+                return f"{greeting}, {name}"
+
+        g = Greeter()
+        bound = bind_arguments(g.greet, ("Alice",), {})
+        self.assertNotIn("self", bound)
+        self.assertEqual(bound["name"], "Alice")
+
+        bound_kw = bind_arguments(
+            g.greet, (), {"name": "Bob", "greeting": "Hi"}
+        )
+        self.assertNotIn("self", bound_kw)
+        self.assertEqual(bound_kw["name"], "Bob")
+        self.assertEqual(bound_kw["greeting"], "Hi")
+
+    def test_bind_arguments_invalid_args_falls_back_to_kwargs(self):
+        def sample_func(x: int):
+            pass
+
+        # Passing too many positional arguments causes TypeError in bind_partial
+        bound = bind_arguments(sample_func, (1, 2, 3), {"extra": "kept"})
+        self.assertEqual(bound, {"extra": "kept"})
+
+    def test_get_argument_fast_path_in_kwargs(self):
+        def sample_func(user_id: str, session_id: str):
+            pass
+
+        val = get_argument(
+            "user_id", sample_func, ("pos_user",), {"user_id": "kw_user"}
+        )
+        self.assertEqual(val, "kw_user")
+
+    def test_get_argument_positional(self):
+        def sample_func(user_id: str, session_id: str = "default_sess"):
+            pass
+
+        val = get_argument("user_id", sample_func, ("pos_user",), {})
+        self.assertEqual(val, "pos_user")
+
+        val_sess = get_argument(
+            "session_id", sample_func, ("pos_user", "pos_sess"), {}
+        )
+        self.assertEqual(val_sess, "pos_sess")
+
+    def test_get_argument_default_value(self):
+        def sample_func(user_id: str):
+            pass
+
+        val = get_argument(
+            "missing", sample_func, ("pos_user",), {}, default="fallback"
+        )
+        self.assertEqual(val, "fallback")
+
+    def test_get_argument_with_apply_defaults(self):
+        def sample_func(user_id: str, background: bool = False):
+            pass
+
+        val_no_defaults = get_argument(
+            "background", sample_func, ("user1",), {}
+        )
+        self.assertIsNone(val_no_defaults)
+
+        val_with_defaults = get_argument(
+            "background", sample_func, ("user1",), {}, apply_defaults=True
+        )
+        self.assertEqual(val_with_defaults, False)
+
+    def test_get_signature_caching(self):
+        s1 = _SampleService()
+        s2 = _SampleService()
+
+        sig1 = get_signature(s1.execute)
+        sig2 = get_signature(s2.execute)
+        self.assertIs(sig1, sig2)
+        self.assertNotIn("self", sig1.parameters)
+
+        sig_unbound = get_signature(_SampleService.execute)
+        self.assertIn("self", sig_unbound.parameters)
+        self.assertIsNot(sig1, sig_unbound)
+
+        sig_fn1 = get_signature(decode_base64)
+        sig_fn2 = get_signature(decode_base64)
+        self.assertIs(sig_fn1, sig_fn2)
+
+    def test_get_signature_local_function_not_cached(self):
+        from observeinc.util.genai.utils import _cached_signature
+
+        def local_fn(x: int):
+            pass
+
+        info_before = _cached_signature.cache_info()
+        sig1 = get_signature(local_fn)
+        sig2 = get_signature(local_fn)
+        info_after = _cached_signature.cache_info()
+        self.assertEqual(info_before.misses, info_after.misses)
+        self.assertEqual(info_before.hits, info_after.hits)
+        self.assertEqual(sig1, sig2)
+
+    def test_get_signature_local_method_not_cached(self):
+        from observeinc.util.genai.utils import _cached_signature
+
+        class LocalService:
+            def execute(self, x: int):
+                pass
+
+        svc = LocalService()
+        info_before = _cached_signature.cache_info()
+        sig1 = get_signature(svc.execute)
+        sig2 = get_signature(svc.execute)
+        info_after = _cached_signature.cache_info()
+        self.assertEqual(info_before.misses, info_after.misses)
+        self.assertEqual(info_before.hits, info_after.hits)
+        self.assertEqual(sig1, sig2)
+
+    def test_cached_signature_lru_eviction(self):
+        from functools import lru_cache
+
+        from observeinc.util.genai.utils import _cached_signature
+
+        cached_fn = lru_cache(maxsize=2)(_cached_signature.__wrapped__)
+
+        def f1(a: int):
+            pass
+
+        def f2(b: int):
+            pass
+
+        def f3(c: int):
+            pass
+
+        cached_fn(f1, False)
+        cached_fn(f2, False)
+        self.assertEqual(cached_fn.cache_info().currsize, 2)
+
+        # Accessing f3 evicts f1
+        cached_fn(f3, False)
+        self.assertEqual(cached_fn.cache_info().currsize, 2)
+
+        # Accessing f2 is a hit
+        cached_fn(f2, False)
+        self.assertEqual(cached_fn.cache_info().hits, 1)
+
+        # Accessing f1 is a miss (was evicted)
+        cached_fn(f1, False)
+        self.assertEqual(cached_fn.cache_info().misses, 4)
+
+    def test_get_signature_unhashable_callable(self):
+        class UnhashableCallable:
+            __hash__ = None
+
+            def __call__(self, x: int):
+                pass
+
+        obj = UnhashableCallable()
+        sig = get_signature(obj)
+        self.assertIn("x", sig.parameters)
+
+    def test_get_argument_skips_binding_when_no_args_or_defaults(self):
+        def sample_func(user_id: str | None = None):
+            pass
+
+        with patch("observeinc.util.genai.utils.bind_arguments") as mock_bind:
+            val = get_argument(
+                "user_id",
+                sample_func,
+                (),
+                {"other": "val"},
+                default="fallback",
+            )
+            self.assertEqual(val, "fallback")
+            mock_bind.assert_not_called()
+
+
+class TestObjectToAnyValue(unittest.TestCase):
+    def test_primitives(self):
+        self.assertEqual(object_to_any_value("hello"), "hello")
+        self.assertEqual(object_to_any_value(""), "")
+        self.assertEqual(object_to_any_value(123), 123)
+        self.assertEqual(object_to_any_value(3.14), 3.14)
+        self.assertIs(object_to_any_value(True), True)
+        self.assertIs(object_to_any_value(False), False)
+        self.assertEqual(object_to_any_value(b"hello"), b"hello")
+        self.assertIsNone(object_to_any_value(None))
+
+    def test_rich_types(self):
+        class Status(Enum):
+            ACTIVE = "active"
+
+        dt = datetime(2026, 9, 30, 15, 0, 0, tzinfo=UTC)
+        self.assertEqual(object_to_any_value(dt), "2026-09-30T15:00:00+00:00")
+        u = UUID("12345678-1234-5678-1234-567812345678")
+        self.assertEqual(
+            object_to_any_value(u), "12345678-1234-5678-1234-567812345678"
+        )
+        self.assertEqual(object_to_any_value(Status.ACTIVE), "active")
+
+    def test_bytearray_copied_to_bytes(self):
+        raw = bytearray(b"hello")
+        sanitized = object_to_any_value(raw)
+        raw[0] = ord("j")
+        self.assertEqual(sanitized, b"hello")
+
+    def test_models(self):
+        @dataclass
+        class SampleData:
+            name: str
+            age: int
+
+        class FakePydantic:
+            def model_dump(self):
+                return {"field": "value", "sub": [1, 2]}
+
+        class FakeModel:
+            def to_dict(self):
+                return {"key": "val"}
+
+        self.assertEqual(
+            object_to_any_value(SampleData(name="Alice", age=30)),
+            {"name": "Alice", "age": 30},
+        )
+        self.assertEqual(
+            object_to_any_value(FakePydantic()),
+            {"field": "value", "sub": [1, 2]},
+        )
+        self.assertEqual(object_to_any_value(FakeModel()), {"key": "val"})
+
+    def test_plain_object_uses_dict(self):
+        class _Inner:
+            def __init__(self):
+                self.flag = True
+
+        class _Plain:
+            def __init__(self):
+                self.city = "Paris"
+                self.inner = _Inner()
+                self.bad = object()
+
+        self.assertEqual(
+            object_to_any_value(_Plain()),
+            {"city": "Paris", "inner": {"flag": True}},
+        )
+
+    def test_collections_prune_invalid_entries(self):
+        self.assertEqual(
+            object_to_any_value(
+                {
+                    "good": "data",
+                    "bad_val": object(),
+                    "callable_val": lambda: 1,
+                    "nested": {"num": 42, "bad": object()},
+                }
+            ),
+            {"good": "data", "nested": {"num": 42}},
+        )
+        self.assertEqual(
+            object_to_any_value(
+                [1, object(), "valid", lambda: None, [True, object()]]
+            ),
+            [1, "valid", [True]],
+        )
+
+    def test_set_converted_to_list(self):
+        sanitized = object_to_any_value({"b", "a", "c"})
+        self.assertIsInstance(sanitized, list)
+        self.assertEqual(set(cast(list[str], sanitized)), {"a", "b", "c"})
+
+    def test_circular_reference_omitted(self):
+        circular_list: list[object] = [1]
+        circular_list.append(circular_list)
+        self.assertEqual(object_to_any_value(circular_list), [1])
+
+        circular_map: dict[str, object] = {"a": 1}
+        circular_map["self"] = circular_map
+        self.assertEqual(object_to_any_value(circular_map), {"a": 1})
+
+    def test_shared_non_circular_reference_kept(self):
+        shared = {"x": 1}
+        self.assertEqual(
+            object_to_any_value([shared, shared]), [{"x": 1}, {"x": 1}]
+        )
+
+    @patch("observeinc.util.genai.utils._MAX_DEPTH", 3)
+    def test_deep_structure_truncated(self):
+        self.assertEqual(object_to_any_value([[[["deep"]]]]), [[[]]])
+
+    def test_generators_not_consumed(self):
+        def gen():
+            yield 1
+
+        generator = gen()
+        self.assertIsNone(object_to_any_value(generator))
+        self.assertEqual(list(generator), [1])
+
+    def test_custom_str_used_as_fallback(self):
+        self.assertEqual(object_to_any_value(Decimal("1.5")), "1.5")
+        self.assertEqual(
+            object_to_any_value({"path": PurePosixPath("/tmp/a")}),
+            {"path": "/tmp/a"},
+        )
+
+    def test_object_with_empty_dict_uses_str(self):
+        self.assertEqual(object_to_any_value(ValueError("boom")), "boom")
+
+    def test_private_attributes_skipped(self):
+        class Secret:
+            def __init__(self, value: str):
+                self._value = value
+
+            def __str__(self) -> str:
+                return "**********"
+
+        class Credentials:
+            def __init__(self):
+                self.user = "bob"
+                self.password = Secret("hunter2")
+                self._token = "t0k3n"
+
+        self.assertEqual(object_to_any_value(Secret("hunter2")), "**********")
+        self.assertEqual(
+            object_to_any_value(Credentials()),
+            {"user": "bob", "password": "**********"},
+        )
+
+    def test_dataclass_uncopyable_field_dropped(self):
+        @dataclass
+        class WithGenerator:
+            name: str
+            items: object
+
+        value = WithGenerator(name="a", items=(i for i in range(2)))
+        self.assertEqual(object_to_any_value(value), {"name": "a"})
+        self.assertEqual(list(cast(Any, value.items)), [0, 1])
+
+    def test_model_non_any_value_fields_converted(self):
+        class Model:
+            def model_dump(self):
+                return {"price": Decimal("1.5"), "data": b"abc"}
+
+        self.assertEqual(
+            object_to_any_value(Model()), {"price": "1.5", "data": b"abc"}
+        )
+
+    def test_unserializable_returns_none(self):
+        self.assertIsNone(object_to_any_value(object()))
+        self.assertIsNone(object_to_any_value(lambda: "bad"))
+        self.assertIsNone(object_to_any_value(int))
+        self.assertIsNone(object_to_any_value(float("nan")))
+        self.assertIsNone(object_to_any_value(float("inf")))
+        self.assertIsNone(object_to_any_value(float("-inf")))
+        self.assertIsNone(object_to_any_value({123: "bad_key"}))
+        self.assertIsNone(object_to_any_value({(1, 2): "bad_key"}))
+
+    def test_raising_objects_return_none(self):
+        class RaisingMapping(Mapping[str, object]):
+            def __getitem__(self, key: str) -> object:
+                raise RuntimeError("boom")
+
+            def __iter__(self):
+                return iter(["a"])
+
+            def __len__(self) -> int:
+                return 1
+
+        class RaisingDict:
+            @property
+            def __dict__(self):
+                raise RuntimeError("boom")
+
+        self.assertIsNone(object_to_any_value(RaisingMapping()))
+        self.assertIsNone(object_to_any_value(RaisingDict()))
+
+
+class TestToolArgumentsToAnyValue(unittest.TestCase):
+    def test_json_string_parsed(self):
+        self.assertEqual(
+            tool_arguments_to_any_value('{"city":"Paris"}'), {"city": "Paris"}
+        )
+
+    def test_non_json_string_kept(self):
+        self.assertEqual(tool_arguments_to_any_value("Paris"), "Paris")
+
+    def test_object_converted(self):
+        self.assertEqual(
+            tool_arguments_to_any_value({"when": date(2026, 1, 1)}),
+            {"when": "2026-01-01"},
+        )

@@ -1,0 +1,178 @@
+---
+applyTo: "instrumentation/**"
+---
+
+Review rules for PRs touching `instrumentation/**`. Flag violations with a link to the rule.
+
+## 0. Reviewer mindset
+
+Review as long-term maintainer.
+
+For new instrumentations, consult upstream library docs and judge:
+
+- Does the library already emit its own telemetry, making this instrumentation redundant?
+- Is the library used widely enough to warrant a package in this repo?
+- Does it avoid unbounded in-memory accumulation or other side-effects?
+
+For a new instrumentation, check whether the instrumented library has a *runtime* dependency on
+`opentelemetry-api` (or other `opentelemetry-*` packages) in its `pyproject.toml` / lockfile (a
+dev/test-only dependency doesn't count), or documents a first-party OpenTelemetry plugin. If so,
+flag the PR and link to the
+[When to add an instrumentation here](../../CONTRIBUTING.md#when-to-add-an-instrumentation-here)
+policy — the library may already be natively instrumented or ship a first-party plugin that we
+should not duplicate here.
+
+For changes to existing instrumentations: prefer back-compat. Break users only for a real reason;
+prefer opt-in or additive. Breaking changes need explicit justification in the PR.
+
+## 1. Maintenance commitment
+
+- New instrumentations require contributor commitment to long-term maintenance. See
+  [Expectations from contributors](../../CONTRIBUTING.md#expectations-from-contributors), the
+  general [instrumentation checklist](../../CONTRIBUTING.md#guideline-for-instrumentations), and
+  the GenAI-specific expectations in
+  [`CONTRIBUTING.md#guideline-for-genai-instrumentations`](../../CONTRIBUTING.md#guideline-for-genai-instrumentations).
+
+## 2. Telemetry and configuration via `opentelemetry-util-genai`
+
+- Spans, logs, metrics, and events must go through `opentelemetry-util-genai`. Direct use of
+  `Tracer`, `Meter`, `Logger`, or event APIs is not allowed.
+- `TelemetryHandler` must use the dotted instrumentation package path as
+  `instrumentation_scope_name` and its `__version__` as `instrumentation_scope_version` so spans,
+  metrics, and logs carry the instrumentation's own scope. `__package__` may be used when it
+  resolves to that exact path. The shared `TelemetryHandlerScopeTest` enforces both values. Flag
+  handlers built without them. `get_telemetry_handler()` is deprecated; flag new uses.
+- Content capture, hooks, and other cross-cutting configuration are owned by the util.
+  Instrumentations must not introduce their own env vars, settings, or hook interfaces.
+- Completion hook wiring must follow the util's contract (reference:
+  [`OpenAIInstrumentor`](../../instrumentation/opentelemetry-instrumentation-genai-openai/src/observeinc/instrumentation/genai/openai/__init__.py)):
+  `_instrument` resolves `kwargs.get("completion_hook") or load_completion_hook()` and passes it to
+  the `TelemetryHandler` (an explicit `instrument(completion_hook=…)` takes precedence over the
+  `OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK` env var). Flag instrumentations that define their own
+  hook interface, call `on_completion` directly, wrap the hook in `try/except`, drop the
+  `load_completion_hook()` fallback, or fail to thread `completion_hook` through `instrument()`.
+- Message content, prompts, and tool call arguments must only be set through the util's content
+  capture path — never as unconditional span/log attributes.
+- Adding attributes to invocations produced by the util is fine.
+- Flag captured request iterators that bypass `IteratorCapture`, eager consumption or replay,
+  wrapping unrelated arguments, capture when disabled, and snapshots taken before SDK consumption.
+  See [request property capture](../../AGENTS.md#capturing-properties-that-may-contain-iterators).
+- Streaming responses must be instrumented by subclassing the util's `SyncStreamWrapper` /
+  `AsyncStreamWrapper` (`observeinc.util.genai.stream`). Flag hand-rolled stream wrappers, and
+  invocation-backed wrappers that do not pass the invocation to `super().__init__(stream, invocation)`
+  or do not `invocation.suspend()` before the stream is returned. Flag an `_execution_context()`
+  override on an invocation-backed wrapper: the base wrapper already activates a suspended
+  invocation during reads, and an override bypasses that guard.
+- Instrumentation should not change what a call returns or when its work happens. Flag: work the SDK
+  didn't do (materializing a result early to build telemetry — stay lazy); a changed return type
+  (`isinstance`/`__class__` should still resolve to the original; `wrapt.ObjectProxy` is the usual
+  way); and replacement functions missing `@functools.wraps(original)`. Full transparency isn't
+  always reachable — prefer the least intrusive option that works.
+- If a capability is missing in `opentelemetry-util-genai`, land it in the util first.
+
+## 3. Operation scope
+
+Investigate the library's real API and apply the litmus tests in
+[`instrumentation/AGENTS.md`](../../instrumentation/AGENTS.md).
+Flag, with a link to the rule:
+
+- An operation the library delegates to another instrumentable library (e.g. a framework calling
+  `openai`/`anthropic`/`google-genai` under the hood) — it belongs to that library, not here.
+- An operation the library has no concept of: inference/embeddings unless the library is itself the
+  model-call boundary; `invoke_agent` unless it models agents; `invoke_workflow` unless it models
+  workflows/graphs/complex agents.
+
+## 4. Semantic conventions
+
+- Attributes, spans, events, and metrics must match the
+  [GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai/tree/main/docs/gen-ai).
+- Attribute names must come from the semconv attribute modules, not hardcoded strings. Use the
+  module matching the namespace under `opentelemetry.semconv` (e.g. `server_attributes`,
+  `error_attributes`, `http_attributes`, `db_attributes`, …). `gen_ai.*` attribute names must
+  come from `opentelemetry.semconv._incubating.attributes.gen_ai_attributes`.
+- For attributes with a well-known value set in semconv, use the generated enum from the same
+  module (e.g. `GenAiOutputTypeValues` for `gen_ai.output.type`) instead of string literals.
+- Flag `Any`, a dict, `TypedDict`, or other ad-hoc value built for an attribute that semconv models in
+  [`models.py`](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/non-normative/models.py)
+  (messages, tool definitions, system instructions, retrieval documents, …). These must be built
+  from the matching `observeinc.util.genai.types` dataclass.
+- Flag `GenericPart` usage. It is deprecated; content must map to a specific part type or be
+  dropped.
+- Flag a local workaround for a util type that cannot represent what the provider returns —
+  dropping the data, stuffing it into an unrelated field, or bypassing the type. The util type
+  must be extended instead.
+- If a signal is not in semconv, wait until semconv lands.
+
+## 5. Exception handling
+
+- When catching exceptions from the underlying library to record telemetry, always re-raise the
+  original exception unmodified.
+- Flag telemetry-finalizing handlers that catch `Exception` instead of `BaseException` to catch  `asyncio.CancelledError` and such.
+- Do not raise **new** exceptions in instrumentation/telemetry code.
+
+## 6. Tests
+
+- For every public API instrumented, cover sync/async variants when both exist.
+- Cover streaming and non-streaming variants when both exist.
+- Flag missing iterator tests for nested values, partial reads, errors, or file-backed content.
+- Cover happy path and error scenarios. For error scenarios, at minimum include: provider error /
+  endpoint unavailable, stream interrupted by network, stream closed early by the caller, and a
+  caller-side exception raised inside the `with …stream(…) as stream:` block before the stream is drained.
+- Use recorded VCR cassettes for provider calls. No live-key-only tests; skipping on missing key
+  is not acceptable.
+- Tests must verify exact attribute names **and value types**, checked against the semconv spec.
+- Test against oldest and latest supported library versions via `tests/requirements.{oldest,latest}.txt`
+  and `{oldest,latest}` `tox.ini` factors.
+- `tests/conftest.py` must consume the shared fixtures from `observeinc.test_util_genai`
+  by registering them as plugins. Always register the fixtures plugin; register the VCR plugin
+  too when the package's tests use VCR cassettes —
+  `pytest_plugins = ["observeinc.test_util_genai.fixtures", "observeinc.test_util_genai.vcr"]`
+  (drop the `vcr` entry for packages with no cassette-backed tests), importing scrub helpers from
+  `observeinc.test_util_genai.vcr` as needed. Do not re-implement in-memory provider/exporter
+  setup or the VCR pretty-print serializer locally.
+- When recording VCR cassettes, scrub account-identifying values in the conftest's
+  `vcr_config` (`filter_headers` for requests, `scrub_response_headers_overwrite` for
+  responses) before committing. Examples: `authorization`, `openai-organization`,
+  `openai-project`, `Set-Cookie`, and any response-body field tied to a real
+  account.
+- Conformance: packages ship `tests/conformance/<scenario>.py` modules (each
+  defining a subclass of
+  `observeinc.test_util_genai.conformance.Scenario` that sets
+  `expected_spans`, `expected_metrics`, and implements `run(...)`) and a
+  `tests/test_conformance.py` that runs them via
+  `observeinc.test_util_genai.conformance.run_conformance`.
+
+## 7. Examples
+
+New instrumentations must ship a minimal example under the package's `examples/`, with both a
+`manual/` and a `zero-code/` (auto-instrumentation) variant.
+
+## 8. README
+
+- Each package's `README.rst` is published as its PyPI long description. Flag PRs that make
+  user-visible changes to the public API, configuration (env vars, `instrument()` keyword
+  arguments), supported operations/span types, or examples without updating the package
+  `README.rst` to match.
+- README claims must be accurate — reject documented options, span types, or metrics the code does not actually emit.
+
+## 9. PR description
+
+- Cover which part of the GenAI semconv the change implements or follows (when applicable) and
+  how instrumentations should consume it.
+
+## 10. Package naming and versioning
+
+- Instrumentation packages must be named `opentelemetry-instrumentation-genai-{lib}` and import
+  as `observeinc.instrumentation.genai.{lib}` (`opentelemetry-instrumentation-google-genai`
+  is a pre-existing exception that keeps its historical name).
+- Versions use the OpenTelemetry beta versioning format `MAJOR.MINORbN` (e.g. `1.0b0`);
+  `version.py` carries a `.dev` suffix during development.
+
+## 11. Dependency versioning and compatibility
+
+- Reject dependency changes in `pyproject.toml` that unnecessarily pin versions to exact patch ranges (like `== x.y.z` or `~= x.y.z`).
+- Prefer ranges that allow minor updates (e.g., `~= x.y` or `>= x.y.z, < (x+1)`).
+- For OpenTelemetry-owned beta/pre-release packages (e.g., `opentelemetry-instrumentation`, `opentelemetry-semantic-conventions`, `opentelemetry-util-genai`), enforce the use of `>=` specifiers while pinning the upper boundary to the next major version (e.g., `>= 0.64b0, <1` for `0.x` packages, or `>= 1.0b0, <2` for `1.x` packages) instead of `~=`.
+
+
+See also [AGENTS.md](../../AGENTS.md) for general repo rules.

@@ -1,0 +1,1 @@
+Record the enclosing agent's `gen_ai.agent.name` on inference, embeddings, retrieval and fetch-response spans and their metrics, and on tools created without one. It travels on the OTel Context like the conversation id, and those handler factories accept an explicit `agent_name`.

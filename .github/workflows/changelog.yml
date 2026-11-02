@@ -1,0 +1,108 @@
+# This action requires that any PR targeting the main branch should add a
+# changelog fragment file in a .changelog/ directory under the affected
+# package. If a changelog entry is not required, add the "Skip Changelog"
+# label to disable this action.
+
+name: changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    runs-on: ubuntu-slim
+    if: >-
+      ${{
+        !contains(github.event.pull_request.labels.*.name, 'dependencies') &&
+        !contains(github.event.pull_request.labels.*.name, 'release') &&
+        !contains(github.event.pull_request.labels.*.name, 'Skip Changelog')
+      }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.base_ref || 'main' }}
+        # Checkout kept no credentials, but the full-depth checkout above
+        # already has the base branch.
+        run: git fetch . "refs/remotes/origin/${BASE_REF}"
+
+      - name: Ensure no direct changes to CHANGELOG.md
+        run: |
+          if [[ $(git diff --diff-filter=MD --name-only FETCH_HEAD -- '**/CHANGELOG.md') ]]
+          then
+            echo "CHANGELOG.md files should not be directly modified."
+            echo "Please add a changelog fragment file to the affected package's .changelog/ directory instead."
+            echo "See CONTRIBUTING.md for details."
+            echo ""
+            echo "Or add the \"Skip Changelog\" label if this job should be skipped."
+            false
+          fi
+
+      - name: Check for changelog fragment
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          fragments=$(git diff --diff-filter=A --name-only FETCH_HEAD -- '**/.changelog/*' | grep -v '/\.gitignore$' || true)
+          if [[ -z "$fragments" ]]; then
+            echo "No changelog fragment found for this PR."
+            echo ""
+            echo "Add a file named <package>/.changelog/${PR_NUMBER}.<type>"
+            echo "where <type> is one of: added, changed, deprecated, removed, fixed"
+            echo ""
+            echo "See CONTRIBUTING.md for details."
+            echo ""
+            echo "Or add the \"Skip Changelog\" label if this job should be skipped."
+            exit 1
+          fi
+          invalid=()
+          while IFS= read -r f; do
+            base=$(basename "$f")
+            # `+<name>.<type>` is for fork-only changes: towncrier renders those
+            # without a link, which is what we want since this repo's changelog
+            # links point at upstream PR numbers.
+            if [[ "$base" =~ ^\+[A-Za-z0-9._-]+\.(added|changed|deprecated|removed|fixed)$ ]]; then
+              continue
+            fi
+            if [[ ! "$base" =~ ^([0-9]+)\.(added|changed|deprecated|removed|fixed)$ ]]; then
+              invalid+=("$f (expected <PR_NUMBER>.<type> or +<name>.<type>; type one of added, changed, deprecated, removed, fixed)")
+              continue
+            fi
+            if [[ "${BASH_REMATCH[1]}" != "${PR_NUMBER}" ]]; then
+              invalid+=("$f (PR number ${BASH_REMATCH[1]} does not match this PR's number ${PR_NUMBER}; use +<name>.<type> for a fork-only change)")
+            fi
+          done <<< "$fragments"
+          if (( ${#invalid[@]} > 0 )); then
+            echo "Invalid changelog fragment(s):"
+            for msg in "${invalid[@]}"; do
+              echo "  $msg"
+            done
+            exit 1
+          fi
+          echo "Found changelog fragment(s):"
+          echo "$fragments"
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Preview changelogs
+        run: uvx --with tox-uv tox -e changelog-preview

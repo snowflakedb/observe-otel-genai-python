@@ -1,0 +1,7 @@
+Merge a call's final token counts field by field instead of replacing the
+mid-stream snapshot wholesale. Only `output_tokens` is guaranteed on a
+`message_delta`; the input and cache counters are conditional, so a delta
+carrying just the guaranteed field reported `gen_ai.usage.input_tokens` as zero
+and no cache counters at all, discarding a snapshot that held 42,500 input
+tokens, and recorded that zero on the token histogram. Anthropic's SDK stream
+accumulator merges these per field for the same reason.

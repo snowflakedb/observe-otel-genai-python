@@ -1,0 +1,5 @@
+Correct the documented values for
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. The module docstring
+advertised `true`, which is not one of the four modes and reads as
+`NO_CONTENT`, so anyone following it got no message content and only a log
+warning to explain why.

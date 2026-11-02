@@ -1,0 +1,1108 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import os
+import unittest
+from unittest.mock import patch
+
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import (
+    AgentInvocation,
+    LocalAgentInvocation,
+    RemoteAgentInvocation,
+)
+from observeinc.util.genai.types import (
+    ContentCapturingMode,
+    Error,
+    FunctionToolDefinition,
+    InputMessage,
+    OutputMessage,
+    TextPart,
+)
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.sdk.trace.sampling import Decision, SamplingResult
+from opentelemetry.semconv._incubating.attributes import (
+    gen_ai_attributes as GenAI,
+)
+from opentelemetry.semconv.attributes import server_attributes
+from opentelemetry.test.test_base import TestBase
+from opentelemetry.trace import INVALID_SPAN, SpanKind
+
+
+class TestLocalAgentInvocation(unittest.TestCase):  # pylint: disable=too-many-public-methods
+    def setUp(self):
+        self.span_exporter = InMemorySpanExporter()
+        self.tracer_provider = TracerProvider()
+        self.tracer_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        self.handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+
+    def test_start_stop_creates_span(self):
+        invocation = self.handler.invoke_local_agent(
+            request_model="gpt-4",
+            agent_name="Math Tutor",
+        )
+        assert isinstance(invocation, LocalAgentInvocation)
+        assert isinstance(invocation, AgentInvocation)
+        invocation.stop()
+
+        spans = self.span_exporter.get_finished_spans()
+        assert len(spans) == 1
+        span = spans[0]
+        assert span.name == "invoke_agent Math Tutor"
+        assert span.attributes[GenAI.GEN_AI_OPERATION_NAME] == "invoke_agent"
+        assert span.attributes[GenAI.GEN_AI_AGENT_NAME] == "Math Tutor"
+        assert span.attributes[GenAI.GEN_AI_REQUEST_MODEL] == "gpt-4"
+
+    def test_span_kind_internal(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.stop()
+        assert (
+            self.span_exporter.get_finished_spans()[0].kind
+            == SpanKind.INTERNAL
+        )
+
+    def test_no_server_attributes(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.stop()
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert server_attributes.SERVER_ADDRESS not in attrs
+        assert server_attributes.SERVER_PORT not in attrs
+
+    def test_conversation_id_on_span_but_not_metrics(self):
+        """conversation id is high cardinality, so it must stay off metrics."""
+        invocation = self.handler.invoke_local_agent(agent_name="Researcher")
+        invocation.conversation_id = "conv-456"
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_CONVERSATION_ID] == "conv-456"
+        assert (
+            GenAI.GEN_AI_CONVERSATION_ID
+            not in invocation._get_metric_attributes()
+        )
+
+    def test_no_conversation_id(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.stop()
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_CONVERSATION_ID not in attrs
+
+    def test_all_attributes(self):
+        invocation = self.handler.invoke_local_agent(
+            request_model="gpt-4",
+            agent_name="Full Agent",
+        )
+        invocation.agent_description = "A test agent"
+        invocation.conversation_id = "conv-456"
+        invocation.data_source_id = "ds-789"
+        invocation.output_type = "text"
+        invocation.temperature = 0.7
+        invocation.top_p = 0.9
+        invocation.frequency_penalty = 0.5
+        invocation.presence_penalty = 0.3
+        invocation.max_tokens = 1000
+        invocation.stop_sequences = ["END", "STOP"]
+        invocation.seed = 42
+        invocation.choice_count = 3
+        invocation.finish_reasons = ["stop"]
+        invocation.input_tokens = 100
+        invocation.output_tokens = 200
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_AGENT_NAME] == "Full Agent"
+        assert GenAI.GEN_AI_AGENT_ID not in attrs
+        assert attrs[GenAI.GEN_AI_AGENT_DESCRIPTION] == "A test agent"
+        assert GenAI.GEN_AI_AGENT_VERSION not in attrs
+        assert attrs[GenAI.GEN_AI_USAGE_INPUT_TOKENS] == 100
+        assert attrs[GenAI.GEN_AI_USAGE_OUTPUT_TOKENS] == 200
+        assert attrs[GenAI.GEN_AI_CONVERSATION_ID] == "conv-456"
+        assert attrs[GenAI.GEN_AI_DATA_SOURCE_ID] == "ds-789"
+        assert attrs[GenAI.GEN_AI_OUTPUT_TYPE] == "text"
+        assert attrs[GenAI.GEN_AI_REQUEST_TEMPERATURE] == 0.7
+        assert attrs[GenAI.GEN_AI_REQUEST_TOP_P] == 0.9
+        assert attrs[GenAI.GEN_AI_REQUEST_FREQUENCY_PENALTY] == 0.5
+        assert attrs[GenAI.GEN_AI_REQUEST_PRESENCE_PENALTY] == 0.3
+        assert attrs[GenAI.GEN_AI_REQUEST_MAX_TOKENS] == 1000
+        assert attrs[GenAI.GEN_AI_REQUEST_STOP_SEQUENCES] == ("END", "STOP")
+        assert attrs[GenAI.GEN_AI_REQUEST_SEED] == 42
+        assert attrs[GenAI.GEN_AI_REQUEST_CHOICE_COUNT] == 3
+        assert attrs[GenAI.GEN_AI_RESPONSE_FINISH_REASONS] == ("stop",)
+
+    def test_finish_reasons_multiple(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.finish_reasons = ["stop", "length"]
+        invocation.stop()
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_RESPONSE_FINISH_REASONS] == (
+            "stop",
+            "length",
+        )
+
+    def test_finish_reasons_empty_list_omitted(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.finish_reasons = []
+        invocation.stop()
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_RESPONSE_MODEL not in attrs
+        assert GenAI.GEN_AI_RESPONSE_FINISH_REASONS not in attrs
+
+    def test_cache_token_attributes(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.input_tokens = 100
+        invocation.cache_creation_input_tokens = 25
+        invocation.cache_read_input_tokens = 50
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_USAGE_INPUT_TOKENS] == 100
+        assert "gen_ai.usage.cache_write.input_tokens" not in attrs
+        assert "gen_ai.usage.cache_creation.input_tokens" not in attrs
+        assert GenAI.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS not in attrs
+
+    def test_fail_sets_error_status(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.fail(RuntimeError("agent crashed"))
+
+        span = self.span_exporter.get_finished_spans()[0]
+        assert span.status.description is None
+        assert span.attributes.get("error.type") == "RuntimeError"
+
+    def test_context_manager_success(self):
+        with self.handler.invoke_local_agent(
+            request_model="gpt-4", agent_name="CM Agent"
+        ) as inv:
+            inv.input_tokens = 10
+            inv.output_tokens = 20
+
+        assert (
+            self.span_exporter.get_finished_spans()[0].name
+            == "invoke_agent CM Agent"
+        )
+
+    def test_context_manager_error(self):
+        with self.assertRaises(ValueError):
+            with self.handler.invoke_local_agent():
+                raise ValueError("test error")
+
+        assert (
+            self.span_exporter.get_finished_spans()[0].attributes.get(
+                "error.type"
+            )
+            == "ValueError"
+        )
+
+    def test_context_manager_default_invocation(self):
+        with self.handler.invoke_local_agent(agent_name="Dynamic Agent"):
+            pass
+        assert len(self.span_exporter.get_finished_spans()) == 1
+
+    def test_default_values(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.stop()
+        assert isinstance(invocation, LocalAgentInvocation)
+        assert isinstance(invocation, AgentInvocation)
+        assert invocation._operation_name == "invoke_agent"
+        assert invocation.agent_name is None
+        assert invocation._request_model is None
+        assert not invocation.input_messages
+        assert not invocation.output_messages
+        assert invocation.tool_definitions is None
+        assert invocation.span is not INVALID_SPAN
+        assert not invocation.attributes
+        assert not hasattr(invocation, "agent_id")
+        assert not hasattr(invocation, "agent_version")
+        assert not hasattr(invocation, "previous_response_id")
+        assert not hasattr(invocation, "cache_write_input_tokens")
+        assert not hasattr(invocation, "cache_read_input_tokens")
+
+    def test_with_messages(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.input_messages = [
+            InputMessage(role="user", parts=[TextPart(content="Hello")])
+        ]
+        invocation.output_messages = [
+            OutputMessage(
+                role="assistant",
+                parts=[TextPart(content="Hi there!")],
+                finish_reason="stop",
+            )
+        ]
+        invocation.stop()
+        assert len(invocation.input_messages) == 1
+        assert invocation.input_messages[0].role == "user"
+
+    def test_custom_attributes(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.attributes["custom.key"] = "custom_value"
+        invocation.stop()
+        spans = self.span_exporter.get_finished_spans()
+        assert spans[0].attributes["custom.key"] == "custom_value"
+
+    def test_tool_definitions_type(self):
+        tool = FunctionToolDefinition(
+            name="get_weather",
+            description="Get the weather",
+            parameters={"type": "object", "properties": {}},
+        )
+        invocation = self.handler.invoke_local_agent()
+        invocation.tool_definitions = [tool]
+        invocation.stop()
+        assert len(invocation.tool_definitions) == 1
+        assert invocation.tool_definitions[0].name == "get_weather"
+        assert invocation.tool_definitions[0].type == "function"
+
+    def test_default_lists_are_independent(self):
+        inv1 = self.handler.invoke_local_agent()
+        inv2 = self.handler.invoke_local_agent()
+        inv1.input_messages.append(InputMessage(role="user", parts=[]))
+        assert len(inv2.input_messages) == 0
+        inv2.stop()
+        inv1.stop()
+
+    def test_default_attributes_are_independent(self):
+        inv1 = self.handler.invoke_local_agent()
+        inv2 = self.handler.invoke_local_agent()
+        inv1.attributes["foo"] = "bar"
+        assert "foo" not in inv2.attributes
+        inv2.stop()
+        inv1.stop()
+
+    def test_agent_name_passed_at_construction(self):
+        invocation = self.handler.invoke_local_agent(
+            agent_name="Constructor Agent"
+        )
+        invocation.stop()
+        assert invocation.agent_name == "Constructor Agent"
+        span = self.span_exporter.get_finished_spans()[0]
+        assert span.name == "invoke_agent Constructor Agent"
+        assert span.attributes[GenAI.GEN_AI_AGENT_NAME] == "Constructor Agent"
+
+    def test_property_delegation_to_data(self):
+        from observeinc.util.genai._agent_invocation import AgentData
+
+        inv = self.handler.invoke_local_agent(
+            agent_name="Delegation Agent", request_model="gpt-4o"
+        )
+        self.assertIsInstance(inv._data, AgentData)
+        self.assertEqual(inv._data.agent_name, "Delegation Agent")
+        self.assertEqual(inv.agent_name, "Delegation Agent")
+        self.assertEqual(inv._data.request_model, "gpt-4o")
+        self.assertEqual(inv.request_model, "gpt-4o")
+
+        inv.agent_description = "A delegated agent"
+        self.assertEqual(inv._data.agent_description, "A delegated agent")
+
+        inv.temperature = 0.5
+        self.assertEqual(inv._data.request_temperature, 0.5)
+
+        inv.input_tokens = 50
+        inv.output_tokens = 100
+        self.assertEqual(inv._data.usage_input_tokens, 50)
+        self.assertEqual(inv._data.usage_output_tokens, 100)
+        inv.stop()
+
+    def test_agent_name_at_construction_available_to_sampler(self):
+        captured_attributes = {}
+
+        class AttributeCapturingSampler:  # pylint: disable=no-self-use
+            def should_sample(
+                self,
+                parent_context,
+                trace_id,
+                name,
+                kind=None,
+                attributes=None,
+                links=None,
+            ):
+                captured_attributes.update(attributes or {})
+                return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes)
+
+            def get_description(self):
+                return "AttributeCapturingSampler"
+
+        sampler_provider = TracerProvider(sampler=AttributeCapturingSampler())
+        sampler_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        handler = TelemetryHandler(tracer_provider=sampler_provider)
+
+        invocation = handler.invoke_local_agent(agent_name="Sampler Agent")
+        invocation.stop()
+
+        assert captured_attributes[GenAI.GEN_AI_AGENT_NAME] == "Sampler Agent"
+
+    def test_agent_name_omitted_not_in_sampler_attributes(self):
+        captured_attributes = {}
+
+        class AttributeCapturingSampler:  # pylint: disable=no-self-use
+            def should_sample(
+                self,
+                parent_context,
+                trace_id,
+                name,
+                kind=None,
+                attributes=None,
+                links=None,
+            ):
+                captured_attributes.update(attributes or {})
+                return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes)
+
+            def get_description(self):
+                return "AttributeCapturingSampler"
+
+        sampler_provider = TracerProvider(sampler=AttributeCapturingSampler())
+        sampler_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        handler = TelemetryHandler(tracer_provider=sampler_provider)
+
+        invocation = handler.invoke_local_agent()
+        invocation.stop()
+
+        assert GenAI.GEN_AI_AGENT_NAME not in captured_attributes
+
+    def test_agent_with_explicit_context(self):
+        parent_inv = self.handler.invoke_local_agent(agent_name="parent_agent")
+        parent_inv.stop()
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            child_inv = self.handler.invoke_local_agent(
+                agent_name="child_agent", context=parent_inv.context
+            )
+            child_inv.stop()
+
+        spans = self.span_exporter.get_finished_spans()
+        child_span = next(
+            s
+            for s in spans
+            if s.attributes.get(GenAI.GEN_AI_AGENT_NAME) == "child_agent"
+        )
+        parent_span = next(
+            s
+            for s in spans
+            if s.attributes.get(GenAI.GEN_AI_AGENT_NAME) == "parent_agent"
+        )
+        assert child_span.parent.span_id == parent_span.context.span_id
+        assert (
+            child_span.parent.span_id
+            != ambient_span.get_span_context().span_id
+        )
+        assert child_span.context.trace_id == parent_span.context.trace_id
+
+    def test_agent_with_attach_to_context_false(self):
+        from opentelemetry.trace import get_current_span
+
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            inv = self.handler.invoke_local_agent(
+                agent_name="detached_agent", _attach_to_context=False
+            )
+            assert get_current_span() == ambient_span
+            inv.stop()
+            assert get_current_span() == ambient_span
+
+        spans = self.span_exporter.get_finished_spans()
+        detached_span = next(
+            s
+            for s in spans
+            if s.attributes.get(GenAI.GEN_AI_AGENT_NAME) == "detached_agent"
+        )
+        assert detached_span.parent is not None
+        assert (
+            detached_span.parent.span_id
+            == ambient_span.get_span_context().span_id
+        )
+
+
+class TestAgentInvocationContent(unittest.TestCase):
+    def setUp(self):
+        self.span_exporter = InMemorySpanExporter()
+        self.tracer_provider = TracerProvider()
+        self.tracer_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        self.handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+
+    @patch(
+        "observeinc.util.genai.handler.get_content_capturing_mode",
+        return_value=ContentCapturingMode.SPAN_AND_EVENT,
+    )
+    def test_system_instruction_on_span(self, _mock_cap):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        invocation = handler.invoke_local_agent()
+        invocation.system_instruction = [
+            TextPart(content="You are a helpful assistant."),
+        ]
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_SYSTEM_INSTRUCTIONS in attrs
+
+    @patch(
+        "observeinc.util.genai.handler.get_content_capturing_mode",
+        return_value=ContentCapturingMode.SPAN_AND_EVENT,
+    )
+    def test_tool_definitions_on_span(self, _mock_cap):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        tool = FunctionToolDefinition(
+            name="get_weather",
+            description="Get the weather",
+            parameters={"type": "object", "properties": {}},
+        )
+        invocation = handler.invoke_local_agent()
+        invocation.tool_definitions = [tool]
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_TOOL_DEFINITIONS in attrs
+
+    @patch(
+        "observeinc.util.genai.handler.get_content_capturing_mode",
+        return_value=ContentCapturingMode.NO_CONTENT,
+    )
+    def test_tool_definitions_omitted_without_content_capture(self, _mock_cap):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        tool = FunctionToolDefinition(
+            name="get_weather",
+            description="Get the weather",
+            parameters={"type": "object", "properties": {}},
+        )
+        invocation = handler.invoke_local_agent()
+        invocation.tool_definitions = [tool]
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_TOOL_DEFINITIONS not in attrs
+
+    @patch(
+        "observeinc.util.genai.handler.get_content_capturing_mode",
+        return_value=ContentCapturingMode.SPAN_AND_EVENT,
+    )
+    def test_messages_on_span(self, _mock_cap):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        invocation = handler.invoke_local_agent()
+        invocation.input_messages = [
+            InputMessage(role="user", parts=[TextPart(content="Hello")])
+        ]
+        invocation.output_messages = [
+            OutputMessage(
+                role="assistant",
+                parts=[TextPart(content="Hi!")],
+                finish_reason="stop",
+            )
+        ]
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_INPUT_MESSAGES in attrs
+        assert GenAI.GEN_AI_OUTPUT_MESSAGES in attrs
+
+    def test_content_not_on_span_by_default(self):
+        invocation = self.handler.invoke_local_agent()
+        invocation.system_instruction = [
+            TextPart(content="You are a helpful assistant."),
+        ]
+        invocation.input_messages = [
+            InputMessage(role="user", parts=[TextPart(content="Hello")])
+        ]
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert GenAI.GEN_AI_SYSTEM_INSTRUCTIONS not in attrs
+        assert GenAI.GEN_AI_INPUT_MESSAGES not in attrs
+
+    @patch.dict(
+        os.environ,
+        {OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "EVENT_ONLY"},
+    )
+    def test_messages_omitted_from_span_in_event_only_mode(self):
+        handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+        invocation = handler.invoke_local_agent()
+        assert invocation.should_capture_content is True
+        invocation.system_instruction = [
+            TextPart(content="You are a helpful assistant."),
+        ]
+        invocation.input_messages = [
+            InputMessage(role="user", parts=[TextPart(content="Hello")])
+        ]
+        invocation.output_messages = [
+            OutputMessage(
+                role="assistant",
+                parts=[TextPart(content="Hi!")],
+                finish_reason="stop",
+            )
+        ]
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes or {}
+        assert GenAI.GEN_AI_SYSTEM_INSTRUCTIONS not in attrs
+        assert GenAI.GEN_AI_INPUT_MESSAGES not in attrs
+        assert GenAI.GEN_AI_OUTPUT_MESSAGES not in attrs
+
+
+class TestRemoteAgentInvocation(unittest.TestCase):
+    def setUp(self):
+        self.span_exporter = InMemorySpanExporter()
+        self.tracer_provider = TracerProvider()
+        self.tracer_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        self.handler = TelemetryHandler(tracer_provider=self.tracer_provider)
+
+    def test_span_kind_client(self):
+        invocation = self.handler.invoke_remote_agent("openai")
+        assert isinstance(invocation, RemoteAgentInvocation)
+        assert isinstance(invocation, AgentInvocation)
+        invocation.stop()
+        assert (
+            self.span_exporter.get_finished_spans()[0].kind == SpanKind.CLIENT
+        )
+
+    def test_default_values(self):
+        invocation = self.handler.invoke_remote_agent("openai")
+        invocation.stop()
+        assert isinstance(invocation, RemoteAgentInvocation)
+        assert isinstance(invocation, AgentInvocation)
+        assert invocation._operation_name == "invoke_agent"
+        assert invocation.agent_name is None
+        assert invocation._request_model is None
+        assert invocation.agent_id is None
+        assert invocation.agent_version is None
+        assert invocation.previous_response_id is None
+        assert invocation.cache_write_input_tokens is None
+        assert invocation.cache_creation_input_tokens is None
+        assert invocation.cache_read_input_tokens is None
+        assert not invocation.input_messages
+        assert not invocation.output_messages
+        assert invocation.tool_definitions is None
+        assert invocation.span is not INVALID_SPAN
+        assert not invocation.attributes
+
+    def test_agent_id_and_version(self):
+        invocation = self.handler.invoke_remote_agent("openai")
+        invocation.agent_id = "agent-999"
+        invocation.agent_version = "2.0.0"
+        invocation.stop()
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_AGENT_ID] == "agent-999"
+        assert attrs[GenAI.GEN_AI_AGENT_VERSION] == "2.0.0"
+
+    def test_cache_token_attributes(self):
+        invocation = self.handler.invoke_remote_agent("openai")
+        invocation.input_tokens = 100
+        invocation.cache_creation_input_tokens = 25
+        invocation.cache_read_input_tokens = 50
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_USAGE_INPUT_TOKENS] == 100
+        assert attrs["gen_ai.usage.cache_write.input_tokens"] == 25
+        assert attrs[GenAI.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] == 50
+
+    def test_server_attributes(self):
+        invocation = self.handler.invoke_remote_agent(
+            "openai",
+            server_address="api.openai.com",
+            server_port=443,
+        )
+        invocation.stop()
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[server_attributes.SERVER_ADDRESS] == "api.openai.com"
+        assert attrs[server_attributes.SERVER_PORT] == 443
+
+    def test_all_attributes(self):
+        invocation = self.handler.invoke_remote_agent(
+            "openai",
+            request_model="gpt-4",
+            server_address="api.openai.com",
+            server_port=443,
+            agent_name="Remote Agent",
+        )
+        invocation.agent_id = "agent-123"
+        invocation.agent_description = "A remote test agent"
+        invocation.agent_version = "1.0.0"
+        invocation.previous_response_id = "resp_123"
+        invocation.input_tokens = 100
+        invocation.output_tokens = 200
+        invocation.cache_write_input_tokens = 30
+        invocation.cache_read_input_tokens = 15
+        invocation.stop()
+
+        attrs = self.span_exporter.get_finished_spans()[0].attributes
+        assert attrs[GenAI.GEN_AI_AGENT_NAME] == "Remote Agent"
+        assert attrs[GenAI.GEN_AI_AGENT_ID] == "agent-123"
+        assert attrs[GenAI.GEN_AI_AGENT_DESCRIPTION] == "A remote test agent"
+        assert attrs[GenAI.GEN_AI_AGENT_VERSION] == "1.0.0"
+        assert attrs["gen_ai.request.previous_response.id"] == "resp_123"
+        assert attrs[GenAI.GEN_AI_USAGE_INPUT_TOKENS] == 100
+        assert attrs[GenAI.GEN_AI_USAGE_OUTPUT_TOKENS] == 200
+        assert attrs["gen_ai.usage.cache_write.input_tokens"] == 30
+        assert attrs[GenAI.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] == 15
+        assert attrs[GenAI.GEN_AI_REQUEST_MODEL] == "gpt-4"
+
+    def test_property_delegation_to_data(self):
+        from observeinc.util.genai._agent_invocation import AgentData
+
+        inv = self.handler.invoke_remote_agent(
+            "openai",
+            request_model="gpt-4o",
+            server_address="api.openai.com",
+            server_port=443,
+            agent_name="RemoteDelegation",
+        )
+        self.assertIsInstance(inv._data, AgentData)
+        self.assertEqual(inv._data.provider_name, "openai")
+        self.assertEqual(inv.provider, "openai")
+        self.assertEqual(inv._data.request_model, "gpt-4o")
+        self.assertEqual(inv._data.server_address, "api.openai.com")
+        self.assertEqual(inv.server_address, "api.openai.com")
+        self.assertEqual(inv._data.server_port, 443)
+        self.assertEqual(inv.server_port, 443)
+        self.assertEqual(inv._data.agent_name, "RemoteDelegation")
+        self.assertEqual(inv.agent_name, "RemoteDelegation")
+
+        inv.agent_id = "agent-xyz"
+        self.assertEqual(inv._data.agent_id, "agent-xyz")
+
+        inv.agent_version = "2.0.0"
+        self.assertEqual(inv._data.agent_version, "2.0.0")
+
+        inv.previous_response_id = "prev-resp-1"
+        self.assertEqual(inv._data.request_previous_response_id, "prev-resp-1")
+
+        inv.cache_write_input_tokens = 10
+        inv.cache_read_input_tokens = 20
+        self.assertEqual(inv._data.usage_cache_write_input_tokens, 10)
+        self.assertEqual(inv._data.usage_cache_read_input_tokens, 20)
+        inv.stop()
+
+    def test_fail_sets_error_status(self):
+        invocation = self.handler.invoke_remote_agent("openai")
+        invocation.fail(RuntimeError("remote agent crashed"))
+
+        span = self.span_exporter.get_finished_spans()[0]
+        assert span.status.description is None
+        assert span.attributes.get("error.type") == "RuntimeError"
+
+    def test_context_manager_success(self):
+        with self.handler.invoke_remote_agent(
+            "openai",
+            request_model="gpt-4",
+            server_address="api.openai.com",
+            agent_name="CM Remote Agent",
+        ) as _inv:
+            pass
+
+        span = self.span_exporter.get_finished_spans()[0]
+        assert span.name == "invoke_agent CM Remote Agent"
+        assert span.kind == SpanKind.CLIENT
+
+    def test_context_manager_error(self):
+        with self.assertRaises(ValueError):
+            with self.handler.invoke_remote_agent("openai"):
+                raise ValueError("remote error")
+
+        assert (
+            self.span_exporter.get_finished_spans()[0].attributes.get(
+                "error.type"
+            )
+            == "ValueError"
+        )
+
+    def test_start_invoke_agent_passes_sampling_attributes_at_span_creation(
+        self,
+    ):
+        """Verify that sampling-relevant attributes are available at start_span() time for agent invocations."""
+        captured_attributes = {}
+
+        class AttributeCapturingSampler:  # pylint: disable=no-self-use
+            def should_sample(
+                self,
+                parent_context,
+                trace_id,
+                name,
+                kind=None,
+                attributes=None,
+                links=None,
+            ):
+                captured_attributes.update(attributes or {})
+                return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes)
+
+            def get_description(self):
+                return "AttributeCapturingSampler"
+
+        sampler_provider = TracerProvider(sampler=AttributeCapturingSampler())
+        sampler_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        handler = TelemetryHandler(tracer_provider=sampler_provider)
+
+        invocation = handler.invoke_remote_agent(
+            "test-provider",
+            request_model="agent-model",
+            agent_name="Math Tutor",
+            server_address="agent.example.com",
+            server_port=8080,
+        )
+        invocation.stop()
+
+        assert (
+            captured_attributes[GenAI.GEN_AI_OPERATION_NAME] == "invoke_agent"
+        )
+        assert (
+            captured_attributes[GenAI.GEN_AI_PROVIDER_NAME] == "test-provider"
+        )
+        assert captured_attributes[GenAI.GEN_AI_REQUEST_MODEL] == "agent-model"
+        assert captured_attributes[GenAI.GEN_AI_AGENT_NAME] == "Math Tutor"
+        assert (
+            captured_attributes[server_attributes.SERVER_ADDRESS]
+            == "agent.example.com"
+        )
+        assert captured_attributes[server_attributes.SERVER_PORT] == 8080
+
+    def test_remote_agent_with_explicit_context(self):
+        parent_inv = self.handler.invoke_remote_agent(
+            "test-provider", agent_name="parent_remote"
+        )
+        parent_inv.stop()
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            child_inv = self.handler.invoke_remote_agent(
+                "test-provider",
+                agent_name="child_remote",
+                context=parent_inv.context,
+            )
+            child_inv.stop()
+
+        spans = self.span_exporter.get_finished_spans()
+        child_span = next(
+            s
+            for s in spans
+            if s.attributes.get(GenAI.GEN_AI_AGENT_NAME) == "child_remote"
+        )
+        parent_span = next(
+            s
+            for s in spans
+            if s.attributes.get(GenAI.GEN_AI_AGENT_NAME) == "parent_remote"
+        )
+        assert child_span.parent.span_id == parent_span.context.span_id
+        assert (
+            child_span.parent.span_id
+            != ambient_span.get_span_context().span_id
+        )
+        assert child_span.context.trace_id == parent_span.context.trace_id
+
+    def test_remote_agent_with_attach_to_context_false(self):
+        from opentelemetry.trace import get_current_span
+
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            inv = self.handler.invoke_remote_agent(
+                "test-provider",
+                agent_name="detached_remote",
+                _attach_to_context=False,
+            )
+            assert get_current_span() == ambient_span
+            inv.stop()
+            assert get_current_span() == ambient_span
+
+        spans = self.span_exporter.get_finished_spans()
+        detached_span = next(
+            s
+            for s in spans
+            if s.attributes.get(GenAI.GEN_AI_AGENT_NAME) == "detached_remote"
+        )
+        assert detached_span.parent is not None
+        assert (
+            detached_span.parent.span_id
+            == ambient_span.get_span_context().span_id
+        )
+
+
+class TestAgentInvocationMetrics(TestBase):
+    def test_local_agent_records_duration_and_tokens(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        with patch("timeit.default_timer", return_value=1000.0):
+            invocation = handler.invoke_local_agent(
+                request_model="model", agent_name="LocalAgent"
+            )
+
+        with patch("timeit.default_timer", return_value=1002.0):
+            invocation.stop()
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.invoke_agent.duration", metrics)
+        duration_points = metrics["gen_ai.invoke_agent.duration"]
+        self.assertEqual(len(duration_points), 1)
+        duration_point = duration_points[0]
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_AGENT_NAME], "LocalAgent"
+        )
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_REQUEST_MODEL], "model"
+        )
+        self.assertAlmostEqual(duration_point.sum, 2.0, places=3)
+
+    def test_remote_agent_records_duration_with_server_attrs(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_remote_agent(
+            "prov",
+            request_model="model",
+            agent_name="RemoteAgent",
+            server_address="agent.example.com",
+            server_port=443,
+        )
+        invocation.stop()
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.client.operation.duration", metrics)
+        duration_point = metrics["gen_ai.client.operation.duration"][0]
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_OPERATION_NAME],
+            "invoke_agent",
+        )
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_PROVIDER_NAME], "prov"
+        )
+        self.assertNotIn(GenAI.GEN_AI_AGENT_NAME, duration_point.attributes)
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_REQUEST_MODEL], "model"
+        )
+        self.assertEqual(
+            duration_point.attributes[server_attributes.SERVER_ADDRESS],
+            "agent.example.com",
+        )
+        self.assertEqual(
+            duration_point.attributes[server_attributes.SERVER_PORT], 443
+        )
+
+    def test_fail_agent_records_error_metric(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        with patch("timeit.default_timer", return_value=2000.0):
+            invocation = handler.invoke_local_agent(
+                request_model="err-model", agent_name="ErrAgent"
+            )
+
+        error = Error(message="boom", type="ValueError")
+        with patch("timeit.default_timer", return_value=2001.0):
+            invocation.fail(error)
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.invoke_agent.duration", metrics)
+        duration_point = metrics["gen_ai.invoke_agent.duration"][0]
+        self.assertEqual(
+            duration_point.attributes.get("error.type"), "ValueError"
+        )
+        self.assertEqual(
+            duration_point.attributes.get(GenAI.GEN_AI_AGENT_NAME), "ErrAgent"
+        )
+        self.assertAlmostEqual(duration_point.sum, 1.0, places=3)
+
+    def test_remote_agent_records_no_streaming_metrics(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        with handler.invoke_remote_agent("test-provider") as inv:
+            inv.record_stream_chunk()
+            inv.record_stream_chunk()
+        metrics = self._harvest_metrics()
+        self.assertNotIn(
+            "gen_ai.client.operation.time_to_first_chunk", metrics
+        )
+        self.assertNotIn(
+            "gen_ai.client.operation.time_per_output_chunk", metrics
+        )
+
+    def test_agent_records_inference_and_tool_calls(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_local_agent(
+            agent_name="SearchAgent",
+            request_model="gpt-4o",
+        )
+        invocation.inference_calls = 3
+        invocation.tool_calls = 5
+        invocation.stop()
+
+        metrics = self._harvest_metrics()
+
+        self.assertIn("gen_ai.invoke_agent.inference_calls", metrics)
+        inf_points = metrics["gen_ai.invoke_agent.inference_calls"]
+        self.assertEqual(len(inf_points), 1)
+        self.assertAlmostEqual(inf_points[0].sum, 3.0, places=3)
+        self.assertEqual(
+            inf_points[0].attributes[GenAI.GEN_AI_AGENT_NAME],
+            "SearchAgent",
+        )
+        self.assertEqual(
+            dict(inf_points[0].attributes),
+            {GenAI.GEN_AI_AGENT_NAME: "SearchAgent"},
+        )
+
+        self.assertIn("gen_ai.invoke_agent.tool_calls", metrics)
+        tool_points = metrics["gen_ai.invoke_agent.tool_calls"]
+        self.assertEqual(len(tool_points), 1)
+        self.assertAlmostEqual(tool_points[0].sum, 5.0, places=3)
+        self.assertEqual(
+            tool_points[0].attributes[GenAI.GEN_AI_AGENT_NAME],
+            "SearchAgent",
+        )
+        self.assertEqual(
+            dict(tool_points[0].attributes),
+            {GenAI.GEN_AI_AGENT_NAME: "SearchAgent"},
+        )
+
+    def test_agent_without_calls_does_not_record_call_metrics(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_local_agent(agent_name="MinimalAgent")
+        invocation.stop()
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.invoke_agent.duration", metrics)
+        self.assertNotIn("gen_ai.invoke_agent.inference_calls", metrics)
+        self.assertNotIn("gen_ai.invoke_agent.tool_calls", metrics)
+
+    def test_agent_records_zero_calls(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_local_agent(agent_name="ZeroAgent")
+        invocation.inference_calls = 0
+        invocation.tool_calls = 0
+        invocation.stop()
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.invoke_agent.inference_calls", metrics)
+        self.assertAlmostEqual(
+            metrics["gen_ai.invoke_agent.inference_calls"][0].sum,
+            0.0,
+            places=3,
+        )
+        self.assertIn("gen_ai.invoke_agent.tool_calls", metrics)
+        self.assertAlmostEqual(
+            metrics["gen_ai.invoke_agent.tool_calls"][0].sum,
+            0.0,
+            places=3,
+        )
+
+    def test_remote_agent_does_not_record_call_metrics(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_remote_agent(
+            provider="openai",
+            request_model="gpt-4o",
+            server_address="api.openai.com",
+            server_port=443,
+            agent_name="RemoteAgent",
+        )
+        invocation.stop()
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.client.operation.duration", metrics)
+        self.assertNotIn("gen_ai.invoke_agent.inference_calls", metrics)
+        self.assertNotIn("gen_ai.invoke_agent.tool_calls", metrics)
+
+    def test_remote_agent_does_not_expose_call_counts(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_remote_agent("openai")
+        invocation.stop()
+
+        self.assertFalse(hasattr(invocation, "inference_calls"))
+        self.assertFalse(hasattr(invocation, "tool_calls"))
+
+    def test_agent_call_metrics_use_semconv_boundaries(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_local_agent()
+        invocation.inference_calls = 3
+        invocation.tool_calls = 5
+        invocation.stop()
+
+        metrics = self._harvest_metrics()
+        for name in (
+            "gen_ai.invoke_agent.inference_calls",
+            "gen_ai.invoke_agent.tool_calls",
+        ):
+            with self.subTest(metric=name):
+                self.assertEqual(
+                    tuple(metrics[name][0].explicit_bounds),
+                    (1, 2, 4, 8, 16, 32, 64, 128),
+                )
+
+    def test_failed_agent_records_calls_without_error_type(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_local_agent(agent_name="FailingAgent")
+        invocation.inference_calls = 2
+        invocation.fail(Error(message="boom", type="ValueError"))
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.invoke_agent.inference_calls", metrics)
+        inf_point = metrics["gen_ai.invoke_agent.inference_calls"][0]
+        self.assertEqual(
+            dict(inf_point.attributes),
+            {GenAI.GEN_AI_AGENT_NAME: "FailingAgent"},
+        )
+        self.assertAlmostEqual(inf_point.sum, 2.0, places=3)
+        duration_point = metrics["gen_ai.invoke_agent.duration"][0]
+        self.assertEqual(
+            duration_point.attributes.get("error.type"), "ValueError"
+        )
+
+    def test_agent_name_omitted_from_metrics_when_none(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        invocation = handler.invoke_local_agent()
+        invocation.inference_calls = 1
+        invocation.stop()
+
+        metrics = self._harvest_metrics()
+        inf_point = metrics["gen_ai.invoke_agent.inference_calls"][0]
+        self.assertEqual(dict(inf_point.attributes), {})
+
+    def _harvest_metrics(self):
+        metrics = self.get_sorted_metrics()
+        metrics_by_name = {}
+        for metric in metrics or []:
+            points = metric.data.data_points or []
+            metrics_by_name.setdefault(metric.name, []).extend(points)
+        return metrics_by_name

@@ -1,0 +1,1 @@
+A run the caller stops before its result, by breaking out of the loop or calling `disconnect()`, is no longer marked as failed, and neither are the tools it left running.

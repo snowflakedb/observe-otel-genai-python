@@ -1,0 +1,398 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from unittest import TestCase
+from unittest.mock import patch
+
+import pytest
+
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import WorkflowInvocation
+from observeinc.util.genai.types import (
+    Error,
+    InputMessage,
+    OutputMessage,
+    TextPart,
+)
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.sdk.trace.sampling import Decision, SamplingResult
+from opentelemetry.semconv._incubating.attributes import (
+    gen_ai_attributes as GenAI,
+)
+from opentelemetry.test.test_base import TestBase
+from opentelemetry.trace import INVALID_SPAN, SpanKind
+from opentelemetry.trace.status import StatusCode
+
+
+class _WorkflowTestBase(TestCase):
+    """Shared setUp for workflow handler tests."""
+
+    def setUp(self) -> None:
+        self.span_exporter = InMemorySpanExporter()
+        self.tracer_provider = TracerProvider()
+        self.tracer_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        self.handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+        )
+
+    def _get_finished_spans(self):
+        return self.span_exporter.get_finished_spans()
+
+
+class TelemetryHandlerWorkflowTest(_WorkflowTestBase):
+    def test_workflow_creates_span(self) -> None:
+        invocation = self.handler.workflow(name="my_workflow")
+        self.assertIsNot(invocation.span, INVALID_SPAN)
+        invocation.stop()
+
+    def test_workflow_span_name(self) -> None:
+        invocation = self.handler.workflow(name="my_pipeline")
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].name, "invoke_workflow my_pipeline")
+
+    def test_workflow_span_name_without_name(self) -> None:
+        invocation = self.handler.workflow(name=None)
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].name, "invoke_workflow")
+
+    def test_workflow_conversation_id(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.conversation_id = "conv-456"
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(
+            spans[0].attributes[GenAI.GEN_AI_CONVERSATION_ID], "conv-456"
+        )
+
+    def test_workflow_without_conversation_id(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertNotIn(GenAI.GEN_AI_CONVERSATION_ID, spans[0].attributes)
+
+    def test_workflow_span_kind_is_internal(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].kind, SpanKind.INTERNAL)
+
+    def test_workflow_records_monotonic_start(self) -> None:
+        with patch("timeit.default_timer", return_value=500.0):
+            invocation = self.handler.workflow(name="wf")
+        self.assertEqual(invocation._monotonic_start_s, 500.0)
+        invocation.stop()
+
+    def test_workflow_sets_workflow_name_attribute(self) -> None:
+        invocation = self.handler.workflow(name="my_pipeline")
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        value = spans[0].attributes[GenAI.GEN_AI_WORKFLOW_NAME]
+        self.assertEqual(value, "my_pipeline")
+        self.assertIsInstance(value, str)
+
+    def test_workflow_without_name_omits_workflow_name_attribute(
+        self,
+    ) -> None:
+        invocation = self.handler.workflow(name=None)
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertNotIn(GenAI.GEN_AI_WORKFLOW_NAME, spans[0].attributes)
+
+    # ------------------------------------------------------------------
+    # stop_workflow
+    # ------------------------------------------------------------------
+
+    def test_stop_workflow_ends_span(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+
+    def test_stop_workflow_sets_operation_name_attribute(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(
+            spans[0].attributes[GenAI.GEN_AI_OPERATION_NAME],
+            "invoke_workflow",
+        )
+
+    def test_stop_workflow_sets_custom_attributes(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.attributes["custom.key"] = "custom_value"
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(spans[0].attributes["custom.key"], "custom_value")
+
+    def test_stop_workflow_returns_invocation(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.stop()
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+
+    def test_stop_workflow_sets_conversation_id(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.conversation_id = "wf-conv-99"
+        invocation.stop()
+
+        spans = self._get_finished_spans()
+        self.assertEqual(
+            spans[0].attributes[GenAI.GEN_AI_CONVERSATION_ID], "wf-conv-99"
+        )
+
+    # ------------------------------------------------------------------
+    # fail_workflow
+    # ------------------------------------------------------------------
+
+    def test_fail_workflow_sets_error_status(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        error = Error(message="something broke", type="RuntimeError")
+        invocation.fail(error)
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].status.status_code, StatusCode.ERROR)
+        self.assertIsNone(spans[0].status.description)
+
+    def test_fail_workflow_sets_error_type_attribute(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        error = Error(message="bad", type="ValueError")
+        invocation.fail(error)
+
+        spans = self._get_finished_spans()
+        self.assertEqual(spans[0].attributes["error.type"], "ValueError")
+
+    def test_fail_workflow_sets_operation_name_attribute(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        error = Error(message="fail", type="TypeError")
+        invocation.fail(error)
+
+        spans = self._get_finished_spans()
+        self.assertEqual(
+            spans[0].attributes[GenAI.GEN_AI_OPERATION_NAME],
+            "invoke_workflow",
+        )
+
+    def test_fail_workflow_ends_span(self) -> None:
+        invocation = self.handler.workflow(name="wf")
+        invocation.fail(Error(message="err", type="RuntimeError"))
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].status.status_code, StatusCode.ERROR)
+
+    def test_workflow_with_explicit_context(self) -> None:
+        parent_inv = self.handler.workflow("parent")
+        parent_inv.stop()
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            child_inv = self.handler.workflow(
+                "child", context=parent_inv.context
+            )
+            child_inv.stop()
+
+        spans = self._get_finished_spans()
+        child_span = next(
+            s for s in spans if s.name == "invoke_workflow child"
+        )
+        parent_span = next(
+            s for s in spans if s.name == "invoke_workflow parent"
+        )
+        self.assertEqual(
+            child_span.parent.span_id, parent_span.context.span_id
+        )
+        self.assertNotEqual(
+            child_span.parent.span_id, ambient_span.get_span_context().span_id
+        )
+        self.assertEqual(
+            child_span.context.trace_id, parent_span.context.trace_id
+        )
+
+    def test_finish_in_different_async_context_with_attach_to_context_false(
+        self,
+    ) -> None:
+        import asyncio
+        import logging
+
+        from opentelemetry.trace import get_current_span
+
+        tracer = self.tracer_provider.get_tracer(__name__)
+        with tracer.start_as_current_span("ambient") as ambient_span:
+            inv = self.handler.workflow("async_wf", _attach_to_context=False)
+            self.assertEqual(get_current_span(), ambient_span)
+
+            async def _finish_in_other_task():
+                inv.stop()
+
+            with patch.object(
+                logging.getLogger("opentelemetry.context"), "exception"
+            ) as mock_logger_exc:
+                asyncio.run(_finish_in_other_task())
+                mock_logger_exc.assert_not_called()
+
+            self.assertEqual(get_current_span(), ambient_span)
+
+
+class TelemetryHandlerWorkflowContextManagerTest(_WorkflowTestBase):
+    # ------------------------------------------------------------------
+    # workflow context manager
+    # ------------------------------------------------------------------
+
+    def test_workflow_context_manager_creates_and_ends_span(self) -> None:
+        with self.handler.workflow(name="ctx_wf") as inv:
+            self.assertIsNot(inv.span, INVALID_SPAN)
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].name, "invoke_workflow ctx_wf")
+
+    def test_workflow_context_manager_default_invocation(self) -> None:
+        with self.handler.workflow() as inv:
+            self.assertIsInstance(inv, WorkflowInvocation)
+            self.assertIsNone(inv._name)
+            self.assertEqual(inv._operation_name, "invoke_workflow")
+
+
+class TelemetryHandlerWorkflowSamplingTest(_WorkflowTestBase):
+    def test_workflow_passes_sampling_attributes_at_span_creation(
+        self,
+    ) -> None:
+        """Verify that sampling-relevant attributes are available at start_span() time for workflows."""
+        captured_attributes = {}
+
+        class AttributeCapturingSampler:  # pylint: disable=no-self-use
+            def should_sample(
+                self,
+                parent_context,
+                trace_id,
+                name,
+                kind=None,
+                attributes=None,
+                links=None,
+            ):
+                captured_attributes.update(attributes or {})
+                return SamplingResult(Decision.RECORD_AND_SAMPLE, attributes)
+
+            def get_description(self):
+                return "AttributeCapturingSampler"
+
+        sampler_provider = TracerProvider(sampler=AttributeCapturingSampler())
+        sampler_provider.add_span_processor(
+            SimpleSpanProcessor(self.span_exporter)
+        )
+        handler = TelemetryHandler(tracer_provider=sampler_provider)
+
+        invocation = handler.workflow(name="my-workflow")
+        invocation.stop()
+
+        self.assertEqual(
+            captured_attributes[GenAI.GEN_AI_OPERATION_NAME], "invoke_workflow"
+        )
+        self.assertEqual(
+            captured_attributes[GenAI.GEN_AI_WORKFLOW_NAME], "my-workflow"
+        )
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+
+    def test_workflow_context_manager_sets_attributes_on_span(self) -> None:
+        with self.handler.workflow("wf") as inv:
+            inv.attributes["my.attr"] = "hello"
+
+        spans = self._get_finished_spans()
+        self.assertEqual(spans[0].attributes["my.attr"], "hello")
+
+    def test_workflow_context_manager_reraises_exception(self) -> None:
+        with pytest.raises(ValueError, match="test error"):
+            with self.handler.workflow("wf"):
+                raise ValueError("test error")
+
+    def test_workflow_context_manager_marks_error_on_exception(self) -> None:
+        with pytest.raises(ValueError):
+            with self.handler.workflow("wf"):
+                raise ValueError("boom")
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].status.status_code, StatusCode.ERROR)
+        self.assertIsNone(spans[0].status.description)
+        self.assertEqual(spans[0].attributes["error.type"], "ValueError")
+
+    def test_workflow_context_manager_success_has_unset_status(self) -> None:
+        with self.handler.workflow("wf"):
+            pass
+
+        spans = self._get_finished_spans()
+        self.assertEqual(spans[0].status.status_code, StatusCode.UNSET)
+
+    def test_workflow_context_manager_with_messages(self) -> None:
+        inp = InputMessage(role="user", parts=[TextPart(content="hello")])
+        out = OutputMessage(
+            role="assistant",
+            parts=[TextPart(content="hi")],
+            finish_reason="stop",
+        )
+        with self.handler.workflow("msg_wf") as inv:
+            inv.input_messages = [inp]
+            inv.output_messages = [out]
+
+        spans = self._get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(
+            spans[0].attributes[GenAI.GEN_AI_OPERATION_NAME],
+            "invoke_workflow",
+        )
+
+
+class TestWorkflowInvocationMetrics(TestBase):
+    def _harvest_metrics(self):
+        metrics = self.get_sorted_metrics()
+        metrics_by_name = {}
+        for metric in metrics or []:
+            points = metric.data.data_points or []
+            metrics_by_name.setdefault(metric.name, []).extend(points)
+        return metrics_by_name
+
+    def test_workflow_records_duration(self) -> None:
+        handler = TelemetryHandler(
+            tracer_provider=self.tracer_provider,
+            meter_provider=self.meter_provider,
+        )
+        with patch("timeit.default_timer", return_value=1000.0):
+            invocation = handler.workflow(name="test-workflow")
+
+        with patch("timeit.default_timer", return_value=1002.0):
+            invocation.stop()
+
+        metrics = self._harvest_metrics()
+        self.assertIn("gen_ai.invoke_workflow.duration", metrics)
+        duration_points = metrics["gen_ai.invoke_workflow.duration"]
+        self.assertEqual(len(duration_points), 1)
+        duration_point = duration_points[0]
+        self.assertEqual(
+            duration_point.attributes[GenAI.GEN_AI_WORKFLOW_NAME],
+            "test-workflow",
+        )
+        self.assertAlmostEqual(duration_point.sum, 2.0, places=3)

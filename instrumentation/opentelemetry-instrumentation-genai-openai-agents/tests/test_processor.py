@@ -1,0 +1,392 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import gc
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from agents.tracing.span_data import (
+    AgentSpanData,
+    FunctionSpanData,
+    GenerationSpanData,
+    HandoffSpanData,
+    ResponseSpanData,
+)
+
+from observeinc.instrumentation.genai.openai_agents.processor import (
+    GenAITracingProcessor,
+)
+from observeinc.util.genai.environment_variables import (
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+)
+from observeinc.util.genai.handler import TelemetryHandler
+from observeinc.util.genai.invocation import ToolInvocation
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.trace import StatusCode
+
+
+class _Span:
+    """Minimal stand-in for agents-library Span (must be weakref-able)."""
+
+    def __init__(self, span_data: Any) -> None:
+        self.span_data = span_data
+        # Span objects in tests don't need a span_id since the processor
+        # keys its WeakKeyDictionary by the Span instance itself, but
+        # keep one around for parity with the real class.
+        self.span_id = f"span-{id(self)}"
+
+
+class _Trace:
+    """Minimal stand-in for agents-library Trace."""
+
+    def __init__(
+        self,
+        trace_id: str,
+        name: str,
+        group_id: str | None = None,
+    ) -> None:
+        self.trace_id = trace_id
+        self.name = name
+        self.group_id = group_id
+
+
+def _build_handler() -> MagicMock:
+    return MagicMock()
+
+
+def test_trace_start_end_creates_and_stops_workflow() -> None:
+    handler = _build_handler()
+    handler.workflow.return_value = MagicMock(attributes={})
+    processor = GenAITracingProcessor(handler, provider="openai")
+    trace = _Trace("trace-1", "Agent workflow")
+
+    processor.on_trace_start(trace)
+    handler.workflow.assert_called_once_with(
+        name="Agent workflow", conversation_id=None
+    )
+    workflow_invocation = handler.workflow.return_value
+    assert (
+        workflow_invocation.attributes["gen_ai.workflow.name"]
+        == "Agent workflow"
+    )
+
+    processor.on_trace_end(trace)
+    workflow_invocation.stop.assert_called_once_with()
+
+
+def test_trace_group_id_is_passed_as_conversation_id() -> None:
+    handler = _build_handler()
+    handler.workflow.return_value = MagicMock(attributes={})
+    processor = GenAITracingProcessor(handler, provider="openai")
+    trace = _Trace("trace-1", "Agent workflow", group_id="chat-thread-42")
+
+    processor.on_trace_start(trace)
+
+    handler.workflow.assert_called_once_with(
+        name="Agent workflow", conversation_id="chat-thread-42"
+    )
+
+
+def test_agent_span_creates_invoke_local_agent() -> None:
+    handler = _build_handler()
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(AgentSpanData(name="triage"))
+
+    processor.on_span_start(span)
+    handler.invoke_local_agent.assert_called_once_with(agent_name="triage")
+
+    processor.on_span_end(span)
+    handler.invoke_local_agent.return_value.stop.assert_called_once_with()
+
+
+def test_function_span_creates_tool_invocation() -> None:
+    handler = _build_handler()
+    handler.tool.return_value = MagicMock(
+        spec=ToolInvocation,
+        metric_attributes={},
+        should_capture_content=True,
+    )
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(
+        FunctionSpanData(
+            name="get_weather",
+            input=None,
+            output=None,
+        )
+    )
+
+    processor.on_span_start(span)
+    handler.tool.assert_called_once_with(
+        name="get_weather",
+        tool_type="function",
+    )
+    tool_invocation = handler.tool.return_value
+    assert "gen_ai.provider.name" not in tool_invocation.metric_attributes
+
+    # Input and output both get populated on the agents library span_data
+    # while the tool runs, i.e. after on_span_start; our on_span_end reads
+    # them.
+    span.span_data.input = '{"city":"BCN"}'
+    span.span_data.output = "sunny"
+    processor.on_span_end(span)
+    assert tool_invocation.arguments == {"city": "BCN"}
+    assert tool_invocation.tool_result == "sunny"
+    tool_invocation.stop.assert_called_once_with()
+
+
+def test_function_span_skips_content_when_capture_disabled() -> None:
+    handler = _build_handler()
+    original_arguments = object()
+    original_result = object()
+    handler.tool.return_value = MagicMock(
+        spec=ToolInvocation,
+        metric_attributes={},
+        should_capture_content=False,
+        arguments=original_arguments,
+        tool_result=original_result,
+    )
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(FunctionSpanData(name="get_weather", input=None, output=None))
+
+    processor.on_span_start(span)
+    span.span_data.input = '{"city":"BCN"}'
+    span.span_data.output = "sunny"
+    processor.on_span_end(span)
+
+    tool_invocation = handler.tool.return_value
+    assert tool_invocation.arguments is original_arguments
+    assert tool_invocation.tool_result is original_result
+    tool_invocation.stop.assert_called_once_with()
+
+
+def test_function_span_without_output_still_stops() -> None:
+    handler = _build_handler()
+    handler.tool.return_value = MagicMock(
+        spec=ToolInvocation,
+        metric_attributes={},
+        should_capture_content=True,
+    )
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(FunctionSpanData(name="noop", input=None, output=None))
+
+    processor.on_span_start(span)
+    processor.on_span_end(span)
+    tool_invocation = handler.tool.return_value
+    # tool_result stays as whatever MagicMock default; what matters is
+    # we didn't crash and we stopped.
+    tool_invocation.stop.assert_called_once_with()
+
+
+def test_generation_and_response_spans_ignored() -> None:
+    handler = _build_handler()
+    processor = GenAITracingProcessor(handler, provider="openai")
+
+    for span_data in (
+        GenerationSpanData(model="gpt-4o-mini"),
+        ResponseSpanData(),
+    ):
+        span = _Span(span_data)
+        processor.on_span_start(span)
+        processor.on_span_end(span)
+
+    handler.invoke_local_agent.assert_not_called()
+    handler.tool.assert_not_called()
+    handler.inference.assert_not_called()
+
+
+def test_handoff_emits_raw_span() -> None:
+    handler = _build_handler()
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(
+        HandoffSpanData(from_agent="triage", to_agent="weather_specialist")
+    )
+    # Doesn't raise; the actual OTel span emission is verified end-to-end
+    # by the conformance scenario.
+    processor.on_span_start(span)
+    processor.on_span_end(span)
+
+
+def test_shutdown_stops_open_invocations() -> None:
+    handler = _build_handler()
+    handler.tool.return_value = MagicMock(
+        spec=ToolInvocation, metric_attributes={}
+    )
+    processor = GenAITracingProcessor(handler, provider="openai")
+    # Hold strong references to the trace / span objects so the
+    # WeakKeyDictionary entries survive until shutdown runs.
+    trace = _Trace("t", "wf")
+    agent_span = _Span(AgentSpanData(name="agent"))
+    tool_span = _Span(
+        FunctionSpanData(name="get_weather", input=None, output=None)
+    )
+    processor.on_trace_start(trace)
+    processor.on_span_start(agent_span)
+    processor.on_span_start(tool_span)
+    assert len(processor._invocations) == 3
+
+    processor.shutdown()
+
+    handler.workflow.return_value.stop.assert_called_once_with()
+    handler.invoke_local_agent.return_value.stop.assert_called_once_with()
+    handler.tool.return_value.stop.assert_called_once_with()
+    assert len(processor._invocations) == 0
+
+
+def test_tool_content_captured_from_span_end(
+    tracer_provider: TracerProvider,
+    span_exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Arguments the agents library fills in mid-span still land on the span."""
+    monkeypatch.setenv(
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, "SPAN_ONLY"
+    )
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(FunctionSpanData(name="get_weather", input=None, output=None))
+
+    processor.on_span_start(span)
+    span.span_data.input = '{"city":"Barcelona"}'
+    span.span_data.output = "sunny"
+    processor.on_span_end(span)
+
+    (tool_span,) = span_exporter.get_finished_spans()
+    assert tool_span.attributes is not None
+    assert (
+        tool_span.attributes["gen_ai.tool.call.arguments"]
+        == '{"city":"Barcelona"}'
+    )
+    assert tool_span.attributes["gen_ai.tool.call.result"] == "sunny"
+
+
+@pytest.mark.parametrize(
+    ("span_data_input", "expected"),
+    [
+        # The spacing LiteLLM produces for Anthropic normalizes to the same
+        # value as the compact JSON the OpenAI APIs forward.
+        ('{"city": "Barcelona"}', '{"city":"Barcelona"}'),
+        ('{"city":"Barcelona"}', '{"city":"Barcelona"}'),
+        # Invalid JSON is kept as a string; any valid JSON round-trips.
+        ("city=Barcelona", "city=Barcelona"),
+        ("[1,2]", "[1,2]"),
+        ("[1, 2]", "[1,2]"),
+        ("42", "42"),
+        ("null", None),
+        # No arguments to record: `trace_include_sensitive_data=False` leaves
+        # `input` None, and tool types without arguments leave it empty.
+        (None, None),
+        ("", None),
+    ],
+)
+def test_tool_arguments_value_shapes(
+    span_data_input: str | None,
+    expected: str | None,
+    tracer_provider: TracerProvider,
+    span_exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, "SPAN_ONLY"
+    )
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(FunctionSpanData(name="get_weather", input=None, output=None))
+
+    processor.on_span_start(span)
+    span.span_data.input = span_data_input
+    processor.on_span_end(span)
+
+    (tool_span,) = span_exporter.get_finished_spans()
+    assert tool_span.attributes is not None
+    if expected is None:
+        assert "gen_ai.tool.call.arguments" not in tool_span.attributes
+    else:
+        assert tool_span.attributes["gen_ai.tool.call.arguments"] == expected
+
+
+def test_no_content_captured_when_capture_env_unset(
+    tracer_provider: TracerProvider,
+    span_exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, raising=False
+    )
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(FunctionSpanData(name="get_weather", input=None, output=None))
+
+    processor.on_span_start(span)
+    span.span_data.input = '{"city":"Barcelona"}'
+    span.span_data.output = "sunny"
+    processor.on_span_end(span)
+
+    (tool_span,) = span_exporter.get_finished_spans()
+    assert tool_span.attributes is not None
+    assert "gen_ai.tool.call.arguments" not in tool_span.attributes
+    assert "gen_ai.tool.call.result" not in tool_span.attributes
+    # The non-content tool attributes are still present.
+    assert tool_span.attributes["gen_ai.tool.name"] == "get_weather"
+
+
+def test_tool_span_error_sets_error_status_and_type(
+    tracer_provider: TracerProvider,
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """A tool the agents library recorded as failed must not look successful.
+
+    The agents library reports tool failures on ``Span.error``. If the
+    processor ignores it the exported span is byte-identical to a
+    successful one, and a backend cannot filter or count failed tool
+    calls.
+    """
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(FunctionSpanData(name="get_weather", input=None, output=None))
+    span.error = {"message": "Error running tool", "data": {}}
+
+    processor.on_span_start(span)
+    processor.on_span_end(span)
+
+    (tool_span,) = span_exporter.get_finished_spans()
+    assert tool_span.status.status_code is StatusCode.ERROR
+    assert tool_span.attributes is not None
+    assert tool_span.attributes["error.type"] == "_OTHER"
+
+
+def test_agent_span_error_sets_error_status_and_type(
+    tracer_provider: TracerProvider,
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """A fatal tool also ends the surrounding agent span with an error."""
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span = _Span(AgentSpanData(name="weather_agent"))
+    span.error = {"message": "Error in agent run", "data": {}}
+
+    processor.on_span_start(span)
+    processor.on_span_end(span)
+
+    (agent_span,) = span_exporter.get_finished_spans()
+    assert agent_span.status.status_code is StatusCode.ERROR
+    assert agent_span.attributes is not None
+    assert agent_span.attributes["error.type"] == "_OTHER"
+
+
+def test_state_uses_weakref_so_dropped_spans_are_collected() -> None:
+    handler = _build_handler()
+    processor = GenAITracingProcessor(handler, provider="openai")
+    span: _Span | None = _Span(AgentSpanData(name="triage"))
+    processor.on_span_start(span)
+    assert len(processor._invocations) == 1
+
+    span = None  # drop the only strong reference
+    gc.collect()
+
+    assert len(processor._invocations) == 0

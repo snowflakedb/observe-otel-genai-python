@@ -1,0 +1,656 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from contextlib import nullcontext
+from types import SimpleNamespace
+
+import pytest
+
+from observeinc.instrumentation.genai.openai.response_wrappers import (
+    AsyncFetchResponseStreamWrapper,
+    AsyncResponseStreamManagerWrapper,
+    AsyncResponseStreamWrapper,
+    FetchResponseStreamWrapper,
+    ResponseStreamManagerWrapper,
+    ResponseStreamWrapper,
+)
+
+try:
+    from openai.types.responses.response import Response
+
+    HAS_RESPONSES_TYPES = True
+except ImportError:
+    Response = None
+    HAS_RESPONSES_TYPES = False
+
+
+class _FakeManager:
+    def __init__(
+        self, stream, suppressed=False, enter_error=None, exit_error=None
+    ):
+        self._stream = stream
+        self._suppressed = suppressed
+        self._enter_error = enter_error
+        self._exit_error = exit_error
+        self.exit_args = None
+
+    def __enter__(self):
+        if self._enter_error is not None:
+            raise self._enter_error
+        return self._stream
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.exit_args = (exc_type, exc_val, exc_tb)
+        if self._exit_error is not None:
+            raise self._exit_error
+        return self._suppressed
+
+
+class _FakeAsyncManager:
+    def __init__(
+        self, stream, suppressed=False, enter_error=None, exit_error=None
+    ):
+        self._stream = stream
+        self._suppressed = suppressed
+        self._enter_error = enter_error
+        self._exit_error = exit_error
+        self.exit_args = None
+
+    async def __aenter__(self):
+        if self._enter_error is not None:
+            raise self._enter_error
+        return self._stream
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.exit_args = (exc_type, exc_val, exc_tb)
+        if self._exit_error is not None:
+            raise self._exit_error
+        return self._suppressed
+
+
+def _noop_stop():
+    return None
+
+
+def _noop_fail(error):
+    del error
+
+
+def _noop_on_stream_chunk(chunk_at):
+    del chunk_at
+
+
+def _fake_invocation(**overrides):
+    """A stand-in for an invocation with the stream wrapper's context hooks."""
+    fields = {
+        "request_model": None,
+        "stop": _noop_stop,
+        "fail": _noop_fail,
+        "_on_stream_chunk": _noop_on_stream_chunk,
+        "suspend": _noop_stop,
+        "activate": nullcontext,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _make_wrapper(manager):
+    invocation = _fake_invocation()
+    return ResponseStreamManagerWrapper(
+        manager=manager,
+        invocation_factory=lambda: invocation,
+        capture_content=False,
+    )
+
+
+def _make_stream_wrapper(stream, invocation=None):
+    if invocation is None:
+        invocation = _fake_invocation()
+    return ResponseStreamWrapper(
+        stream=stream,
+        invocation=invocation,
+        capture_content=False,
+    )
+
+
+def _make_async_manager_wrapper(manager):
+    invocation = _fake_invocation()
+    return AsyncResponseStreamManagerWrapper(
+        manager=manager,
+        invocation_factory=lambda: invocation,
+        capture_content=False,
+    )
+
+
+def _make_async_stream_wrapper(stream, invocation=None):
+    if invocation is None:
+        invocation = _fake_invocation()
+    return AsyncResponseStreamWrapper(
+        stream=stream,
+        invocation=invocation,
+        capture_content=False,
+    )
+
+
+class _FakeAsyncResponse:
+    def __init__(self):
+        self.aclose_calls = 0
+
+    async def aclose(self):
+        self.aclose_calls += 1
+
+
+class _FakeSyncResponse:
+    def __init__(self, headers=None):
+        self.close_calls = 0
+        self.headers = headers or {}
+
+    def close(self):
+        self.close_calls += 1
+
+
+class _FakeSyncStream:
+    def __init__(self, *, response=None):
+        self.response = response
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise StopIteration
+
+    def close(self):
+        pass
+
+
+class _FakeAsyncStream:
+    def __init__(
+        self,
+        *,
+        events=None,
+        error=None,
+        final_response=None,
+        response=None,
+    ):
+        self._events = list(events or [])
+        self._error = error
+        self._final_response = final_response
+        self._response = response
+        self.close_calls = 0
+        self.get_final_response_calls = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._events:
+            return self._events.pop(0)
+        if self._error is not None:
+            raise self._error
+        raise StopAsyncIteration
+
+    async def close(self):
+        self.close_calls += 1
+
+    async def get_final_response(self):
+        self.get_final_response_calls += 1
+        return self._final_response
+
+
+def test_manager_enter_failure_fails_invocation_and_reraises():
+    error = RuntimeError("enter failure")
+    manager = _FakeManager(stream=SimpleNamespace(), enter_error=error)
+    failures = []
+    invocation = _fake_invocation(fail=failures.append)
+    wrapper = ResponseStreamManagerWrapper(
+        manager=manager,
+        invocation_factory=lambda: invocation,
+        capture_content=False,
+    )
+
+    with pytest.raises(RuntimeError, match="enter failure"):
+        wrapper.__enter__()
+
+    assert failures == [error]
+
+
+def test_manager_enter_reuses_stream_wrapper_from_inner_create():
+    stream_wrapper = _make_stream_wrapper(_FakeSyncStream())
+    wrapper = _make_wrapper(_FakeManager(stream=stream_wrapper))
+
+    with wrapper as result:
+        assert result is stream_wrapper
+
+
+@pytest.mark.asyncio
+async def test_async_manager_enter_reuses_stream_wrapper_from_inner_create():
+    stream_wrapper = _make_async_stream_wrapper(_FakeAsyncStream())
+    wrapper = _make_async_manager_wrapper(
+        _FakeAsyncManager(stream=stream_wrapper)
+    )
+
+    async with wrapper as result:
+        assert result is stream_wrapper
+
+
+def test_stream_wrapper_response_falls_back_to_public_response_attr():
+    response = _FakeSyncResponse()
+    stream = _FakeSyncStream(response=response)
+    wrapper = _make_stream_wrapper(stream)
+    stopped = []
+
+    wrapper._stop = stopped.append
+
+    wrapper.response.close()
+
+    assert response.close_calls == 1
+    assert stopped == [None]
+
+
+@pytest.mark.asyncio
+async def test_async_manager_enter_constructs_async_stream_wrapper():
+    stream = _FakeAsyncStream()
+    manager = _FakeAsyncManager(stream=stream)
+    wrapper = _make_async_manager_wrapper(manager)
+
+    async with wrapper as result:
+        assert isinstance(result, AsyncResponseStreamWrapper)
+        assert result.stream is stream
+
+
+@pytest.mark.asyncio
+async def test_async_manager_enter_failure_fails_invocation_and_reraises():
+    error = RuntimeError("enter failure")
+    manager = _FakeAsyncManager(stream=SimpleNamespace(), enter_error=error)
+    failures = []
+    invocation = _fake_invocation(fail=failures.append)
+    wrapper = AsyncResponseStreamManagerWrapper(
+        manager=manager,
+        invocation_factory=lambda: invocation,
+        capture_content=False,
+    )
+
+    with pytest.raises(RuntimeError, match="enter failure"):
+        await wrapper.__aenter__()
+
+    assert failures == [error]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_wrapper_exit_closes_without_exception():
+    stream = _FakeAsyncStream()
+    wrapper = _make_async_stream_wrapper(stream)
+    stopped = []
+
+    wrapper._stop = stopped.append
+
+    result = await wrapper.__aexit__(None, None, None)
+
+    assert result is False
+    assert stream.close_calls == 1
+    assert stopped == [None]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_wrapper_exit_fails_and_closes_on_exception():
+    stream = _FakeAsyncStream()
+    stopped = []
+    failures = []
+    invocation = _fake_invocation(fail=failures.append)
+    wrapper = _make_async_stream_wrapper(stream, invocation=invocation)
+    wrapper._stop = stopped.append
+
+    error = ValueError("boom")
+    result = await wrapper.__aexit__(ValueError, error, None)
+
+    assert result is False
+    assert stream.close_calls == 1
+    assert not stopped
+    assert failures == [error]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_wrapper_close_closes_stream_and_stops():
+    stream = _FakeAsyncStream()
+    wrapper = _make_async_stream_wrapper(stream)
+    stopped = []
+
+    wrapper._stop = stopped.append
+
+    await wrapper.close()
+
+    assert stream.close_calls == 1
+    assert stopped == [None]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_wrapper_processes_events_and_stops_on_completion():
+    event = SimpleNamespace(type="response.created")
+    stream = _FakeAsyncStream(events=[event])
+    wrapper = _make_async_stream_wrapper(stream)
+    processed = []
+    stopped = []
+
+    wrapper.process_event = processed.append
+    wrapper._stop = stopped.append
+
+    result = await anext(wrapper)
+
+    assert result is event
+    assert processed == [event]
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(wrapper)
+
+    assert stopped == [None]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_wrapper_until_done_consumes_stream():
+    events = [
+        SimpleNamespace(type="response.created"),
+        SimpleNamespace(type="response.in_progress"),
+    ]
+    stream = _FakeAsyncStream(events=events)
+    wrapper = _make_async_stream_wrapper(stream)
+    processed = []
+    stopped = []
+
+    wrapper.process_event = processed.append
+    wrapper._stop = stopped.append
+
+    result = await wrapper.until_done()
+
+    assert result is wrapper
+    assert processed == events
+    assert stopped == [None]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_wrapper_fails_and_reraises_stream_errors():
+    error = ValueError("boom")
+    stream = _FakeAsyncStream(error=error)
+    failures = []
+    invocation = _fake_invocation(fail=failures.append)
+    wrapper = _make_async_stream_wrapper(stream, invocation=invocation)
+
+    with pytest.raises(ValueError, match="boom"):
+        await anext(wrapper)
+
+    assert failures == [error]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_response_aclose_finalizes_wrapper():
+    response = _FakeAsyncResponse()
+    stream = _FakeAsyncStream(response=response)
+    wrapper = _make_async_stream_wrapper(stream)
+    stopped = []
+
+    wrapper._stop = stopped.append
+
+    await wrapper.response.aclose()
+
+    assert response.aclose_calls == 1
+    assert stopped == [None]
+
+
+@pytest.mark.asyncio
+async def test_async_stream_response_is_none_when_stream_has_no_response():
+    wrapper = _make_async_stream_wrapper(_FakeAsyncStream())
+
+    assert wrapper.response is None
+
+
+@pytest.mark.asyncio
+async def test_async_stream_get_final_response_waits_for_completion():
+    event = SimpleNamespace(type="response.in_progress")
+    final_response = SimpleNamespace(id="response_123")
+    stream = _FakeAsyncStream(events=[event], final_response=final_response)
+    wrapper = _make_async_stream_wrapper(stream)
+
+    wrapper.process_event = lambda current: current
+
+    result = await wrapper.get_final_response()
+
+    assert result is final_response
+    assert stream.get_final_response_calls == 1
+
+
+_requires_responses_types = pytest.mark.skipif(
+    not HAS_RESPONSES_TYPES,
+    reason="Responses SDK types require a newer openai SDK",
+)
+
+
+def _make_response(**overrides):
+    payload = {
+        "id": "resp_1",
+        "created_at": 0.0,
+        "model": "gpt-4.1",
+        "object": "response",
+        "output": [],
+        "parallel_tool_calls": False,
+        "tool_choice": "auto",
+        "tools": [],
+    }
+    payload.update(overrides)
+    return Response.model_validate(payload)
+
+
+def _capturing_invocation():
+    calls = {"stop": 0, "fail": []}
+    invocation = _fake_invocation(response_model_name=None, attributes={})
+    invocation.stop = lambda: calls.__setitem__("stop", calls["stop"] + 1)
+    invocation.fail = lambda error: calls["fail"].append(error)
+    return invocation, calls
+
+
+@_requires_responses_types
+def test_process_event_failed_records_error_from_response_error():
+    invocation, calls = _capturing_invocation()
+    wrapper = _make_stream_wrapper(_FakeSyncStream(), invocation=invocation)
+    event = SimpleNamespace(
+        type="response.failed",
+        response=_make_response(
+            status="failed",
+            error={"code": "server_error", "message": "boom"},
+        ),
+    )
+
+    wrapper.process_event(event)
+
+    assert calls["stop"] == 0
+    (error,) = calls["fail"]
+    assert isinstance(error.type, str)
+    assert error.type == "server_error"
+    assert error.message == "boom"
+
+
+@_requires_responses_types
+def test_process_event_incomplete_is_not_an_error():
+    invocation, calls = _capturing_invocation()
+    wrapper = _make_stream_wrapper(_FakeSyncStream(), invocation=invocation)
+    event = SimpleNamespace(
+        type="response.incomplete",
+        response=_make_response(
+            status="incomplete",
+            incomplete_details={"reason": "max_output_tokens"},
+        ),
+    )
+
+    wrapper.process_event(event)
+
+    assert calls["fail"] == []
+    assert calls["stop"] == 1
+
+
+@_requires_responses_types
+def test_stop_prefers_served_model_header():
+    invocation, calls = _capturing_invocation()
+    stream = _FakeSyncStream(
+        response=_FakeSyncResponse(
+            headers={"x-ms-served-model": "served-gpt-4.1"}
+        )
+    )
+    wrapper = _make_stream_wrapper(stream, invocation=invocation)
+
+    wrapper._stop(_make_response(model="body-gpt-4.1"))
+
+    assert calls["stop"] == 1
+    assert invocation.response_model_name == "served-gpt-4.1"
+
+
+@_requires_responses_types
+def test_stop_falls_back_to_body_model_without_header():
+    invocation, calls = _capturing_invocation()
+    stream = _FakeSyncStream(response=_FakeSyncResponse(headers={}))
+    wrapper = _make_stream_wrapper(stream, invocation=invocation)
+
+    wrapper._stop(_make_response(model="body-gpt-4.1"))
+
+    assert calls["stop"] == 1
+    assert invocation.response_model_name == "body-gpt-4.1"
+
+
+@_requires_responses_types
+def test_process_event_error_event_records_error():
+    invocation, calls = _capturing_invocation()
+    wrapper = _make_stream_wrapper(_FakeSyncStream(), invocation=invocation)
+    event = SimpleNamespace(
+        type="error",
+        code="rate_limit_exceeded",
+        message="slow down",
+        response=None,
+    )
+
+    wrapper.process_event(event)
+
+    assert calls["stop"] == 0
+    (error,) = calls["fail"]
+    assert error.type == "rate_limit_exceeded"
+    assert error.message == "slow down"
+
+
+def _make_fetch_stream_wrapper(stream, invocation):
+    return FetchResponseStreamWrapper(
+        stream=stream,
+        invocation=invocation,
+        capture_content=False,
+    )
+
+
+def _capturing_fetch_invocation():
+    calls = {"stop": 0, "fail": []}
+    invocation = _fake_invocation(
+        response_model_name=None,
+        response_status=None,
+        finish_reasons=None,
+        stream_cursor=None,
+        output_messages=[],
+        system_instruction=[],
+        tool_definitions=None,
+        attributes={},
+    )
+    invocation.stop = lambda: calls.__setitem__("stop", calls["stop"] + 1)
+    invocation.fail = lambda error: calls["fail"].append(error)
+    return invocation, calls
+
+
+@_requires_responses_types
+def test_fetch_stream_completed_records_fetch_response_attributes():
+    invocation, calls = _capturing_fetch_invocation()
+    wrapper = _make_fetch_stream_wrapper(
+        _FakeSyncStream(), invocation=invocation
+    )
+    event = SimpleNamespace(
+        type="response.completed",
+        response=_make_response(status="completed"),
+    )
+
+    wrapper.process_event(event)
+
+    assert calls["stop"] == 1
+    assert calls["fail"] == []
+    assert invocation.response_status == "completed"
+    assert invocation.finish_reasons == ["stop"]
+
+
+@_requires_responses_types
+def test_fetch_stream_replayed_failure_is_not_an_error_of_the_fetch():
+    """A replayed ``response.failed`` describes the original generation."""
+    invocation, calls = _capturing_fetch_invocation()
+    wrapper = _make_fetch_stream_wrapper(
+        _FakeSyncStream(), invocation=invocation
+    )
+    event = SimpleNamespace(
+        type="response.failed",
+        response=_make_response(
+            status="failed",
+            error={"code": "server_error", "message": "boom"},
+        ),
+    )
+
+    wrapper.process_event(event)
+
+    assert calls["fail"] == []
+    assert calls["stop"] == 1
+    assert invocation.response_status == "failed"
+    assert invocation.finish_reasons == ["error"]
+
+
+@_requires_responses_types
+def test_fetch_stream_transport_error_event_still_fails_the_fetch():
+    """An SSE ``error`` event is a failure of the fetch itself."""
+    invocation, calls = _capturing_fetch_invocation()
+    wrapper = _make_fetch_stream_wrapper(
+        _FakeSyncStream(), invocation=invocation
+    )
+    event = SimpleNamespace(
+        type="error",
+        code="rate_limit_exceeded",
+        message="slow down",
+        response=None,
+    )
+
+    wrapper.process_event(event)
+
+    assert calls["stop"] == 0
+    (error,) = calls["fail"]
+    assert error.type == "rate_limit_exceeded"
+
+
+_COMPACTION_ITEM_EVENT = SimpleNamespace(
+    type="response.output_item.done",
+    item={"id": "cmp_1", "type": "compaction", "encrypted_content": "opaque"},
+)
+
+
+def test_inference_stream_records_streamed_compaction():
+    invocation, _ = _capturing_invocation()
+    wrapper = _make_stream_wrapper(_FakeSyncStream(), invocation=invocation)
+
+    wrapper.process_event(_COMPACTION_ITEM_EVENT)
+
+    assert invocation.conversation_compacted is True
+
+
+@pytest.mark.parametrize(
+    ("wrapper_type", "stream"),
+    [
+        (FetchResponseStreamWrapper, _FakeSyncStream()),
+        (AsyncFetchResponseStreamWrapper, _FakeAsyncStream()),
+    ],
+    ids=["sync", "async"],
+)
+def test_fetch_stream_ignores_replayed_compaction(wrapper_type, stream):
+    """Compaction in a replay belongs to the original generation."""
+    invocation, calls = _capturing_fetch_invocation()
+    wrapper = wrapper_type(
+        stream=stream, invocation=invocation, capture_content=False
+    )
+
+    wrapper.process_event(_COMPACTION_ITEM_EVENT)
+
+    assert not hasattr(invocation, "conversation_compacted")
+    assert calls == {"stop": 0, "fail": []}

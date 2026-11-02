@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Build the test matrix dynamically from `tox -l` so adding a
+  # new tox env automatically extends CI without editing workflow YAML.
+  prepare:
+    name: prepare-matrix
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    outputs:
+      test_matrix: ${{ steps.gen.outputs.test_matrix }}
+    steps:
+      - name: Checkout repo @ SHA - ${{ github.sha }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.15
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Generate matrix JSON from tox -l
+        id: gen
+        run: |
+          uvx --with tox-uv tox -l | python scripts/tox_matrix.py >> "$GITHUB_OUTPUT"
+
+  misc:
+    uses: $/.github/workflows/misc.yml
+  tests:
+    needs: prepare
+    uses: $/.github/workflows/test.yml
+    with:
+      matrix: ${{ needs.prepare.outputs.test_matrix }}
+
+  check:
+    if: always()
+    needs:
+      - prepare
+      - misc
+      - tests
+    runs-on: ubuntu-slim
+    steps:
+      - if: |
+          needs.prepare.result != 'success' ||
+          needs.misc.result != 'success' ||
+          needs.tests.result != 'success'
+        run: exit 1 # fail

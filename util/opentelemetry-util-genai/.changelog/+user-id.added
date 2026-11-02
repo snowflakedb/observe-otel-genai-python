@@ -1,0 +1,1 @@
+Record `user.id` on every GenAI span started inside `observeinc.util.genai.user_id.using_user_id`.

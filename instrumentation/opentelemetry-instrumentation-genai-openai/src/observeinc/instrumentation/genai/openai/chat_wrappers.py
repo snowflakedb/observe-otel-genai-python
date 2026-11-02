@@ -1,0 +1,235 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import json
+import logging
+
+from openai import AsyncStream, Stream
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletionChunk
+
+from observeinc.util.genai.invocation import InferenceInvocation
+from observeinc.util.genai.stream import (
+    AsyncStreamWrapper,
+    SyncStreamWrapper,
+)
+from observeinc.util.genai.types import (
+    OutputMessage,
+    Role,
+    TextPart,
+    ToolCallRequestPart,
+)
+from opentelemetry.semconv._incubating.attributes import (
+    openai_attributes as OpenAIAttributes,
+)
+
+from .chat_buffers import ChoiceBuffer
+from .utils import (
+    map_finish_reason,
+    set_chat_usage,
+)
+
+_logger = logging.getLogger(__name__)
+
+
+class _ChatStreamMixin:
+    """Chat-specific hooks shared by sync and async stream wrappers."""
+
+    _self_invocation: InferenceInvocation
+    _self_capture_content: bool
+    _self_choice_buffers: list[ChoiceBuffer]
+    _self_response_id: str | None
+    _self_service_tier: str | None
+    _self_usage: CompletionUsage | None
+
+    def _set_response_model(self, chunk: ChatCompletionChunk) -> None:
+        # Set eagerly so the per-chunk streaming timing metrics carry
+        # gen_ai.response.model.
+        if self._self_invocation.response_model_name:
+            return
+
+        if chunk.model:
+            self._self_invocation.response_model_name = chunk.model
+
+    def _set_response_id(self, chunk: ChatCompletionChunk) -> None:
+        if self._self_response_id:
+            return
+
+        if chunk.id:
+            self._self_response_id = chunk.id
+
+    def _set_response_service_tier(self, chunk: ChatCompletionChunk) -> None:
+        if self._self_service_tier:
+            return
+
+        service_tier = getattr(chunk, "service_tier", None)
+        if service_tier:
+            self._self_service_tier = service_tier
+
+    def _build_streaming_response(self, chunk: ChatCompletionChunk) -> None:
+        if chunk.choices is None:
+            return
+
+        for choice in chunk.choices:
+            if not choice.delta:
+                continue
+
+            for idx in range(len(self._self_choice_buffers), choice.index + 1):
+                self._self_choice_buffers.append(ChoiceBuffer(idx))
+
+            if choice.finish_reason:
+                self._self_choice_buffers[
+                    choice.index
+                ].finish_reason = choice.finish_reason
+
+            if choice.delta.content is not None:
+                self._self_choice_buffers[choice.index].append_text_content(
+                    choice.delta.content
+                )
+
+            refusal = getattr(choice.delta, "refusal", None)
+            if isinstance(refusal, str):
+                self._self_choice_buffers[choice.index].append_refusal(refusal)
+
+            if choice.delta.tool_calls is not None:
+                for tool_call in choice.delta.tool_calls:
+                    self._self_choice_buffers[choice.index].append_tool_call(
+                        tool_call
+                    )
+
+    def _process_chunk(self, chunk: ChatCompletionChunk) -> None:
+        if not isinstance(chunk, ChatCompletionChunk):
+            # raw-response stream can be parsed into a caller-defined chunk type.
+            _logger.debug(
+                "Skipping telemetry for unrecognized chat chunk type %s",
+                type(chunk).__name__,
+            )
+            return
+
+        self._set_response_id(chunk)
+        self._set_response_model(chunk)
+        self._set_response_service_tier(chunk)
+        self._build_streaming_response(chunk)
+        usage: CompletionUsage | None = chunk.usage
+        if usage is not None:
+            self._self_usage = usage
+
+    def _set_output_messages(self) -> None:
+        if not self._self_capture_content:  # optimization
+            return
+        output_messages = []
+        for choice in self._self_choice_buffers:
+            message = OutputMessage(
+                role=Role.ASSISTANT.value,
+                finish_reason=map_finish_reason(choice.finish_reason),
+                parts=[],
+            )
+            if choice.text_content:
+                message.parts.append(
+                    TextPart(content="".join(choice.text_content))
+                )
+            # A refused completion streams its text in `refusal` deltas
+            # instead of `content`.
+            if refusal := "".join(choice.refusal):
+                message.parts.append(TextPart(content=refusal))
+            if choice.tool_calls_buffers:
+                tool_calls = []
+                for tool_call in filter(None, choice.tool_calls_buffers):
+                    arguments = None
+                    arguments_str = "".join(tool_call.arguments)
+                    if arguments_str:
+                        try:
+                            arguments = json.loads(arguments_str)
+                        except json.JSONDecodeError:
+                            arguments = arguments_str
+                    tool_call_part = ToolCallRequestPart(
+                        name=tool_call.function_name,
+                        id=tool_call.tool_call_id,
+                        arguments=arguments,
+                    )
+                    tool_calls.append(tool_call_part)
+                message.parts.extend(tool_calls)
+            output_messages.append(message)
+
+        self._self_invocation.output_messages = output_messages
+
+    def _on_stream_end(self) -> None:
+        self._cleanup()
+
+    def _on_stream_error(self, error: BaseException) -> None:
+        self._cleanup(error)
+
+    def _cleanup(self, error: BaseException | None = None) -> None:
+        self._self_invocation.response_id = self._self_response_id
+        if self._self_usage is not None:
+            set_chat_usage(
+                invocation=self._self_invocation, usage=self._self_usage
+            )
+        finish_reasons = [
+            choice.finish_reason
+            for choice in self._self_choice_buffers
+            if choice.finish_reason
+        ]
+        if finish_reasons:
+            self._self_invocation.finish_reasons = finish_reasons
+        if self._self_service_tier:
+            self._self_invocation.attributes.update(
+                {
+                    OpenAIAttributes.OPENAI_RESPONSE_SERVICE_TIER: self._self_service_tier
+                },
+            )
+
+        self._set_output_messages()
+
+        if error:
+            self._self_invocation.fail(error)
+        else:
+            self._self_invocation.stop()
+
+
+class ChatStreamWrapper(
+    _ChatStreamMixin,
+    SyncStreamWrapper[ChatCompletionChunk],
+):
+    def __init__(
+        self,
+        stream: Stream[ChatCompletionChunk],
+        invocation: InferenceInvocation,
+        capture_content: bool,
+    ) -> None:
+        super().__init__(stream, invocation=invocation)
+        self._self_invocation = invocation
+        invocation.suspend()
+        self._self_choice_buffers = []
+        self._self_capture_content = capture_content
+        self._self_response_id = None
+        self._self_service_tier = None
+        self._self_usage = None
+
+
+class AsyncChatStreamWrapper(
+    _ChatStreamMixin,
+    AsyncStreamWrapper[ChatCompletionChunk],
+):
+    def __init__(
+        self,
+        stream: AsyncStream[ChatCompletionChunk],
+        invocation: InferenceInvocation,
+        capture_content: bool,
+    ) -> None:
+        super().__init__(stream, invocation=invocation)
+        self._self_invocation = invocation
+        invocation.suspend()
+        self._self_choice_buffers = []
+        self._self_capture_content = capture_content
+        self._self_response_id = None
+        self._self_service_tier = None
+        self._self_usage = None
+
+
+__all__ = [
+    "AsyncChatStreamWrapper",
+    "ChatStreamWrapper",
+]

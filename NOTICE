@@ -1,0 +1,8 @@
+observe-otel-genai-python
+Copyright 2026 Snowflake Inc.
+
+This product includes software developed by The OpenTelemetry Authors
+(https://github.com/open-telemetry/opentelemetry-python-genai), licensed under
+the Apache License, Version 2.0. Snowflake Inc. has modified some of those files.
+Files carried from upstream keep their original "Copyright The OpenTelemetry
+Authors" headers.

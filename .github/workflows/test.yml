@@ -1,0 +1,82 @@
+name: Test
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: |
+          JSON `strategy.matrix` value, normally produced by scripts/tox_matrix.py
+          in the `prepare` job of ci.yml. Must be of the form
+          `{"include": [{"name": ..., "tox_env": ..., "python_version": ...,
+          "needs_weaver": <optional bool>}, ...]}`.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # Set the SHA to the branch name if the PR has a label 'prepare-release' or 'backport' otherwise, set it to 'main'
+  # For PRs you can change the inner fallback ('main')
+  # For pushes you change the outer fallback ('main')
+  # The logic below is used during releases and depends on having an equivalent branch name in the core repo.
+  CORE_REPO_SHA: ${{ github.event_name == 'pull_request' && (
+       contains(github.event.pull_request.labels.*.name, 'prepare-release') && github.event.pull_request.head.ref ||
+       contains(github.event.pull_request.labels.*.name, 'backport') && github.event.pull_request.base.ref ||
+       'main'
+    ) || 'main' }}
+  CONTRIB_REPO_SHA: main
+  PIP_EXISTS_ACTION: w
+
+jobs:
+
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.matrix) }}
+    steps:
+      - name: Checkout repo @ SHA - ${{ github.sha }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python_version }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "${{ matrix.python_version }}"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Read pinned weaver version
+        if: ${{ matrix.needs_weaver }}
+        id: versions
+        run: |
+          # shellcheck disable=SC2002
+          cat versions.env | grep -E '^WEAVER_(VERSION|SHA256_LINUX_X86_64)=' >> "$GITHUB_OUTPUT"
+
+      # Upstream uses open-telemetry/weaver's setup-weaver action, which is not
+      # on this org's allowlist. We fetch the release archive and check its pinned SHA-256.
+      - name: Install weaver ${{ steps.versions.outputs.WEAVER_VERSION }}
+        if: ${{ matrix.needs_weaver }}
+        shell: bash
+        env:
+          WEAVER_VERSION: ${{ steps.versions.outputs.WEAVER_VERSION }}
+          WEAVER_SHA256: ${{ steps.versions.outputs.WEAVER_SHA256_LINUX_X86_64 }}
+        run: |
+          archive="weaver-x86_64-unknown-linux-gnu.tar.xz"
+          cd "$RUNNER_TEMP"
+          curl --proto '=https' --tlsv1.2 -fLsS -o "$archive" \
+            "https://github.com/open-telemetry/weaver/releases/download/${WEAVER_VERSION}/${archive}"
+          echo "${WEAVER_SHA256}  ${archive}" | sha256sum -c -
+          tar -xJf "$archive"
+          "$RUNNER_TEMP/weaver-x86_64-unknown-linux-gnu/weaver" --version
+          echo "$RUNNER_TEMP/weaver-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+
+      - name: Run tests
+        run: uvx --with tox-uv tox -e "${MATRIX_TOX_ENV}" -- -ra
+        env:
+          MATRIX_TOX_ENV: ${{ matrix.tox_env }}

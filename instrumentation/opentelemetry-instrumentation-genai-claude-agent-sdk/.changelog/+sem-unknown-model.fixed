@@ -1,0 +1,9 @@
+Leave the model attributes off a `chat` span when nothing on the wire says what
+the model was, instead of reporting the literal `unknown`. A fabricated identifier
+is worse than an absent one, and it reached the span name (`chat unknown`), both
+`gen_ai.request.model` and `gen_ai.response.model`, and the cached metric
+attribute set; semconv makes both attributes optional for exactly this case.
+`gen_ai.response.model` also came from the same fallback chain as the request
+model, so a span could report a model the caller merely asked for as the one that
+answered; it is now set only from what `message_start` or the assistant message
+reports.

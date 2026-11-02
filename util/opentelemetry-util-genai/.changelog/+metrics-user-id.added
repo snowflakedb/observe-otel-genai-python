@@ -1,0 +1,1 @@
+Add `OBSERVE_GENAI_METRICS_INCLUDE_USER_ID`, which puts `user.id` on every metric when set to `true`.
