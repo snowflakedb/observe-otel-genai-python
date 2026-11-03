@@ -1,0 +1,1 @@
+Add `observeinc.util.genai.observe_provider.provider_from_host`, which names the provider serving an OpenAI- or Anthropic-compatible API at a host.

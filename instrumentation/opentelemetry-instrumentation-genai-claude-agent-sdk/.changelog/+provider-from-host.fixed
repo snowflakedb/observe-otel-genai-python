@@ -1,0 +1,1 @@
+Report the provider of `ANTHROPIC_BASE_URL`, such as `snowflake` for Snowflake Cortex, when no routing flag picks a hosting platform.

@@ -14,6 +14,7 @@ from observeinc.util.genai.invocation import (
     EmbeddingInvocation,
     InferenceInvocation,
 )
+from observeinc.util.genai.observe_provider import provider_from_host
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
@@ -42,7 +43,8 @@ def _create_embedding_invocation(
 ) -> EmbeddingInvocation:
     address, port = get_server_address_and_port(client_instance)
     invocation = handler.embedding(
-        GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
+        provider_from_host(address)
+        or GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
         request_model=get_value(kwargs.get("model")),
         server_address=address if address else None,
         server_port=port if port else None,

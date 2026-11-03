@@ -39,3 +39,10 @@ def uninstrument_claude_agent_sdk():
     )
 
     ClaudeAgentSDKInstrumentor().uninstrument()
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_base_url(monkeypatch):
+    """A developer running the CLI through a gateway has ANTHROPIC_BASE_URL
+    set, which would change the provider every test expects."""
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
