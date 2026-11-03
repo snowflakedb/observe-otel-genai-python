@@ -1,0 +1,1 @@
+Report `gen_ai.provider.name` from the base URL host, so an OpenAI client pointed at Snowflake Cortex, Azure, Bedrock, Groq, DeepSeek, xAI, Mistral, or Gemini no longer reports `openai`.

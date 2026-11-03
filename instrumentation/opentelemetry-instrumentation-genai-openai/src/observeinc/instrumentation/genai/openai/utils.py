@@ -17,6 +17,7 @@ from observeinc.util.genai.handler import TelemetryHandler
 from observeinc.util.genai.invocation import (
     InferenceInvocation,
 )
+from observeinc.util.genai.observe_provider import provider_from_host
 from observeinc.util.genai.types import (
     BlobPart,
     FilePart,
@@ -166,7 +167,8 @@ def create_chat_invocation(
 
     address, port = get_server_address_and_port(client_instance)
     invocation = handler.inference(
-        GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
+        provider_from_host(address)
+        or GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
         request_model=kwargs.get("model", ""),
         server_address=address if address else None,
         server_port=port if port else None,

@@ -1,0 +1,1 @@
+Report the provider of the base URL a `ChatOpenAI` was built with, so one pointed at Snowflake Cortex or another OpenAI-compatible provider no longer reports `openai`.

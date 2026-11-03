@@ -17,6 +17,9 @@ from langchain_core.outputs import (
     LLMResult,
 )
 
+from observeinc.instrumentation.genai.langchain._observe_provider import (
+    resolve_provider,
+)
 from observeinc.instrumentation.genai.langchain.agent_context import (
     claim_agent,
 )
@@ -543,7 +546,9 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 else params.get("max_tokens")
             )
 
-        provider = normalize_provider(metadata) or "unknown"
+        provider = resolve_provider(
+            normalize_provider(metadata) or "unknown", serialized
+        )
         if metadata is not None:
             # Override with ChatBedrock values if present
             if "ls_temperature" in metadata:

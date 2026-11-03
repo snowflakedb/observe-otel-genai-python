@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 from observeinc.instrumentation.genai.claude_agent_sdk._content import (
     blocks_of,
@@ -54,6 +55,7 @@ from observeinc.util.genai.invocation import (
     LocalAgentInvocation,
     ToolInvocation,
 )
+from observeinc.util.genai.observe_provider import provider_from_host
 from observeinc.util.genai.types import (
     Error,
     GenericPart,
@@ -168,6 +170,9 @@ def resolve_provider(sdk_options: ClaudeAgentOptions | None) -> str:
     Flags are checked in the CLI's own resolution order, which is not the order
     they are documented in: two of them set together resolve to whichever comes
     first below, the same one the CLI would pick.
+
+    With no flag set, the CLI calls ``ANTHROPIC_BASE_URL``, which can be another
+    provider serving the Anthropic API, such as Snowflake Cortex.
     """
     raw_env: object = getattr(sdk_options, "env", None)
     options_env: dict[str, object] = (
@@ -177,7 +182,11 @@ def resolve_provider(sdk_options: ClaudeAgentOptions | None) -> str:
         value = options_env.get(key, os.environ.get(key))
         if value is not None and str(value).strip().lower() in _TRUTHY:
             return provider
-    return _PROVIDER.ANTHROPIC.value
+    base_url = options_env.get(
+        "ANTHROPIC_BASE_URL", os.environ.get("ANTHROPIC_BASE_URL")
+    )
+    host = urlparse(str(base_url)).hostname if base_url else None
+    return provider_from_host(host) or _PROVIDER.ANTHROPIC.value
 
 
 @dataclass

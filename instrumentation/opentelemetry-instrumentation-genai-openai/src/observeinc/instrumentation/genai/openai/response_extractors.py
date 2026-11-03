@@ -8,6 +8,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from observeinc.util.genai.observe_provider import provider_from_host
 from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
@@ -841,7 +842,8 @@ def get_inference_creation_kwargs(
     address, port = get_server_address_and_port(client_instance)
 
     creation_kwargs: dict[str, object] = {
-        "provider": GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
+        "provider": provider_from_host(address)
+        or GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
     }
     if params.model is not None:
         creation_kwargs["request_model"] = params.model
@@ -862,7 +864,8 @@ def get_fetch_response_creation_kwargs(
     address, port = get_server_address_and_port(client_instance)
 
     creation_kwargs: dict[str, object] = {
-        "provider": GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
+        "provider": provider_from_host(address)
+        or GenAIAttributes.GenAiProviderNameValues.OPENAI.value,
         "response_id": response_id,
     }
     if address is not None:
