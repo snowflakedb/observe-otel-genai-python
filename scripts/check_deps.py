@@ -551,6 +551,10 @@ def main() -> int:
         # Check 3: target dependencies in requirements.latest.txt are pinned / upper-bounded
         errors.extend(check_latest_requirements(pkg_dir, pyproject))
 
+        # The floor rules below exist for a package's own oldest test env.
+        if not (pkg_dir / "tests").is_dir():
+            continue
+
         # Check 4: workspace dependencies floor and editable install validation
         oldest = pkg_dir / "tests" / "requirements.oldest.txt"
         errors.extend(

@@ -1,9 +1,0 @@
-Record the system prompt from every shape the SDK accepts, and stop recording a
-label as one. A custom prompt holds the real, full text under `prompt` and was
-dropped entirely, while the identical content passed as a bare string was
-captured — so which of the two API shapes a caller reached for decided whether it
-appeared. The preset form was recorded as the synthetic instruction text `preset:
-claude_code`, which is a name rather than anything the model was told; it and the
-file form's path are now recorded as what they are, a part naming the prompt's
-source. The agent span receives `gen_ai.system_instructions` too, which it never
-did.

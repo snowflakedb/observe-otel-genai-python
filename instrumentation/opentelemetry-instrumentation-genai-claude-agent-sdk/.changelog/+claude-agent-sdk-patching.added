@@ -1,4 +1,0 @@
-Instrument `query()` and `ClaudeSDKClient`, building the span tree from the SDK's
-message stream: one `invoke_agent` span per invocation, one `chat` span per API
-call, an `execute_tool` span per tool call, and nested `invoke_agent` spans for
-delegated subagents.

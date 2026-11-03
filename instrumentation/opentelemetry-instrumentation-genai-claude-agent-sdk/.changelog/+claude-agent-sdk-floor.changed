@@ -1,4 +1,0 @@
-Require `claude-agent-sdk >= 0.2.140, < 0.3`. 0.2.140 is the first version with
-every message type the instrumentation reads and the `forward_subagent_text`
-option the README recommends. The cap is there because before 1.0 a minor
-release can change the message stream.

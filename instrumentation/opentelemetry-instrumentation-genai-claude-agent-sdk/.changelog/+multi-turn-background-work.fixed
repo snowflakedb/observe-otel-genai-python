@@ -1,1 +1,0 @@
-Keep a `ClaudeSDKClient` turn open until the background work it started finishes or the next turn begins, and ignore what that work reports afterwards. Such work cut off by the end of the stream, or by cancelling the reader, is not reported as an error.

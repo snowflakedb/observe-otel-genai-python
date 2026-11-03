@@ -10,296 +10,46 @@ Do *NOT* add changelog entries here!
 
 This changelog is managed by towncrier and is compiled at release time.
 
-See https://github.com/open-telemetry/opentelemetry-python-genai/blob/main/CONTRIBUTING.md#changelog for details.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md#4-update-the-changelog) for details.
 -->
 
 <!-- changelog start -->
 
-## Version 1.3b0 (2026-10-23)
+## Version 0.1.0 (2026-11-02)
+
+First release. It is based on upstream
+[opentelemetry-python-genai](https://github.com/open-telemetry/opentelemetry-python-genai)
+at commit `068606f9`, and the entries below describe how it differs from
+upstream's last release, `1.3b0`.
 
 ### Added
 
-- Record cache-write and audio token usage from OpenAI Chat Completions
-  responses and streams.
-  ([#681](https://github.com/open-telemetry/opentelemetry-python-genai/pull/681))
-- Instrument `Responses.parse` and `AsyncResponses.parse`, so structured-output
-  calls emit GenAI spans like `Responses.create`, reporting
-  `gen_ai.output.type` as `json` for the `text_format` argument.
-  ([#786](https://github.com/open-telemetry/opentelemetry-python-genai/pull/786))
-- Capture reasoning tokens - `gen_ai.usage.reasoning.output_tokens` on
-  Responses API calls
-  ([#812](https://github.com/open-telemetry/opentelemetry-python-genai/pull/812))
-- Record `gen_ai.conversation.compacted` on Responses API spans when compaction
-  items are present in the request input or response output.
-  ([#900](https://github.com/open-telemetry/opentelemetry-python-genai/pull/900))
-
-### Fixed
-
-- Record `max_completion_tokens` as `gen_ai.request.max_tokens` on chat
-  completion spans, whether passed as a keyword argument or via `extra_body`.
-  ([#813](https://github.com/open-telemetry/opentelemetry-python-genai/pull/813))
-- Suspend the chat completion and Responses API invocations while a streamed
-  response is unconsumed and re-activate them only while a chunk is read or the
-  stream is cleaned up: the inference span is no longer current in the caller's
-  context between reads, so spans a caller creates between chunks are siblings
-  of the inference span, not children.
-  ([#817](https://github.com/open-telemetry/opentelemetry-python-genai/pull/817))
-- Record Responses computer calls as client tool calls and replayed results as
-  tool inputs.
-  ([#837](https://github.com/open-telemetry/opentelemetry-python-genai/pull/837))
-- Map `type: "reasoning"` input items to assistant messages with
-  `ReasoningPart` on Responses API calls.
-  ([#839](https://github.com/open-telemetry/opentelemetry-python-genai/pull/839))
-- Stop tracing `with_raw_response` calls after `uninstrument()` on a client
-  that used them while instrumented.
-  ([#862](https://github.com/open-telemetry/opentelemetry-python-genai/pull/862))
-- Unwrap `chat.completions.parse` when calling
-  `OpenAIInstrumentor().uninstrument()`.
-  ([#863](https://github.com/open-telemetry/opentelemetry-python-genai/pull/863))
-- Stop request extraction from raising on chat `messages=None` or a Responses
-  input item whose `type` is not a string.
-  ([#866](https://github.com/open-telemetry/opentelemetry-python-genai/pull/866))
-- Capture refusals from streamed chat completions in the output messages.
-  ([#907](https://github.com/open-telemetry/opentelemetry-python-genai/pull/907))
-
-## Version 1.2b0 (2026-09-24)
-
-### Added
-
-- Capture OpenAI multimodal image content (`image_url` and Responses API
-  `input_image`) as `BlobPart`, `UriPart`, or `FilePart` message parts.
-  ([#540](https://github.com/open-telemetry/opentelemetry-python-genai/pull/540))
-- Record `cache_write_input_tokens` from response usage.
-  ([#613](https://github.com/open-telemetry/opentelemetry-python-genai/pull/613))
-- Capture cached prompt tokens - `gen_ai.usage.cache_read.input_tokens` on chat
-  completions
-  ([#662](https://github.com/open-telemetry/opentelemetry-python-genai/pull/662))
-- Capture reasoning tokens - `gen_ai.usage.reasoning.output_tokens` on chat
-  completions
-  ([#680](https://github.com/open-telemetry/opentelemetry-python-genai/pull/680))
+- Add support for Python 3.15.
+  ([#992](https://github.com/open-telemetry/opentelemetry-python-genai/pull/992))
 
 ### Changed
 
-- Bump the minimum `opentelemetry-util-genai` version to 1.2b0.
-  ([#365](https://github.com/open-telemetry/opentelemetry-python-genai/pull/365))
-- Tool definitions are not emitted when content capture is disabled
-  ([#377](https://github.com/open-telemetry/opentelemetry-python-genai/pull/377))
-- Populate name attribute on captured input messages when available.
-  ([#611](https://github.com/open-telemetry/opentelemetry-python-genai/pull/611))
-
-### Fixed
-
-- Capture the remaining OpenAI content parts: ``input_audio`` as an audio blob,
-  ``file``/``input_file`` as a document reference or blob, and ``refusal`` as
-  text; record a completion refusal in ``gen_ai.output.messages``.
-  ([#358](https://github.com/open-telemetry/opentelemetry-python-genai/pull/358))
-- Stop consuming generator message ``content`` while capturing input messages,
-  which left the wrapped request with no content at all. Capture a ``file``
-  part's inline base64 ``file_data`` and take its media type from ``filename``.
-  ([#522](https://github.com/open-telemetry/opentelemetry-python-genai/pull/522))
-- Record response telemetry for ``with_streaming_response`` calls on the async
-  client, whose ``parse()`` returns a coroutine, and end the span for a parsed
-  stream the caller abandons.
-  ([#610](https://github.com/open-telemetry/opentelemetry-python-genai/pull/610))
-- Record `gen_ai.tool.definitions` on Responses API `create` and `stream`
-  spans.
-  ([#625](https://github.com/open-telemetry/opentelemetry-python-genai/pull/625))
-- Record `gen_ai.conversation.id` from the Responses API `conversation` request
-  parameter.
-  ([#631](https://github.com/open-telemetry/opentelemetry-python-genai/pull/631))
-- Emit telemetry under the `opentelemetry.instrumentation.genai.openai`
-  instrumentation scope instead of `opentelemetry.util.genai.handler`
-  ([#632](https://github.com/open-telemetry/opentelemetry-python-genai/pull/632))
-- Record `function_call`, `custom_tool_call` and their output items on
-  Responses API spans, so a turn that follows a tool call keeps its tool-loop
-  history in `gen_ai.input.messages`.
-  ([#650](https://github.com/open-telemetry/opentelemetry-python-genai/pull/650))
-- Record failed OpenAI invocations when cancellation raises a `BaseException`.
-  ([#656](https://github.com/open-telemetry/opentelemetry-python-genai/pull/656))
-- Capture provider-executed Responses API tools in output messages.
-  ([#700](https://github.com/open-telemetry/opentelemetry-python-genai/pull/700))
-- Do not record `gen_ai.embeddings.dimension.count` on metrics.
-  ([#708](https://github.com/open-telemetry/opentelemetry-python-genai/pull/708))
-- Do not record `gen_ai.request.stream` on `fetch_response` spans.
-  ([#709](https://github.com/open-telemetry/opentelemetry-python-genai/pull/709))
-- Keep the ``gen_ai.conversation.id`` inherited from an enclosing agent
-  framework when a Responses request carries no ``conversation`` parameter
-  ([#726](https://github.com/open-telemetry/opentelemetry-python-genai/pull/726))
-
-## Version 1.1b0 (2026-08-20)
-
-### Added
-
-- Add instrumentation for the OpenAI Responses ``retrieve`` API (sync and
-  async), reported as a ``fetch_response`` operation with no token usage.
-  ([#184](https://github.com/open-telemetry/opentelemetry-python-genai/pull/184))
-- Emit streaming timing metrics (time-to-first-chunk and time-per-output-chunk)
-  for streaming chat completions.
-  ([#269](https://github.com/open-telemetry/opentelemetry-python-genai/pull/269))
-- Populate gen_ai.response.model from responses API when the response body
-  includes the served model header
-  ([#355](https://github.com/open-telemetry/opentelemetry-python-genai/pull/355))
-
-### Changed
-
-- Extend supported version range for the openai library to include v3.
-  ([#393](https://github.com/open-telemetry/opentelemetry-python-genai/pull/393))
-- Simplify the CI test matrix to Python 3.10 and 3.14. PyPy is no longer
-  tested.
-  ([#411](https://github.com/open-telemetry/opentelemetry-python-genai/pull/411))
-
-### Fixed
-
-- Expose raw-response attributes (headers, request_id, ...) on streaming
-  ``with_raw_response`` responses for chat completions and the Responses API,
-  keep the caller's stream working unchanged when the raw response is parsed
-  into a custom type (``parse(to=...)``), and finalize the span when a
-  streaming raw response is drained off the underlying httpx response without
-  calling ``parse()`` so the span no longer leaks open.
-  ([#278](https://github.com/open-telemetry/opentelemetry-python-genai/pull/278))
-- Responses that fail now record the actual error type (`error` event code or
-  the response's error code) instead of a generic `RuntimeError`, for both
-  streaming and non-streaming calls. Responses that finish as incomplete
-  (`max_output_tokens`/`content_filter`) are recorded as a finish reason rather
-  than an error.
-  ([#282](https://github.com/open-telemetry/opentelemetry-python-genai/pull/282))
-- Fix ``server.address`` and ``server.port`` not recorded when using openai v3
-  (httpx2 URL type).
-  ([#393](https://github.com/open-telemetry/opentelemetry-python-genai/pull/393))
-
-## Version 1.0b0 (2026-07-09)
-
-### Added
-
-- Add instrumentation for `chat.completions.parse()` structured outputs
-  ([#18](https://github.com/open-telemetry/opentelemetry-python-genai/pull/18))
-- Add instrumentation for OpenAI Responses API async `create`
-  ([#99](https://github.com/open-telemetry/opentelemetry-python-genai/pull/99))
-- Add OpenAI Responses API stream instrumentation for sync and async clients.
-  ([#131](https://github.com/open-telemetry/opentelemetry-python-genai/pull/131))
-- Pass tool definitions from `tools` kwarg to
-  `InferenceInvocation.tool_definitions` so `gen_ai.tool.definitions` span
-  attribute is populated on chat completion spans
-  ([#4554](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4554))
-
-### Changed
-
-- Renamed package from `opentelemetry-instrumentation-openai-v2` to
-  `opentelemetry-instrumentation-genai-openai` (imports
-  `opentelemetry.instrumentation.genai.openai`); the version line restarts at
-  `1.0b0`.
-  ([#60](https://github.com/open-telemetry/opentelemetry-python-genai/pull/60))
-- Use shared GenAI stream wrappers for Responses API streams.
-  ([#92](https://github.com/open-telemetry/opentelemetry-python-genai/pull/92))
-- Switch OpenAI instrumentation and tests to the latest GenAI semantic
-  convention mode.
-  ([#108](https://github.com/open-telemetry/opentelemetry-python-genai/pull/108))
-- Migrate OpenAI embeddings instrumentation to the shared util-genai
-  EmbeddingInvocation lifecycle and drop the legacy embeddings-specific
-  span/metrics plumbing.
-  ([#127](https://github.com/open-telemetry/opentelemetry-python-genai/pull/127))
-- Refactor chat completion stream wrappers to use shared GenAI stream lifecycle
-  helpers.
-  ([#4500](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4500))
+- Import as `observeinc.instrumentation.genai.openai` instead of upstream's
+  path, so this package can be installed next to the upstream OpenTelemetry
+  GenAI packages without overwriting their files.
+- Publish as `observe-instrumentation-genai-openai`, depending on
+  `observe-util-genai` in place of `opentelemetry-util-genai`. Use it in place of
+  upstream's `opentelemetry-instrumentation-genai-openai`.
 
 ### Removed
 
-- Remove unused legacy event helpers that emitted the deprecated
-  `gen_ai.system` attribute and `gen_ai.{role}.message` / `gen_ai.choice`
-  events.
-  ([#161](https://github.com/open-telemetry/opentelemetry-python-genai/pull/161))
+- Remove ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT`` environment variable.
+  ``gen_ai.client.inference.operation.details`` events are now emitted by
+  default whenever the logger is enabled and can be disabled via logger
+  configuration, see
+  https://github.com/open-telemetry/opentelemetry-python-genai/blob/main/examples/suppress-inference-event/README.rst
+  for examples.
+  ([#836](https://github.com/open-telemetry/opentelemetry-python-genai/pull/836))
+- Drop support for Python 3.10.
+  ([#992](https://github.com/open-telemetry/opentelemetry-python-genai/pull/992))
 
 ### Fixed
 
-- Migrate OpenAI choice_count to use InferenceInvocation.request_choice_count
-  field for
-  consistency with other instrumentations.
-  ([#192](https://github.com/open-telemetry/opentelemetry-python-genai/pull/192))
-
-## Version 2.4b0 (2026-05-01)
-
-
-- Migrate experimental path from deprecated `LLMInvocation` to `InferenceInvocation`,
-  using `handler.start_inference()` and `invocation.stop()`/`invocation.fail()` directly
-  ([#4502](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4502))
-- Use `create_duration_histogram` and `create_token_histogram` from
-  `opentelemetry-util-genai` instead of defining bucket boundaries locally
-  ([#4501](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4501))
-- Import `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` from
-  `opentelemetry.util.genai.environment_variables` instead of re-defining it locally,
-  making `opentelemetry-util-genai` the single source of truth for this constant.
-  ([#4455](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4455))
-- Fix compatibility with wrapt 2.x by using positional arguments in `wrap_function_wrapper()` calls
-  ([#4445](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4445))
-- Fix `ChoiceBuffer` crash on streaming tool-call deltas with `arguments=None`
-  ([#4350](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4350))
-- Fix `StreamWrapper` missing `.headers` and other attributes when using `with_raw_response` streaming
-  ([#4113](https://github.com/open-telemetry/opentelemetry-python-contrib/issues/4113))
-- Add opt-in support for latest experimental semantic conventions (v1.37.0). Set
-  `OTEL_SEMCONV_STABILITY_OPT_IN` to `gen_ai_latest_experimental` to enable.
-  Add dependency on `opentelemetry-util-genai` pypi package.
-  ([#3715](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3715))
-- Add wrappers for OpenAI Responses API streams and response stream managers
-  ([#4280](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4280))
-- Add async wrappers for OpenAI Responses API streams and response stream managers
-  ([#4325](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4325))
-- Add strongly typed Responses API extractors with validation and content
-  extraction improvements
-  ([#4337](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4337))
-- Add instrumentation for OpenAI Responses API `create`
-  ([#4474](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4474))
-- Add completion hook support.
-  ([#4315](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4315))
-- Fix `response_format` handling: map `json_object`/`json_schema` to `json` output type.
-  ([#4315](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4315))
-- Skip attribute values with `openai.Omit` value.
-  ([#4315](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4315))
-- Default empty string for `gen_ai.request.model` attribute on missing model.
-  ([#4494](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4494))
-
-## Version 2.3b0 (2025-12-24)
-
-- Fix `AttributeError` when handling `LegacyAPIResponse` (from `with_raw_response`)
-  ([#4017](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4017))
-- Add support for chat completions choice count and stop sequences span attributes
-  ([#4028](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4028))
-- Fix crash with streaming `with_raw_response`
-  ([#4033](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4033))
-- Bump to 1.30.0 semconv schema: `gen_ai.request.seed` instead of `gen_ai.openai.request.seed`
-  ([#4036](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4036))
-
-## Version 2.2b0 (2025-11-25)
-
-- Fix service tier attribute names: use `GEN_AI_OPENAI_REQUEST_SERVICE_TIER` for request
-  attributes and `GEN_AI_OPENAI_RESPONSE_SERVICE_TIER` for response attributes.
-  ([#3920](https://github.com/open-telemetry/opentelemetry-python-contrib/issues/3920))
-- Added support for OpenAI embeddings instrumentation
-  ([#3461](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3461))
-- Record prompt and completion events regardless of span sampling decision.
-  ([#3226](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3226))
-- Filter out attributes with the value of NotGiven instances
-  ([#3760](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3760))
-- Migrate off the deprecated events API to use the logs API
-  ([#3625](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3628))
-
-## Version 2.1b0 (2025-01-18)
-
-- Coerce openai response_format to semconv format
-  ([#3073](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3073))
-- Add example to `opentelemetry-instrumentation-openai-v2`
-  ([#3006](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3006))
-- Support for `AsyncOpenAI/AsyncCompletions` ([#2984](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/2984))
-- Add metrics ([#3180](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3180))
-
-## Version 2.0b0 (2024-11-08)
-
-- Use generic `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` environment variable
-  to control if content of prompt, completion, and other messages is captured.
-  ([#2947](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/2947))
-
-- Update OpenAI instrumentation to Semantic Conventions v1.28.0: add new attributes
-  and switch prompts and completions to log-based events.
-  ([#2925](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/2925))
-
-- Initial OpenAI instrumentation
-  ([#2759](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/2759))
+- Fix embedding dimension counts for explicitly requested base64 responses
+  without changing the SDK's returned embeddings.
+  ([#981](https://github.com/open-telemetry/opentelemetry-python-genai/pull/981))

@@ -1,5 +1,0 @@
-Rename `genai.usage.is_partial` to `claude_agent_sdk.usage.is_partial`, a
-vendor-scoped prefix for attributes the convention has no key for. This is a
-visible output change: a dashboard or query reading the old name will stop
-finding it. `genai.` is one character from the real namespace and reads as a
-typo.

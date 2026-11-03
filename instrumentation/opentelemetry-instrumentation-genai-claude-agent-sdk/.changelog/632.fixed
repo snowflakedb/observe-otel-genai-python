@@ -1,1 +1,0 @@
-Emit telemetry under the `observeinc.instrumentation.genai.claude_agent_sdk` instrumentation scope instead of `observeinc.util.genai.handler`

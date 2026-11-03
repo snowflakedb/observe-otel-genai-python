@@ -1,1 +1,0 @@
-`invoke_agent` spans no longer carry `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens` or `gen_ai.usage.reasoning.output_tokens`; read them from the `chat` spans. `gen_ai.usage.input_tokens` still includes cache reads and writes. The GenAI conventions do not define these breakdowns on agent spans.

@@ -1,4 +1,0 @@
-Raise a caller's own `query()` argument error from the call site again. Wrapping
-defers the underlying call into the stream, so a misspelled keyword surfaced
-from the first iteration instead — and by then an `invoke_agent` span had opened,
-which reported a pure caller bug as a failed agent invocation.

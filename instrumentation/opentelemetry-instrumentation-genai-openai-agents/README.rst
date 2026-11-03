@@ -37,16 +37,10 @@ cannot share an environment with this one.
 Installation
 ------------
 
-This package and its ``observe-util-genai`` dependency are not published to
-PyPI yet. Install both from this repository in one command, so pip does not
-look for ``observe-util-genai`` on PyPI:
-
 ::
 
     pip uninstall opentelemetry-instrumentation-genai-openai-agents opentelemetry-util-genai
-    pip install \
-        "observe-util-genai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=util/opentelemetry-util-genai" \
-        "observe-instrumentation-genai-openai-agents @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai-agents"
+    pip install observe-instrumentation-genai-openai-agents
 
 .. note::
    Model calls (``chat`` spans and their token counts) come from
@@ -58,11 +52,11 @@ look for ``observe-util-genai`` on PyPI:
 
    ::
 
-       pip install "observe-instrumentation-genai-openai @ git+https://github.com/snowflake-eng/observe-otel-genai-python#subdirectory=instrumentation/opentelemetry-instrumentation-genai-openai"
+       pip install observe-instrumentation-genai-openai
 
    With other model clients, such as ``LitellmModel``, no model calls are
    recorded. To ask for your client to be supported,
-   `open an issue <https://github.com/snowflake-eng/observe-otel-genai-python/issues>`_.
+   `open an issue <https://github.com/snowflakedb/observe-otel-genai-python/issues>`_.
 
 See the `examples <examples>`_ directory for runnable ``manual`` and
 ``zero-code`` scenarios.

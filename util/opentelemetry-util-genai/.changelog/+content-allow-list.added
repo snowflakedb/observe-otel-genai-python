@@ -1,1 +1,0 @@
-Add the `ALLOW_LIST` value for `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. It captures no content, and every span, event and metric keeps only the attributes on a fixed allowlist, with no status description or exception message.

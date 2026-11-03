@@ -30,5 +30,5 @@ importlib-metadata==6.11.0
 packaging==24.0
 
 
-# Drop this once opentelemetry-util-genai 1.4b0 is published.
+# Drop this once observe-util-genai 0.1.0 is published.
 -e util/opentelemetry-util-genai

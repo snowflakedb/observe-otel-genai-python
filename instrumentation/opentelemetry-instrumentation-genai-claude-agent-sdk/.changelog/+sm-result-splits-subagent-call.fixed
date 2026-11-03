@@ -1,1 +1,0 @@
-Leave a subagent's model call alone when a result arrives, instead of closing it and splitting one API call into two spans.

@@ -10,100 +10,42 @@ Do *NOT* add changelog entries here!
 
 This changelog is managed by towncrier and is compiled at release time.
 
-See https://github.com/open-telemetry/opentelemetry-python-genai/blob/main/CONTRIBUTING.md#changelog for details.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md#4-update-the-changelog) for details.
 -->
 
 <!-- changelog start -->
 
-## Version 1.3b0 (2026-10-23)
+## Version 0.1.0 (2026-11-02)
 
-### Changed
-
-- Record tool call arguments as compact JSON for any valid JSON input and
-  non-string results as JSON. Previously only JSON objects were normalized and
-  results went through `str()`, e.g. arguments `[1, 2]` were recorded as `[1,
-  2]`, now `[1,2]`; `null` arguments are no longer recorded.
-  ([#821](https://github.com/open-telemetry/opentelemetry-python-genai/pull/821))
-
-### Fixed
-
-- Preserve processor state on OpenAIAgentsInstrumentor singleton
-  re-instantiation.
-  ([#869](https://github.com/open-telemetry/opentelemetry-python-genai/pull/869))
-
-## Version 1.2b0 (2026-09-24)
-
-### Changed
-
-- Bump the minimum `opentelemetry-util-genai` version to 1.1b0, where
-  `Error.type` became the `error.type` string value.
-  ([#485](https://github.com/open-telemetry/opentelemetry-python-genai/pull/485))
-- Bump the minimum `opentelemetry-util-genai` version to 1.2b0.
-  ([#593](https://github.com/open-telemetry/opentelemetry-python-genai/pull/593))
-- Record metrics `gen_ai.invoke_agent.duration` and
-  `gen_ai.execute_tool.duration` instead of `gen_ai.client.operation.duration`.
-  ([#616](https://github.com/open-telemetry/opentelemetry-python-genai/pull/616))
-
-### Fixed
-
-- Mark tool and agent span errors recorded on the agents-library Span.error
-  ([#485](https://github.com/open-telemetry/opentelemetry-python-genai/pull/485))
-- Record ``gen_ai.tool.call.arguments`` on ``execute_tool`` spans.
-  ([#588](https://github.com/open-telemetry/opentelemetry-python-genai/pull/588))
-- Emit telemetry under the `opentelemetry.instrumentation.genai.openai_agents`
-  instrumentation scope instead of `opentelemetry.util.genai.handler`
-  ([#632](https://github.com/open-telemetry/opentelemetry-python-genai/pull/632))
-- Do not record `gen_ai.provider.name` on tool execution metric attributes.
-  ([#710](https://github.com/open-telemetry/opentelemetry-python-genai/pull/710))
-- Record ``gen_ai.conversation.id`` from ``RunConfig.group_id`` on
-  ``invoke_workflow`` and ``invoke_agent`` spans, and propagate it to the
-  ``chat`` span emitted by the model SDK instrumentation.
-  ([#726](https://github.com/open-telemetry/opentelemetry-python-genai/pull/726))
-
-## Version 1.1b0 (2026-08-20)
-
-### Fixed
-
-- Honor ``OTEL_INSTRUMENTATION_GENAI_COMPLETION_HOOK`` by falling back to
-  ``load_completion_hook()``
-  when no ``completion_hook`` is passed to ``instrument()``.
-  ([#302](https://github.com/open-telemetry/opentelemetry-python-genai/pull/302))
-
-## Version 1.0b0 (2026-07-09)
+First release. It is based on upstream
+[opentelemetry-python-genai](https://github.com/open-telemetry/opentelemetry-python-genai)
+at commit `068606f9`, and the entries below describe how it differs from
+upstream's last release, `1.3b0`.
 
 ### Added
 
-- Document official package metadata and README for the OpenAI Agents
-  instrumentation.
-  ([#3859](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3859))
-- Populate instructions and tool definitions from Response obj.
-  ([#4196](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4196))
+- Add support for Python 3.15.
+  ([#992](https://github.com/open-telemetry/opentelemetry-python-genai/pull/992))
+- Tool spans now carry the agent they run under as `gen_ai.agent.name`, taken
+  from util-genai's agent context.
 
 ### Changed
 
-- Renamed package from `opentelemetry-instrumentation-openai-agents-v2` to
-  `opentelemetry-instrumentation-genai-openai-agents` (imports
-  `opentelemetry.instrumentation.genai.openai_agents`); the version line
-  restarts at `1.0b0`.
-  ([#60](https://github.com/open-telemetry/opentelemetry-python-genai/pull/60))
-- Switch instrumentation to use util-genai instead of hand-rolled signals.
-  Stop capturing chat, embeddings, speech, and transcription spans — those are
-  covered by the OpenAI instrumentation.
-  Remove handoff and guardrail spans (not yet defined in semantic convention
-  and not implemented
-  by genai-util).
-  ([#90](https://github.com/open-telemetry/opentelemetry-python-genai/pull/90))
-- Align AgentSpanData test stubs and span processor with real OpenAI Agents
-  SDK; remove non-existent `operation`, `description`, `agent_id`, and `model`
-  fields.
-  ([#4229](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/4229))
+- Import as `observeinc.instrumentation.genai.openai_agents` instead of
+  upstream's path, so this package can be installed next to the upstream
+  OpenTelemetry GenAI packages without overwriting their files.
+- Publish as `observe-instrumentation-genai-openai-agents`, depending on
+  `observe-util-genai` in place of `opentelemetry-util-genai`. Use it in place of
+  upstream's `opentelemetry-instrumentation-genai-openai-agents`.
 
-## Version 0.1.0 (2025-10-15)
+### Removed
 
-- Initial barebones package skeleton: minimal instrumentor stub, version module,
-  and packaging metadata/entry point.
-  ([#3805](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3805))
-- Implement OpenAI Agents span processing aligned with GenAI semantic conventions.
-  ([#3817](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3817))
-- Input and output according to GenAI spec.
-  ([#3824](https://github.com/open-telemetry/opentelemetry-python-contrib/pull/3824))
+- Remove ``OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT`` environment variable.
+  ``gen_ai.client.inference.operation.details`` events are now emitted by
+  default whenever the logger is enabled and can be disabled via logger
+  configuration, see
+  https://github.com/open-telemetry/opentelemetry-python-genai/blob/main/examples/suppress-inference-event/README.rst
+  for examples.
+  ([#836](https://github.com/open-telemetry/opentelemetry-python-genai/pull/836))
+- Drop support for Python 3.10.
+  ([#992](https://github.com/open-telemetry/opentelemetry-python-genai/pull/992))

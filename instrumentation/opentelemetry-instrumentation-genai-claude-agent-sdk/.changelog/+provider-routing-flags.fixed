@@ -1,7 +1,0 @@
-Resolve `gen_ai.provider.name` from the same flags, in the same order, and with
-the same truthiness rule the CLI itself uses. `CLAUDE_CODE_USE_MANTLE`,
-`CLAUDE_CODE_USE_ANTHROPIC_AWS` and `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD`
-were not read at all; Foundry outranks Vertex rather than the reverse; values
-like `no` and `off` no longer read as on; and Foundry now reports the defined
-`azure.ai.inference` instead of `azure.ai.foundry`, which is not a member of the
-convention's provider enum.

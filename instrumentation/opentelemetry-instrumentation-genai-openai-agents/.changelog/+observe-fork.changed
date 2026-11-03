@@ -1,1 +1,0 @@
-Publish as `observe-instrumentation-genai-openai-agents`, depending on `observe-util-genai` in place of `opentelemetry-util-genai`. It replaces upstream's `opentelemetry-instrumentation-genai-openai-agents` rather than installing alongside it.

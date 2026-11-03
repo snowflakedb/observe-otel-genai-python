@@ -1,1 +1,0 @@
-Close a subagent's open tools before the subagent, whether the run stops or the subagent ends mid-run, and keep closing the rest when one close fails instead of leaving the agent span unexported.

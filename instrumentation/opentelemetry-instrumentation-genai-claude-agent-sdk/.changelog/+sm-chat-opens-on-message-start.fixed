@@ -1,9 +1,0 @@
-Open a `chat` span when the API call starts rather than when its first content
-block finishes. The CLI sends `message_start` — which carries both the message id
-and the model — before any assistant message, and measured on CLI 2.1.220 the
-assistant message followed between 502ms and 1751ms later with 21 to 35
-`content_block_delta` events already gone past. Every chat span understated its
-duration by that much, all of those chunks were dropped, and
-`gen_ai.client.operation.time_to_first_chunk` timed the gap between one finished
-content block and the next instead of the wait for the first token. A call cut
-short before any content block now also reports which call it was.
